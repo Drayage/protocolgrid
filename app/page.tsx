@@ -919,9 +919,17 @@ function movementCombatProfile(movement: PendingMovement) {
 
 function queueCurrentEncounter(game: GameState, agent: Agent, priority: number, canAttack: boolean, moveBonus: number): boolean {
   const watchers = watchersFor(game, agent);
-  const occupants = game.teams[otherSide(agent.team)].agents
-    .filter((enemy) => enemy.alive && enemy.region === agent.region && !watchers.some((watcher) => watcher.id === enemy.id));
-  const enemy = [...watchers, ...occupants][0];
+  const enemiesInRange = game.teams[otherSide(agent.team)].agents
+    .filter((enemy) => {
+      if (!enemy.alive || watchers.some((watcher) => watcher.id === enemy.id)) return false;
+      const path = shortestPath(agent.region, enemy.region);
+      const distance = path.length - 1;
+      if (distance < 0 || distance > 1) return false;
+      if (distance === 0) return true;
+      return !isSmokeBlocked(game, path[0], path[1]) || agent.detected || enemy.detected;
+    })
+    .sort((a, b) => shortestPath(agent.region, a.region).length - shortestPath(agent.region, b.region).length);
+  const enemy = [...watchers, ...enemiesInRange][0];
   if (!enemy) return false;
   resolveEngagement(game, agent, enemy, priority, canAttack, moveBonus, watchers.some((watcher) => watcher.id === enemy.id));
   return game.combatQueue.length > 0;

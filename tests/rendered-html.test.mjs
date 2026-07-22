@@ -53,3 +53,10 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(css, /@media \(max-width: 800px\)/);
   assert.match(css, /@keyframes tracerShot/);
 });
+
+test("non-waiting enemies inside normal range still start combat", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const enemiesInRange =/);
+  assert.match(page, /if \(distance < 0 \|\| distance > 1\) return false/);
+  assert.match(page, /const enemy = \[\.\.\.watchers, \.\.\.enemiesInRange\]\[0\]/);
+});
