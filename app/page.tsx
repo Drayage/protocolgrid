@@ -1077,7 +1077,7 @@ function cardTargets(game: GameState, agent: Agent, card: ActionCard): number[] 
   return [];
 }
 
-function visibleRegions(game: GameState): Set<number> {
+function observedRegions(game: GameState): Set<number> {
   const visible = new Set<number>();
   const team = game.teams[game.turnSide];
   for (const agent of team.agents.filter((item) => item.alive)) {
@@ -1087,11 +1087,16 @@ function visibleRegions(game: GameState): Set<number> {
     });
   }
   for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => item.detected)) visible.add(enemy.region);
-  for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => game.revealedEnemyIds.includes(item.id))) visible.add(enemy.region);
   for (const camera of game.deployables.filter((item) => item.kind === "camera" && item.owner === game.turnSide)) {
     visible.add(camera.region);
     (GRAPH.get(camera.region) ?? []).forEach((region) => visible.add(region));
   }
+  return visible;
+}
+
+function visibleRegions(game: GameState): Set<number> {
+  const visible = observedRegions(game);
+  for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => game.revealedEnemyIds.includes(item.id))) visible.add(enemy.region);
   return visible;
 }
 
@@ -1188,6 +1193,14 @@ function SelectionScreen(props: SelectionScreenProps) {
   );
 }
 
+function remainingSkillBuyCost(agent: Agent): number {
+  return AGENTS[agent.name].skills.reduce((total, definition) => {
+    const max = definition.price.includes("2회") ? 2 : 1;
+    const unitPrice = max === 2 ? 1 : 2;
+    return total + Math.max(0, max - (agent.skills[definition.id] ?? 0)) * unitPrice;
+  }, 0);
+}
+
 interface PurchaseScreenProps {
   game: GameState;
   side: Side;
@@ -1195,16 +1208,21 @@ interface PurchaseScreenProps {
   step: string;
   onSelect: (id: string) => void;
   onWeapon: (weapon: Weapon) => void;
+  onBulkWeapon: (weapon: Weapon) => void;
   onArmor: (type: "light" | "regen" | "heavy", price: number, value: number) => void;
+  onBulkArmor: (type: "light" | "regen" | "heavy", price: number, value: number) => void;
   onSkill: (skill: SkillDefinition) => void;
+  onAllSkills: (scope: "agent" | "team") => void;
   onContinue: () => void;
   onBack: () => void;
 }
 
-function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onArmor, onSkill, onContinue, onBack }: PurchaseScreenProps) {
+function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onBulkWeapon, onArmor, onBulkArmor, onSkill, onAllSkills, onContinue, onBack }: PurchaseScreenProps) {
   const team = game.teams[side];
   const agent = getAgent(game, selectedId) ?? team.agents[0];
   const spent = Math.max(0, team.buyStartFunds - team.funds);
+  const agentSkillCost = remainingSkillBuyCost(agent);
+  const teamSkillCost = team.agents.reduce((total, item) => total + remainingSkillBuyCost(item), 0);
   return <main className={`setup-screen purchase-screen purchase-${side}`}>
     <header className="setup-topbar"><button disabled={game.matchRound > 1 && side === "defense"} onClick={onBack}>← 이전 단계</button><div><span>{step}</span><strong>{SIDE_LABEL[side]} 구매 단계 · R{game.matchRound}</strong></div><span className="purchase-wallet">팀 자금 <b>{team.funds}원</b></span></header>
     <section className="purchase-body">
@@ -1212,10 +1230,10 @@ function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onAr
       <section className="purchase-catalog">
         <div className="purchase-agent-head"><div className={`purchase-avatar role-${agent.role}`}>{agent.name.slice(0, 1)}</div><div><span className="eyebrow">SELECTED AGENT</span><h2>{agent.name}</h2><p>{ROLE_LABEL[agent.role]} · 에임 {ROLE_STATS[agent.role].aim} / 무빙 {ROLE_STATS[agent.role].move}</p></div><div className="current-loadout"><span>현재 장비</span><strong>{WEAPONS[agent.weapon].name}</strong><small>방어 {agent.armor} · 스킬 {Object.values(agent.skills).reduce((sum, value) => sum + value, 0)}회</small></div></div>
         <div className="purchase-section-title"><div><span>01</span><strong>총기</strong></div><p>{game.matchRound === 1 ? "클래식 · 셰리프" : game.matchRound === 2 ? "버키 · 스펙터 · 불독 · 아웃로 추가" : "모든 총기 해금"}</p></div>
-        <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; return <button key={weapon.id} disabled={locked || equipped || weapon.price > team.funds} className={`${locked ? "locked" : ""} ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : weapon.price ? `${weapon.price}원` : "기본"}</b></button>; })}</div>
+        <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const bulkCount = team.agents.filter((item) => item.weapon !== weapon.id).length; const bulkCost = bulkCount * weapon.price; return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || weapon.price > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : weapon.price ? `${weapon.price}원` : "기본"}</b></button><button className="bulk-buy" disabled={locked || weapon.price === 0 || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost}원</b></button></div>; })}</div>
         <div className="purchase-lower">
-          <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors"><button disabled={team.funds < 2 || agent.armorType === "light"} onClick={() => onArmor("light", 2, 1)}><strong>소형 방어구</strong><span>방어 1</span><b>2원</b></button><button disabled={team.funds < 4 || agent.armorType === "regen"} onClick={() => onArmor("regen", 4, 1)}><strong>회복 방어구</strong><span>턴 종료 회복</span><b>4원</b></button><button disabled={team.funds < 6 || agent.armorType === "heavy"} onClick={() => onArmor("heavy", 6, 2)}><strong>대형 방어구</strong><span>방어 2</span><b>6원</b></button></div></div>
-          <div><div className="purchase-section-title"><div><span>03</span><strong>스킬</strong></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
+          <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors">{([{"type":"light","name":"소형 방어구","detail":"방어 1","price":2,"value":1},{"type":"regen","name":"회복 방어구","detail":"턴 종료 회복","price":4,"value":1},{"type":"heavy","name":"대형 방어구","detail":"방어 2","price":6,"value":2}] as const).map((armor) => { const bulkCount = team.agents.filter((item) => item.armorType !== armor.type).length; const bulkCost = bulkCount * armor.price; return <div key={armor.type} className="purchase-armor-option"><button className="purchase-primary" disabled={team.funds < armor.price || agent.armorType === armor.type} onClick={() => onArmor(armor.type, armor.price, armor.value)}><strong>{armor.name}</strong><span>{armor.detail}</span><b>{armor.price}원</b></button><button className="bulk-buy" disabled={bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkArmor(armor.type, armor.price, armor.value)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost}원</b></button></div>; })}</div></div>
+          <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
         </div>
       </section>
       <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "첫 수비 턴"}</span><strong>구매 확정</strong></button></aside>
@@ -1323,6 +1341,7 @@ export default function Home() {
   const isAiControlledTurn = aiSide === game.turnSide;
   const selectedAgent = getAgent(game, game.selectedAgentId);
   const selectedCard = activeTeam.hand.find((card) => card.id === game.selectedCardId) ?? null;
+  const observed = useMemo(() => observedRegions(game), [game]);
   const visible = useMemo(() => visibleRegions(game), [game]);
   const validTargets = useMemo(() => {
     if (game.pendingWait) {
@@ -1396,6 +1415,16 @@ export default function Home() {
     team.funds -= weapon.price;
   });
 
+  const setupBulkBuyWeapon = (side: Side, weapon: Weapon) => mutate((draft) => {
+    const team = draft.teams[side];
+    const targets = team.agents.filter((agent) => agent.weapon !== weapon.id);
+    const total = targets.length * weapon.price;
+    if (weapon.price === 0 || weapon.unlock > draft.matchRound || targets.length === 0 || team.funds < total) return;
+    targets.forEach((agent) => { agent.weapon = weapon.id; });
+    team.funds -= total;
+    addLog(draft, `${SIDE_LABEL[side]} 일괄 구매: ${weapon.name} ${targets.length}정 · ${total}원.`);
+  });
+
   const setupBuyArmor = (side: Side, type: "light" | "regen" | "heavy", price: number, value: number) => mutate((draft) => {
     const team = draft.teams[side];
     const agent = getAgent(draft, setupAgentId);
@@ -1404,6 +1433,20 @@ export default function Home() {
     agent.armor = value;
     agent.armorDamaged = false;
     team.funds -= price;
+  });
+
+  const setupBulkBuyArmor = (side: Side, type: "light" | "regen" | "heavy", price: number, value: number) => mutate((draft) => {
+    const team = draft.teams[side];
+    const targets = team.agents.filter((agent) => agent.armorType !== type);
+    const total = targets.length * price;
+    if (targets.length === 0 || team.funds < total) return;
+    targets.forEach((agent) => {
+      agent.armorType = type;
+      agent.armor = value;
+      agent.armorDamaged = false;
+    });
+    team.funds -= total;
+    addLog(draft, `${SIDE_LABEL[side]} 일괄 구매: 방어구 ${targets.length}개 · ${total}원.`);
   });
 
   const setupBuySkill = (side: Side, definition: SkillDefinition) => mutate((draft) => {
@@ -1415,6 +1458,21 @@ export default function Home() {
     if ((agent.skills[definition.id] ?? 0) >= max || team.funds < price) return;
     agent.skills[definition.id] = (agent.skills[definition.id] ?? 0) + 1;
     team.funds -= price;
+  });
+
+  const setupBuyAllSkills = (side: Side, scope: "agent" | "team") => mutate((draft) => {
+    const team = draft.teams[side];
+    const selected = getAgent(draft, setupAgentId);
+    const targets = scope === "team" ? team.agents : selected?.team === side ? [selected] : [];
+    const total = targets.reduce((sum, agent) => sum + remainingSkillBuyCost(agent), 0);
+    if (targets.length === 0 || total === 0 || team.funds < total) return;
+    targets.forEach((agent) => {
+      AGENTS[agent.name].skills.forEach((definition) => {
+        agent.skills[definition.id] = definition.price.includes("2회") ? 2 : 1;
+      });
+    });
+    team.funds -= total;
+    addLog(draft, `${scope === "team" ? SIDE_LABEL[side] : selected?.name} 스킬 전부 구매 · ${total}원.`);
   });
 
   const placeDefender = (region: number) => {
@@ -1490,9 +1548,9 @@ export default function Home() {
 
   if (stage === "title") return <TitleScreen onStart={() => setStage("select")} />;
   if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} aiSide={aiSide} onAiSide={setAiSide} />;
-  if (stage === "buy_defense") return <PurchaseScreen game={game} side="defense" selectedId={setupAgentId} step="STEP 02" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("defense", weapon)} onArmor={(type, price, value) => setupBuyArmor("defense", type, price, value)} onSkill={(item) => setupBuySkill("defense", item)} onBack={() => { if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); }} onContinue={() => { setDeploymentAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("deploy"); }} />;
+  if (stage === "buy_defense") return <PurchaseScreen game={game} side="defense" selectedId={setupAgentId} step="STEP 02" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("defense", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("defense", weapon)} onArmor={(type, price, value) => setupBuyArmor("defense", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("defense", type, price, value)} onSkill={(item) => setupBuySkill("defense", item)} onAllSkills={(scope) => setupBuyAllSkills("defense", scope)} onBack={() => { if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); }} onContinue={() => { setDeploymentAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("deploy"); }} />;
   if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => { setSetupAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("buy_defense"); }} onStart={() => { if (aiSide === "attack") autoBuyAttackAndStart(); else { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("buy_attack"); } }} />;
-  if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onBack={() => setStage("deploy")} onContinue={() => { mutate((draft) => { draft.turnSide = "defense"; draft.teams.attack.buyLocked = true; draft.teams.defense.buyLocked = true; draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null; addLog(draft, "공격팀 구매 완료. 수비팀 첫 턴을 시작합니다."); }); setStage("play"); }} />;
+  if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onAllSkills={(scope) => setupBuyAllSkills("attack", scope)} onBack={() => setStage("deploy")} onContinue={() => { mutate((draft) => { draft.turnSide = "defense"; draft.teams.attack.buyLocked = true; draft.teams.defense.buyLocked = true; draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null; addLog(draft, "공격팀 구매 완료. 수비팀 첫 턴을 시작합니다."); }); setStage("play"); }} />;
 
   const selectAgent = (id: string) => {
     if (isAiControlledTurn) return;
@@ -2493,18 +2551,19 @@ export default function Home() {
             {REGIONS.map((region) => {
               const allies = activeTeam.agents.filter((agent) => agent.alive && agent.region === region.id);
               const enemies = game.teams[otherSide(game.turnSide)].agents.filter((agent) => agent.alive && agent.region === region.id);
-              const known = visible.has(region.id);
-              const shownEnemies = enemies.filter((agent) => known || agent.detected || game.revealedEnemyIds.includes(agent.id));
+              const observedNow = observed.has(region.id);
+              const remembered = visible.has(region.id);
+              const shownEnemies = enemies.filter((agent) => observedNow || agent.detected || game.revealedEnemyIds.includes(agent.id));
               const revealedEnemies = shownEnemies.filter((agent) => game.revealedEnemyIds.includes(agent.id));
               const isValid = validTargets.has(region.id);
-              const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === game.turnSide || known));
+              const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === game.turnSide || observedNow));
               const fire = game.fires.some((item) => item.region === region.id);
               const stim = game.stims.some((item) => item.region === region.id);
               const hasSpike = game.spike.region === region.id;
               return (
                 <button
                   key={region.id}
-                  className={`region-node ${isValid ? "valid" : ""} ${region.site ? "site-node" : ""} ${!known ? "unknown" : ""}`}
+                  className={`region-node ${isValid ? "valid" : ""} ${region.site ? "site-node" : ""} ${!remembered ? "unknown" : ""}`}
                   style={{ left: `${region.x}%`, top: `${region.y}%` }}
                   onClick={() => handleRegionClick(region.id)}
                   aria-label={`${region.id}번 ${region.name}${isValid ? ", 선택 가능" : ""}`}
@@ -2515,7 +2574,7 @@ export default function Home() {
                     {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${game.selectedAgentId === agent.id ? "selected" : ""}`} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`}>{agent.name.slice(0, 1)}</i>)}
                   </span>
                   <span className="unit-stack enemy-stack">
-                    {shownEnemies.map((agent) => { const identified = agent.detected || game.revealedEnemyIds.includes(agent.id); return <i key={agent.id} className={`unit-token hostile ${identified ? "identified" : ""}`} title={`${identified ? agent.name : "적 요원"} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}`}>{identified ? agent.name.slice(0, 1) : "?"}</i>; })}
+                    {shownEnemies.map((agent) => { const identified = agent.detected || game.revealedEnemyIds.includes(agent.id); const lastKnown = game.revealedEnemyIds.includes(agent.id) && !agent.detected && !observed.has(agent.region); return <i key={agent.id} className={`unit-token hostile ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""}`} title={`${identified ? agent.name : "적 요원"} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`}>{identified ? agent.name.slice(0, 1) : "?"}{lastKnown && <small>잔상</small>}</i>; })}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => <i key={agent.id}><b>{agent.name}</b>{agent.waitDirs.length ? `대기 → ${agent.waitDirs.join(" · ")}` : "대기 없음"}</i>)}</span>}
                   {(devices.length > 0 || fire || stim || hasSpike) && <span className="effect-stack">
@@ -2645,7 +2704,7 @@ export default function Home() {
             {(["defense", "attack"] as Side[]).map((side) => <article key={side} className={`combat-team-intel ${side}`}>
               <h4><span>{side === "defense" ? "DEF" : "ATK"}</span>{SIDE_LABEL[side]}<b>{game.teams[side].agents.filter((agent) => agent.alive).length}명 생존</b></h4>
               {game.teams[side].agents.map((agent) => {
-                const known = side === game.turnSide || combatantIds.has(agent.id) || agent.detected || game.revealedEnemyIds.includes(agent.id) || visible.has(agent.region);
+                const known = side === game.turnSide || combatantIds.has(agent.id) || agent.detected || game.revealedEnemyIds.includes(agent.id) || observed.has(agent.region);
                 const stats = known ? finalStats(game, agent) : null;
                 const flags = [
                   !agent.alive ? "제거" : "",

@@ -53,9 +53,16 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /combat-turn-banner/);
   assert.match(page, /현재 전장 현황/);
   assert.match(page, /이번 팀 턴에 확인된 정보가 계속 표시됩니다/);
+  assert.match(page, /setupBulkBuyWeapon/);
+  assert.match(page, /setupBulkBuyArmor/);
+  assert.match(page, /setupBuyAllSkills/);
+  assert.match(page, /function observedRegions/);
+  assert.match(page, /lastKnown \? "last-known"/);
+  assert.match(page, /draft\.revealedEnemyIds = \[\]/);
   assert.match(css, /@media \(max-width: 800px\)/);
   assert.match(css, /@keyframes tracerShot/);
   assert.match(css, /\.combat-intel-grid/);
+  assert.match(css, /\.unit-token\.hostile\.last-known/);
 });
 
 test("non-waiting enemies inside normal range still start combat", async () => {
