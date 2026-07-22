@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Side = "attack" | "defense";
 type Role = "duelist" | "initiator" | "controller" | "sentinel";
@@ -163,6 +163,12 @@ interface EnemyMemory {
   agentId: string;
   region: number;
   waitDirs: number[];
+}
+
+interface VisibilityContext {
+  actorSide: Side;
+  viewerSide: Side;
+  allowLastKnown: boolean;
 }
 
 interface SkillFx {
@@ -1200,29 +1206,30 @@ function cardTargets(game: GameState, agent: Agent, card: ActionCard): number[] 
   return [];
 }
 
-function observedRegions(game: GameState): Set<number> {
+function observedRegions(game: GameState, observer: Side): Set<number> {
   const visible = new Set<number>();
-  const team = game.teams[game.turnSide];
+  const team = game.teams[observer];
   for (const agent of team.agents.filter((item) => item.alive)) {
     visible.add(agent.region);
     (GRAPH.get(agent.region) ?? []).forEach((region) => {
       if (!isSmokeBlocked(game, agent.region, region)) visible.add(region);
     });
   }
-  for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => item.detected)) visible.add(enemy.region);
-  for (const camera of game.deployables.filter((item) => item.kind === "camera" && item.owner === game.turnSide)) {
+  for (const enemy of game.teams[otherSide(observer)].agents.filter((item) => item.detected)) visible.add(enemy.region);
+  for (const camera of game.deployables.filter((item) => item.kind === "camera" && item.owner === observer)) {
     visible.add(camera.region);
     (GRAPH.get(camera.region) ?? []).forEach((region) => visible.add(region));
   }
   return visible;
 }
 
-function visibleRegions(game: GameState): Set<number> {
-  const visible = observedRegions(game);
-  const memories = game.enemyMemories.filter((memory) => memory.observer === game.turnSide);
+function visibleRegions(game: GameState, context: VisibilityContext): Set<number> {
+  const visible = observedRegions(game, context.viewerSide);
+  if (!context.allowLastKnown) return visible;
+  const memories = game.enemyMemories.filter((memory) => memory.observer === context.viewerSide);
   const rememberedIds = new Set(memories.map((memory) => memory.agentId));
   memories.forEach((memory) => visible.add(memory.region));
-  for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => game.revealedEnemyIds.includes(item.id) && !rememberedIds.has(item.id))) visible.add(enemy.region);
+  for (const enemy of game.teams[otherSide(context.viewerSide)].agents.filter((item) => game.revealedEnemyIds.includes(item.id) && !rememberedIds.has(item.id))) visible.add(enemy.region);
   return visible;
 }
 
@@ -1235,16 +1242,16 @@ interface WaitConeView {
   lastKnown: boolean;
 }
 
-function waitConeViews(game: GameState): WaitConeView[] {
-  const observer = game.turnSide;
-  const observed = observedRegions(game);
+function waitConeViews(game: GameState, context: VisibilityContext): WaitConeView[] {
+  const observer = context.viewerSide;
+  const observed = observedRegions(game, observer);
   const cones: WaitConeView[] = [];
   game.teams[observer].agents.filter((agent) => agent.alive).forEach((agent) => {
     agent.waitDirs.forEach((to) => cones.push({ id: `${agent.id}-${to}`, agentName: agent.name, from: agent.region, to, hostile: false, lastKnown: false }));
   });
   game.teams[otherSide(observer)].agents.filter((agent) => agent.alive).forEach((agent) => {
-    const memory = game.enemyMemories.find((item) => item.observer === observer && item.agentId === agent.id);
-    const currentlyKnown = observed.has(agent.region) || agent.detected || game.revealedEnemyIds.includes(agent.id);
+    const memory = context.allowLastKnown ? game.enemyMemories.find((item) => item.observer === observer && item.agentId === agent.id) : undefined;
+    const currentlyKnown = observed.has(agent.region) || agent.detected || (context.allowLastKnown && game.revealedEnemyIds.includes(agent.id));
     if (!memory && !currentlyKnown) return;
     const from = memory && !observed.has(agent.region) && !agent.detected ? memory.region : agent.region;
     const waitDirs = memory && !observed.has(agent.region) && !agent.detected ? memory.waitDirs : agent.waitDirs;
@@ -1512,7 +1519,8 @@ function AiController(props: AiControllerProps) {
       action = props.game.actionsUsed >= 3 && !props.game.pendingWait && !props.game.targeting && !props.game.pendingContact ? props.onEndTurn : props.onStep;
     }
     if (!action) return;
-    const timer = window.setTimeout(action, scene?.phase === "encounter" ? 1250 : 520);
+    const delay = scene?.phase === "encounter" ? 1400 : scene?.phase === "result" ? 1650 : 650;
+    const timer = window.setTimeout(action, delay);
     return () => window.clearTimeout(timer);
   }, [props]);
   return null;
@@ -1529,14 +1537,43 @@ export default function Home() {
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [showHelp, setShowHelp] = useState(false);
   const [showShop, setShowShop] = useState(false);
+  const combatTurnRef = useRef<HTMLDivElement | null>(null);
+  const combatStageRef = useRef<HTMLDivElement | null>(null);
 
+  const actorSide = game.turnSide;
+  const viewerSide = aiSide ? otherSide(aiSide) : actorSide;
+  const allowLastKnown = !aiSide || actorSide === viewerSide;
+  const visibilityContext = useMemo<VisibilityContext>(() => ({ actorSide, viewerSide, allowLastKnown }), [actorSide, viewerSide, allowLastKnown]);
   const activeTeam = game.teams[game.turnSide];
+  const viewerTeam = game.teams[viewerSide];
   const isAiControlledTurn = aiSide === game.turnSide;
   const selectedAgent = getAgent(game, game.selectedAgentId);
+  const displayedAgent = selectedAgent?.team === viewerSide ? selectedAgent : viewerTeam.agents.find((agent) => agent.alive) ?? viewerTeam.agents[0] ?? null;
   const selectedCard = activeTeam.hand.find((card) => card.id === game.selectedCardId) ?? null;
-  const observed = useMemo(() => observedRegions(game), [game]);
-  const visible = useMemo(() => visibleRegions(game), [game]);
-  const mapWaitCones = useMemo(() => waitConeViews(game), [game]);
+  const observed = useMemo(() => observedRegions(game, viewerSide), [game, viewerSide]);
+  const visible = useMemo(() => visibleRegions(game, visibilityContext), [game, visibilityContext]);
+  const mapWaitCones = useMemo(() => waitConeViews(game, visibilityContext), [game, visibilityContext]);
+  const viewerLog = useMemo(() => {
+    if (!aiSide) return game.log;
+    const hiddenAgentNames = game.teams[aiSide].agents.map((agent) => agent.name);
+    return game.log.filter((entry) => !hiddenAgentNames.some((name) => entry.includes(name)) && !entry.includes(`${SIDE_LABEL[aiSide]} AI`));
+  }, [game, aiSide]);
+
+  useEffect(() => {
+    if (!isAiControlledTurn) return;
+    setShowShop(false);
+  }, [isAiControlledTurn]);
+
+  const currentCombatPhase = game.combatQueue[0]?.phase ?? null;
+  const currentCombatResult = game.combatQueue[0]?.result ?? null;
+  useEffect(() => {
+    if (!currentCombatPhase) return;
+    const timer = window.setTimeout(() => {
+      const target = currentCombatPhase === "result" ? combatStageRef.current : combatTurnRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 40);
+    return () => window.clearTimeout(timer);
+  }, [currentCombatPhase, currentCombatResult]);
   const validTargets = useMemo(() => {
     if (game.pendingWait) {
       const agent = getAgent(game, game.pendingWait);
@@ -2739,18 +2776,18 @@ export default function Home() {
       <section className="battle-layout">
         <aside className="roster-panel panel">
           <div className="panel-heading">
-            <div><span className="eyebrow">ACTIVE SQUAD</span><h2>{SIDE_LABEL[game.turnSide]}</h2></div>
-            <span className="funds">¤ {activeTeam.funds}</span>
+            <div><span className="eyebrow">YOUR SQUAD</span><h2>{SIDE_LABEL[viewerSide]}</h2></div>
+            <span className="funds">¤ {viewerTeam.funds}</span>
           </div>
           <div className="action-meter" aria-label={`행동 ${game.actionsUsed}/3`}>
             {[0, 1, 2].map((value) => <i key={value} className={value < game.actionsUsed ? "spent" : ""} />)}
             <span>{3 - game.actionsUsed} ACTIONS</span>
           </div>
           <div className="agent-list">
-            {activeTeam.agents.map((agent, index) => {
+            {viewerTeam.agents.map((agent, index) => {
               const stats = finalStats(game, agent);
               return (
-                <button key={agent.id} className={`agent-row ${game.selectedAgentId === agent.id ? "selected" : ""} ${!agent.alive ? "dead" : ""}`} onClick={() => selectAgent(agent.id)}>
+                <button key={agent.id} className={`agent-row ${game.selectedAgentId === agent.id ? "selected" : ""} ${!agent.alive ? "dead" : ""}`} disabled={isAiControlledTurn} onClick={() => selectAgent(agent.id)}>
                   <span className={`agent-avatar role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`}><small>{index + 1}</small></span>
                   <span className="agent-copy"><strong>{agent.name}</strong><small>{ROLE_LABEL[agent.role]} · {WEAPONS[agent.weapon].name}</small></span>
                   <span className="agent-vitals"><b>{agent.hp + agent.armor}</b><small>A{stats.aim} / M{stats.move}</small></span>
@@ -2761,13 +2798,13 @@ export default function Home() {
           <div className="enemy-summary">
             <span className="eyebrow">OPPOSITION</span>
             <div className="enemy-pips">
-              {game.teams[otherSide(game.turnSide)].agents.map((agent) => { const revealed = agent.detected || game.revealedEnemyIds.includes(agent.id); return <i key={agent.id} className={`${agent.alive ? "" : "down"} ${revealed ? "detected" : ""}`} title={`${agent.name}${revealed ? " · 위치 공개" : ""}`} />; })}
+              {game.teams[otherSide(viewerSide)].agents.map((agent) => { const revealed = observed.has(agent.region) || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); return <i key={agent.id} className={`${agent.alive ? "" : "down"} ${revealed ? "detected" : ""}`} title={`${agent.name}${revealed ? " · 위치 공개" : ""}`} />; })}
             </div>
           </div>
-          <button className="shop-trigger" disabled={activeTeam.buyLocked || !!game.winner} onClick={() => setShowShop(true)}>
-            <span>장비 구매</span><small>{activeTeam.buyLocked ? "행동 시작 후 잠김" : "무기 · 방어구"}</small>
+          <button className="shop-trigger" disabled={isAiControlledTurn || viewerTeam.buyLocked || !!game.winner} onClick={() => setShowShop(true)}>
+            <span>장비 구매</span><small>{isAiControlledTurn ? "상대 작전 중" : viewerTeam.buyLocked ? "행동 시작 후 잠김" : "무기 · 방어구"}</small>
           </button>
-          <div className="deck-status"><span>덱 {activeTeam.deck.length}</span><span>버림 {activeTeam.discard.length}</span><span>손패 5</span></div>
+          <div className="deck-status"><span>덱 {viewerTeam.deck.length}</span><span>버림 {viewerTeam.discard.length}</span><span>손패 5</span></div>
         </aside>
 
         <section className="arena-column">
@@ -2786,36 +2823,38 @@ export default function Home() {
               const dy = end.y - start.y;
               const length = Math.sqrt(dx * dx + dy * dy);
               const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-              const smoke = game.smokes.some((item) => item.key === edgeKey(a, b));
-              return <span key={`${a}-${b}`} className={`map-edge ${smoke ? "smoked" : ""}`} style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
+              const smoke = game.smokes.find((item) => item.key === edgeKey(a, b));
+              const smokeKnown = !!smoke && (smoke.owner === viewerSide || observed.has(a) || observed.has(b));
+              return <span key={`${a}-${b}`} className={`map-edge ${smokeKnown ? "smoked" : ""}`} style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
             })}
             {mapWaitCones.map((cone) => <span key={cone.id} className={`wait-cone ${cone.hostile ? "hostile" : "friendly"} ${cone.lastKnown ? "last-known" : ""}`} style={connectionStyle(cone.from, cone.to)} title={`${cone.agentName} · ${cone.to}번 방향 대기`}><i /></span>)}
-            {game.lastSkillFx && (() => {
+            {game.lastSkillFx && (game.lastSkillFx.owner === viewerSide || observed.has(game.lastSkillFx.targetRegion)) && (() => {
               const fx = game.lastSkillFx;
               const target = REGIONS.find((region) => region.id === fx.targetRegion)!;
               return <div key={fx.id} className={`skill-map-fx team-${fx.owner} kind-${fx.kind} fx-${fx.skillId}`} aria-label={`${fx.label} 사용 연출`}>
-                {fx.fromRegion !== fx.targetRegion && <span className="skill-fx-flight" style={connectionStyle(fx.fromRegion, fx.targetRegion)}><i className={skillArtClass(fx.skillId)} /></span>}
+                {fx.fromRegion !== fx.targetRegion && (fx.owner === viewerSide || (observed.has(fx.fromRegion) && observed.has(fx.targetRegion))) && <span className="skill-fx-flight" style={connectionStyle(fx.fromRegion, fx.targetRegion)}><i className={skillArtClass(fx.skillId)} /></span>}
                 <span className="skill-fx-impact" style={{ left: `${target.x}%`, top: `${target.y}%` }}><i className={skillArtClass(fx.skillId)} /><b>{fx.label}</b></span>
               </div>;
             })()}
             {REGIONS.map((region) => {
-              const allies = activeTeam.agents.filter((agent) => agent.alive && agent.region === region.id);
-               const enemies = game.teams[otherSide(game.turnSide)].agents.filter((agent) => agent.alive && agent.region === region.id);
+              const allies = viewerTeam.agents.filter((agent) => agent.alive && agent.region === region.id);
+               const enemies = game.teams[otherSide(viewerSide)].agents.filter((agent) => agent.alive && agent.region === region.id);
                const observedNow = observed.has(region.id);
                const remembered = visible.has(region.id);
-               const memoriesHere = game.enemyMemories.filter((memory) => memory.observer === game.turnSide && memory.region === region.id);
+               const memoriesHere = allowLastKnown ? game.enemyMemories.filter((memory) => memory.observer === viewerSide && memory.region === region.id) : [];
                const rememberedEnemies = memoriesHere.map((memory) => getAgent(game, memory.agentId)).filter((agent): agent is Agent => !!agent?.alive && !agent.detected && !observed.has(agent.region));
                const shownEnemies = [...enemies.filter((agent) => {
-                 const memory = game.enemyMemories.find((item) => item.observer === game.turnSide && item.agentId === agent.id);
+                 const memory = allowLastKnown ? game.enemyMemories.find((item) => item.observer === viewerSide && item.agentId === agent.id) : undefined;
                  if (memory && memory.region !== agent.region && !observedNow && !agent.detected) return false;
-                 return observedNow || agent.detected || game.revealedEnemyIds.includes(agent.id);
+                 return observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id));
                }), ...rememberedEnemies.filter((agent) => !enemies.some((enemy) => enemy.id === agent.id))];
-              const revealedEnemies = shownEnemies.filter((agent) => game.revealedEnemyIds.includes(agent.id));
-              const isValid = validTargets.has(region.id);
-              const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === game.turnSide || observedNow));
-              const fire = game.fires.some((item) => item.region === region.id);
-              const stim = game.stims.some((item) => item.region === region.id);
-              const hasSpike = game.spike.region === region.id;
+              const revealedEnemies = shownEnemies.filter((agent) => observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)));
+              const isValid = !isAiControlledTurn && validTargets.has(region.id);
+              const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
+              const fire = game.fires.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
+              const stim = game.stims.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
+              const installedSpike = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+              const hasSpike = game.spike.region === region.id && (viewerSide === "attack" || observedNow || installedSpike);
               return (
                 <button
                   key={region.id}
@@ -2830,7 +2869,7 @@ export default function Home() {
                     {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${agentArtClass(agent.name)} ${game.selectedAgentId === agent.id ? "selected" : ""}`} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`} aria-label={`${agent.name} 지도 토큰`} />)}
                   </span>
                   <span className="unit-stack enemy-stack">
-                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = agent.detected || game.revealedEnemyIds.includes(agent.id); const lastKnown = !!memory && !agent.detected; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""}`} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{lastKnown && <small>잔상</small>}</i>; })}
+                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""}`} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{lastKnown && <small>잔상</small>}</i>; })}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}
                   {(devices.length > 0 || fire || stim || hasSpike) && <span className="effect-stack">
@@ -2846,12 +2885,12 @@ export default function Home() {
               <div><small>SPIKE</small><strong>{game.spike.status === "carried" ? "운반 중" : game.spike.status === "dropped" ? "회수 필요" : game.spike.status === "planting" ? "설치 진행" : game.spike.status === "planted" ? "설치됨" : game.spike.status === "half" ? "반 해체" : game.spike.status === "defusing" ? "최종 해체" : game.spike.status === "defused" ? "해체 완료" : "폭발"}</strong></div>
               {["planted", "half", "defusing"].includes(game.spike.status) && <b>{game.spike.explosion}</b>}
             </div>
-            {(game.pendingWait || game.targeting) && <div className="targeting-banner">
+            {!isAiControlledTurn && (game.pendingWait || game.targeting) && <div className="targeting-banner">
               <strong>{game.pendingWait ? "대기 방향 선택" : game.targeting?.kind === "control" ? "두 방향을 지정" : game.targeting?.kind === "special" ? `${game.targeting.special === "rush" ? "러쉬" : "커버"} 이동` : "스킬 목표 선택"}</strong>
               <span>청록색으로 표시된 구역을 선택하세요.</span>
               <button onClick={(event) => { event.stopPropagation(); if (game.pendingWait) skipWait(); else cancelTargeting(); }}>취소</button>
             </div>}
-            {game.pendingContact && pendingContactAgent && !combatScene && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
+            {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
               <header><span>VISUAL CONTACT // 거리 1</span><strong>{pendingContactAgent.name}이 적을 발견했습니다</strong><p>보이는 것만으로는 교전하지 않습니다. 카드 소모 없이 지금 교전을 시작할 수 있습니다.</p></header>
               <div>{pendingContactEnemies.map((enemy) => <button key={enemy.id} className="contact-engage" onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{regionName(enemy.region)} · 기본 우선도 3</small></span></button>)}</div>
               <button className="contact-skip" onClick={skipOptionalContact}><b>교전하지 않기</b><small>{game.pendingContact.source === "turn-start" ? "턴을 그대로 시작합니다" : "남은 이동·행동을 계속합니다"}</small></button>
@@ -2861,56 +2900,58 @@ export default function Home() {
           <div className="hand-zone">
             <div className="hand-label"><span>TACTICAL HAND</span><small>카드 선택 → 요원 선택 → 지도 구역 선택</small></div>
             <div className="card-row">
-              {activeTeam.hand.map((card, index) => {
-                const unusable = selectedAgent ? !canUseCard(card, selectedAgent) : false;
+              {viewerTeam.hand.map((card, index) => {
+                const unusable = displayedAgent ? !canUseCard(card, displayedAgent) : false;
                 return (
                   <button key={card.id} className={`action-card card-${card.kind} ${game.selectedCardId === card.id ? "selected" : ""} ${card.used ? "used" : ""}`} disabled={isAiControlledTurn || card.used || game.actionsUsed >= 3 || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner} onClick={() => selectCard(card)}>
                     <span className="card-index">0{index + 1}</span><span className="card-tag">{CARD_DATA[card.kind].tag}</span>
                     <strong>{CARD_DATA[card.kind].name}</strong><p>{CARD_DATA[card.kind].description}</p>
-                    <small className={unusable ? "blocked" : ""}>{unusable ? `${ROLE_LABEL[selectedAgent!.role]} 사용 불가` : `${card.source} 덱 제공`}</small>
+                    <small className={unusable ? "blocked" : ""}>{isAiControlledTurn ? "상대 작전 중 · 내 카드" : unusable ? `${ROLE_LABEL[displayedAgent!.role]} 사용 불가` : `${card.source} 덱 제공`}</small>
                   </button>
                 );
               })}
-              {game.turnSide === "attack" && game.cycle <= 2 && !activeTeam.rushUsed && <button className="special-card rush-card" onClick={() => startSpecial("rush")} disabled={isAiControlledTurn || !!game.targeting || !!game.pendingWait || !!game.pendingContact}><span>ROUND {game.cycle}</span><strong>러쉬</strong><p>한 구역 아군 전원을 인접 구역으로 이동</p></button>}
-              {game.turnSide === "defense" && activeTeam.cover && <button className="special-card cover-card" onClick={() => startSpecial("cover")} disabled={isAiControlledTurn || !!game.targeting || !!game.pendingWait || !!game.pendingContact}><span>ONE USE</span><strong>커버</strong><p>보관 가능한 단체 재진입 카드</p></button>}
+              {!isAiControlledTurn && viewerSide === "attack" && game.cycle <= 2 && !viewerTeam.rushUsed && <button className="special-card rush-card" onClick={() => startSpecial("rush")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact}><span>ROUND {game.cycle}</span><strong>러쉬</strong><p>한 구역 아군 전원을 인접 구역으로 이동</p></button>}
+              {!isAiControlledTurn && viewerSide === "defense" && viewerTeam.cover && <button className="special-card cover-card" onClick={() => startSpecial("cover")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact}><span>ONE USE</span><strong>커버</strong><p>보관 가능한 단체 재진입 카드</p></button>}
             </div>
           </div>
         </section>
 
         <aside className="intel-panel panel">
-          {selectedAgent ? <>
+          {displayedAgent ? <>
             <div className="selected-agent-head">
-              <span className={`large-avatar role-${selectedAgent.role} ${agentArtClass(selectedAgent.name)}`} aria-label={`${selectedAgent.name} 초상`} />
-              <div><span className="eyebrow">SELECTED AGENT</span><h2>{selectedAgent.name}</h2><p>{ROLE_LABEL[selectedAgent.role]} · {regionName(selectedAgent.region)}</p></div>
+              <span className={`large-avatar role-${displayedAgent.role} ${agentArtClass(displayedAgent.name)}`} aria-label={`${displayedAgent.name} 초상`} />
+              <div><span className="eyebrow">{isAiControlledTurn ? "YOUR AGENT" : "SELECTED AGENT"}</span><h2>{displayedAgent.name}</h2><p>{ROLE_LABEL[displayedAgent.role]} · {regionName(displayedAgent.region)}</p></div>
             </div>
             <div className="stat-grid">
-              <div><span>체력</span><strong>{selectedAgent.hp}/2</strong></div><div><span>방어</span><strong>{selectedAgent.armor}</strong></div>
-              <div><span>에임</span><strong>{finalStats(game, selectedAgent).aim}</strong></div><div><span>무빙</span><strong>{finalStats(game, selectedAgent).move}</strong></div>
+              <div><span>체력</span><strong>{displayedAgent.hp}/2</strong></div><div><span>방어</span><strong>{displayedAgent.armor}</strong></div>
+              <div><span>에임</span><strong>{finalStats(game, displayedAgent).aim}</strong></div><div><span>무빙</span><strong>{finalStats(game, displayedAgent).move}</strong></div>
             </div>
-            <div className="loadout-line"><div><span className="eyebrow">PRIMARY</span><strong>{WEAPONS[selectedAgent.weapon].name}</strong></div><div className="damage-chip">{WEAPONS[selectedAgent.weapon].body}<small>BODY</small> / {WEAPONS[selectedAgent.weapon].head}<small>HEAD</small></div></div>
-            <div className="extra-action-head"><span>추가행동</span><strong>{selectedAgent.extraActions}</strong></div>
-            {selectedCard && !selectedCard.used && !game.pendingContact && canUseCard(selectedCard, selectedAgent) && <button className="pre-action-button" onClick={commitPreAction}><span>카드 사용 전</span><strong>사전 추가행동 +1</strong><small>스킬·설치·줍기 후 선택한 카드 행동을 완료합니다.</small></button>}
-            {selectedCard?.used && selectedCard.committedAgentId === selectedAgent.id && <div className="committed-card-note"><span>COMMITTED</span><strong>{CARD_DATA[selectedCard.kind].name} 행동을 지도에서 완료하세요.</strong></div>}
+            <div className="loadout-line"><div><span className="eyebrow">PRIMARY</span><strong>{WEAPONS[displayedAgent.weapon].name}</strong></div><div className="damage-chip">{WEAPONS[displayedAgent.weapon].body}<small>BODY</small> / {WEAPONS[displayedAgent.weapon].head}<small>HEAD</small></div></div>
+            <div className="extra-action-head"><span>추가행동</span><strong>{displayedAgent.extraActions}</strong></div>
+            {!isAiControlledTurn && selectedAgent && selectedAgent.id === displayedAgent.id && selectedCard && !selectedCard.used && !game.pendingContact && canUseCard(selectedCard, selectedAgent) && <button className="pre-action-button" onClick={commitPreAction}><span>카드 사용 전</span><strong>사전 추가행동 +1</strong><small>스킬·설치·줍기 후 선택한 카드 행동을 완료합니다.</small></button>}
+            {!isAiControlledTurn && selectedAgent && selectedCard?.used && selectedCard.committedAgentId === selectedAgent.id && <div className="committed-card-note"><span>COMMITTED</span><strong>{CARD_DATA[selectedCard.kind].name} 행동을 지도에서 완료하세요.</strong></div>}
             <div className="skills-list">
-              {AGENTS[selectedAgent.name].skills.map((item) => (
-                <button key={item.id} disabled={isAiControlledTurn || selectedAgent.extraActions < 1 || (selectedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner} onClick={() => activateSkill(item)} title={item.description}>
-                  <span className={`skill-glyph ${skillArtClass(item.id)}`} aria-label={`${item.name} 아이콘`} /><span><strong>{item.name}</strong><small>{item.description}</small></span><b>×{selectedAgent.skills[item.id] ?? 0}</b>
+              {AGENTS[displayedAgent.name].skills.map((item) => (
+                <button key={item.id} disabled={isAiControlledTurn || displayedAgent.extraActions < 1 || (displayedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner} onClick={() => activateSkill(item)} title={item.description}>
+                  <span className={`skill-glyph ${skillArtClass(item.id)}`} aria-label={`${item.name} 아이콘`} /><span><strong>{item.name}</strong><small>{item.description}</small></span><b>×{displayedAgent.skills[item.id] ?? 0}</b>
                 </button>
               ))}
             </div>
             <div className="quick-actions">
-              {canPlant && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("plant")}>◆ 스파이크 설치</button>}
-              {canHalf && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("half")}>◇ 반 해체</button>}
-              {canFinal && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("final")}>◇ 최종 해체</button>}
-              {droppedHere && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("pickup")}>{WEAPONS[droppedHere.weapon].name} 줍기</button>}
-              {selectedAgent.team === "attack" && game.spike.status === "dropped" && game.spike.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike")}>◆ 스파이크 회수</button>}
-              {cameraTargets.map((enemy) => <button key={`cam-${enemy.id}`} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => cameraDetect(enemy.id)}>◉ 스파이캠 탐지 · {enemy.region}번</button>)}
-              {nearbyEnemyDeployables.map((device) => <button key={device.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => destroyDeployable(device.id)}>⌁ {device.kind} 파괴 · {device.region}번</button>)}
+              {!isAiControlledTurn && selectedAgent && <>
+                {canPlant && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("plant")}>◆ 스파이크 설치</button>}
+                {canHalf && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("half")}>◇ 반 해체</button>}
+                {canFinal && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("final")}>◇ 최종 해체</button>}
+                {droppedHere && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("pickup")}>{WEAPONS[droppedHere.weapon].name} 줍기</button>}
+                {selectedAgent.team === "attack" && game.spike.status === "dropped" && game.spike.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike")}>◆ 스파이크 회수</button>}
+                {cameraTargets.map((enemy) => <button key={`cam-${enemy.id}`} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => cameraDetect(enemy.id)}>◉ 스파이캠 탐지 · {enemy.region}번</button>)}
+                {nearbyEnemyDeployables.map((device) => <button key={device.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => destroyDeployable(device.id)}>⌁ {device.kind} 파괴 · {device.region}번</button>)}
+              </>}
             </div>
           </> : <div className="empty-inspector">요원을 선택하세요.</div>}
           <div className="combat-log">
             <div className="log-heading"><span>전투 기록</span><i>LIVE</i></div>
-            <ol>{game.log.map((entry, index) => <li key={`${entry}-${index}`}><span>{String(game.log.length - index).padStart(2, "0")}</span>{entry}</li>)}</ol>
+            {isAiControlledTurn ? <div className="opponent-turn-note"><b>상대 작전 진행 중</b><span>아군의 거리 1 시야와 직접 교전으로 확인되는 정보만 표시합니다.</span></div> : <ol>{viewerLog.map((entry, index) => <li key={`${entry}-${index}`}><span>{String(viewerLog.length - index).padStart(2, "0")}</span>{entry}</li>)}</ol>}
           </div>
           <button className="end-turn" disabled={isAiControlledTurn || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner || !!combatScene || !!pendingAftershock || !!(selectedCard?.used && selectedCard.committedAgentId)} onClick={endTurn}><span>턴 종료</span><small>{game.actionsUsed}/3 카드 사용 · 미사용 카드도 버림</small></button>
         </aside>
@@ -2922,9 +2963,9 @@ export default function Home() {
 
       {game.targeting?.kind === "skill" && ((game.targeting.candidateAgentIds?.length ?? 0) > 0 || (game.targeting.candidateDeployableIds?.length ?? 0) > 0) && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">TARGET SELECT</span><h2>스킬 목표 선택</h2><div className="choice-grid">{game.targeting.candidateAgentIds?.map((id) => { const target = getAgent(game, id); return target ? <button key={id} onClick={() => resolveSkillCandidate(id, "agent")}><b>{target.name}</b><small>{target.team === game.turnSide ? "아군" : "탐지된 적"} · {target.region}번</small></button> : null; })}{game.targeting.candidateDeployableIds?.map((id) => { const device = game.deployables.find((item) => item.id === id); return device ? <button key={id} onClick={() => resolveSkillCandidate(id, "deployable")}><b>{device.kind}</b><small>설치물 · {device.region}번</small></button> : null; })}</div><button className="choice-cancel" onClick={cancelTargeting}>취소</button></section></div>}
 
-      {combatScene && <div className="modal-backdrop combat-backdrop"><section className="combat-modal" aria-label="전투 진행" aria-live="polite">
+      {combatScene && <div className="modal-backdrop combat-backdrop"><section className={`combat-modal phase-${combatScene.phase}`} aria-label="전투 진행" aria-live="polite">
         <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>지속 교전 · {combatScene.round}회차</h2></div><div><span>GAME TURN</span><b>{SIDE_LABEL[game.turnSide]} · 전술 {game.cycle}</b></div></header>
-        <div className={`combat-turn-banner focus-${combatFocusAgent?.team ?? game.turnSide}`}>
+        <div ref={combatTurnRef} className={`combat-turn-banner focus-${combatFocusAgent?.team ?? game.turnSide}`}>
           <div className={`combat-game-turn ${game.turnSide}`}><span>현재 게임 턴</span><b>{SIDE_LABEL[game.turnSide]}</b><small>행동카드 {game.actionsUsed}/3 사용</small></div>
           <i>›</i>
           <div className="combat-actor-turn"><span>{combatScene.phase === "encounter" ? "적 접촉" : combatScene.phase === "tailwind" ? "반응 선택" : combatScene.phase === "choice" ? "지금 행동" : combatScene.resolved ? "교전 결과" : "다음 행동"}</span><strong>{combatScene.phase === "encounter" ? `${combatScene.mover.name} ↔ ${combatScene.holder.name}` : combatFocusAgent ? `${SIDE_LABEL[combatFocusAgent.team]} · ${combatFocusAgent.name}` : "결과 확인"}</strong><small>{combatScene.phase === "encounter" ? "지도와 대기 방향을 확인한 뒤 교전을 시작하세요" : combatScene.phase === "choice" ? "공격·이탈 중 선택하세요" : combatScene.phase === "tailwind" ? "순풍 이동지를 선택하세요" : combatScene.resolved ? "아래 버튼으로 교전을 정리하세요" : `${nextCombatActor?.name ?? "다음 요원"} 차례가 이어집니다`}</small></div>
@@ -2941,28 +2982,28 @@ export default function Home() {
           <div className="combat-mini-map">
             <div className="map-coordinate-layer combat-coordinate-layer">
             <div className="combat-mini-map-image" />
-            {EDGES.map(([a, b]) => <span key={`combat-edge-${a}-${b}`} className={`map-edge ${game.smokes.some((item) => item.key === edgeKey(a, b)) ? "smoked" : ""}`} style={connectionStyle(a, b)} />)}
+            {EDGES.map(([a, b]) => { const smoke = game.smokes.find((item) => item.key === edgeKey(a, b)); const smokeKnown = !!smoke && (smoke.owner === viewerSide || observed.has(a) || observed.has(b)); return <span key={`combat-edge-${a}-${b}`} className={`map-edge ${smokeKnown ? "smoked" : ""}`} style={connectionStyle(a, b)} />; })}
             {mapWaitCones.map((cone) => <span key={`combat-${cone.id}`} className={`wait-cone ${cone.hostile ? "hostile" : "friendly"} ${cone.lastKnown ? "last-known" : ""}`} style={connectionStyle(cone.from, cone.to)}><i /></span>)}
             {REGIONS.map((region) => {
-              const friendlies = game.teams[game.turnSide].agents.filter((agent) => agent.alive && agent.region === region.id);
-              const knownEnemies = game.teams[otherSide(game.turnSide)].agents.filter((agent) => {
+              const friendlies = viewerTeam.agents.filter((agent) => agent.alive && agent.region === region.id);
+              const knownEnemies = game.teams[otherSide(viewerSide)].agents.filter((agent) => {
                 if (!agent.alive) return false;
-                const memory = game.enemyMemories.find((item) => item.observer === game.turnSide && item.agentId === agent.id);
+                const memory = allowLastKnown ? game.enemyMemories.find((item) => item.observer === viewerSide && item.agentId === agent.id) : undefined;
                 const displayRegion = memory && !observed.has(agent.region) && !agent.detected ? memory.region : agent.region;
-                const known = combatantIds.has(agent.id) || observed.has(agent.region) || agent.detected || game.revealedEnemyIds.includes(agent.id) || !!memory;
+                const known = combatantIds.has(agent.id) || observed.has(agent.region) || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)) || !!memory;
                 return known && displayRegion === region.id;
               });
               const engaged = region.id === combatScene.mover.region || region.id === combatScene.holder.region;
               return <span key={`combat-node-${region.id}`} className={`combat-map-node ${engaged ? "engaged" : ""} ${region.site ? "site" : ""}`} style={{ left: `${region.x}%`, top: `${region.y}%` }}>
                 <b>{region.id}</b><small>{region.site ?? ""}</small>
-                <i className="combat-map-units">{friendlies.map((agent) => <em key={agent.id} className={`mini-face friendly ${agentArtClass(agent.name)}`} title={`${agent.name} · ${agent.region}번`} />)}{knownEnemies.map((agent) => { const memory = game.enemyMemories.find((item) => item.observer === game.turnSide && item.agentId === agent.id); const ghost = !!memory && !observed.has(agent.region) && !agent.detected && !combatantIds.has(agent.id); return <em key={agent.id} className={`mini-face hostile ${ghost ? "ghost" : ""} ${agentArtClass(agent.name)}`} title={`${agent.name}${ghost ? " · 마지막 확인" : ""}`} />; })}</i>
+                <i className="combat-map-units">{friendlies.map((agent) => <em key={agent.id} className={`mini-face friendly ${agentArtClass(agent.name)}`} title={`${agent.name} · ${agent.region}번`} />)}{knownEnemies.map((agent) => { const memory = allowLastKnown ? game.enemyMemories.find((item) => item.observer === viewerSide && item.agentId === agent.id) : undefined; const ghost = allowLastKnown && !!memory && !observed.has(agent.region) && !agent.detected && !combatantIds.has(agent.id); return <em key={agent.id} className={`mini-face hostile ${ghost ? "ghost" : ""} ${agentArtClass(agent.name)}`} title={`${agent.name}${ghost ? " · 마지막 확인" : ""}`} />; })}</i>
               </span>;
             })}
             </div>
             <div className="combat-map-focus"><span>CONTACT</span><b>{combatScene.mover.region} ↔ {combatScene.holder.region}</b></div>
           </div>
         </section>
-        <div className="combat-stage">
+        <div className="combat-stage" ref={combatStageRef}>
           {([combatScene.mover, combatScene.holder] as CombatFighterView[]).map((fighter, index) => {
             const shot = fighter.shot;
             const opponentShot = index === 0 ? combatScene.holder.shot : combatScene.mover.shot;
@@ -2998,19 +3039,24 @@ export default function Home() {
             {(["defense", "attack"] as Side[]).map((side) => <article key={side} className={`combat-team-intel ${side}`}>
               <h4><span>{side === "defense" ? "DEF" : "ATK"}</span>{SIDE_LABEL[side]}<b>{game.teams[side].agents.filter((agent) => agent.alive).length}명 생존</b></h4>
               {game.teams[side].agents.map((agent) => {
-                const known = side === game.turnSide || combatantIds.has(agent.id) || agent.detected || game.revealedEnemyIds.includes(agent.id) || observed.has(agent.region);
-                const stats = known ? finalStats(game, agent) : null;
+                const memory = allowLastKnown ? game.enemyMemories.find((item) => item.observer === viewerSide && item.agentId === agent.id) : undefined;
+                const currentlyKnown = side === viewerSide || combatantIds.has(agent.id) || agent.detected || observed.has(agent.region);
+                const known = currentlyKnown || !!memory || (allowLastKnown && game.revealedEnemyIds.includes(agent.id));
+                const displayRegion = memory && !currentlyKnown ? memory.region : agent.region;
+                const displayWaitDirs = memory && !currentlyKnown ? memory.waitDirs : agent.waitDirs;
+                const stats = currentlyKnown ? finalStats(game, agent) : null;
                 const flags = [
                   !agent.alive ? "제거" : "",
-                  known && agent.waitDirs.length ? `대기 ${agent.waitDirs.join("·")}` : "",
-                  known && agent.detected ? "탐지" : "",
-                  known && agent.status.vulnerable ? "취약" : "",
-                  known && isChanneling(game, agent) ? game.spike.status === "planting" ? "설치 중" : "해체 중" : "",
+                  known && displayWaitDirs.length ? `대기 ${displayWaitDirs.join("·")}` : "",
+                  memory && !currentlyKnown ? "마지막 확인" : "",
+                  currentlyKnown && agent.detected ? "탐지" : "",
+                  currentlyKnown && agent.status.vulnerable ? "취약" : "",
+                  currentlyKnown && isChanneling(game, agent) ? game.spike.status === "planting" ? "설치 중" : "해체 중" : "",
                 ].filter(Boolean);
                 return <div key={agent.id} className={`combat-intel-row ${agent.alive ? "" : "down"} ${combatantIds.has(agent.id) ? "engaged" : ""} ${known ? "known" : "unknown"}`}>
                   <i className={`role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} />
-                  <span><strong>{agent.name}</strong><small>{known ? `${agent.region}번 · ${WEAPONS[agent.weapon].name}` : "위치·장비 미확인"}</small></span>
-                  <b>{known ? agent.alive ? `HP ${agent.hp}+${agent.armor}` : "제거" : agent.alive ? "생존" : "제거"}<small>{stats ? `A${stats.aim} / M${stats.move}` : "NO DATA"}</small></b>
+                  <span><strong>{agent.name}</strong><small>{known ? `${displayRegion}번 · ${WEAPONS[agent.weapon].name}` : "위치·장비 미확인"}</small></span>
+                  <b>{currentlyKnown ? agent.alive ? `HP ${agent.hp}+${agent.armor}` : "제거" : agent.alive ? "생존" : "제거"}<small>{stats ? `A${stats.aim} / M${stats.move}` : "NO DATA"}</small></b>
                   <em>{flags.length ? flags.join(" · ") : known ? "대기 없음" : "정보 없음"}</em>
                 </div>;
               })}
@@ -3021,7 +3067,7 @@ export default function Home() {
         {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>접촉 확인 · 교전 개시</span><small>우선도와 전술 맵을 확인했습니다</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small></button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}<div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
-      {showShop && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
+      {showShop && !isAiControlledTurn && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">TEAM ARMORY</span><h2>{selectedAgent?.name} 장비 구매</h2></div><div><strong>¤ {activeTeam.funds}</strong><button onClick={() => setShowShop(false)}>닫기</button></div></div>
         <p className="shop-note">매치 1라운드: 클래식과 셰리프만 해금 · 구매 자금은 팀 공동입니다. 기존 장비 환불은 없습니다.</p>
         <div className="weapon-grid">{Object.values(WEAPONS).map((weapon) => <button key={weapon.id} className={selectedAgent?.weapon === weapon.id ? "equipped" : ""} disabled={weapon.unlock > game.matchRound || weapon.price > activeTeam.funds || activeTeam.buyLocked} onClick={() => buyWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "RFL"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{weapon.price ? `${weapon.price}원` : "기본"}</b></button>)}</div>

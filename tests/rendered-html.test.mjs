@@ -63,7 +63,7 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /enemyMemories: EnemyMemory\[\]/);
   assert.match(page, /function rememberEnemy\([\s\S]*game\.revealedEnemyIds\.push\(enemy\.id\)/);
   assert.doesNotMatch(page, /function rememberEnemy\([\s\S]{0,700}\bmover\.team/);
-  assert.match(page, /known && isChanneling\(game, agent\)/);
+  assert.match(page, /currentlyKnown && isChanneling\(game, agent\)/);
   assert.doesNotMatch(page, /\bisProgressing\(/);
   assert.match(page, /rememberEnemy\(draft, draft\.turnSide, enemyToRemember\)/);
   assert.match(page, /memory\?\.waitDirs \?\? agent\.waitDirs/);
@@ -107,4 +107,25 @@ test("distance-one sight is optional while same-region and waiting contacts stay
   assert.match(page, /path\.length !== 2/);
   assert.match(page, /game\.pendingContact =/);
   assert.match(page, /카드 소모 없이 교전 여부를 선택하세요/);
+});
+
+test("AI turns keep the human viewer perspective and hide stale enemy intel", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /interface VisibilityContext/);
+  assert.match(page, /const viewerSide = aiSide \? otherSide\(aiSide\) : actorSide/);
+  assert.match(page, /const allowLastKnown = !aiSide \|\| actorSide === viewerSide/);
+  assert.match(page, /function observedRegions\(game: GameState, observer: Side\)/);
+  assert.match(page, /if \(!context\.allowLastKnown\) return visible/);
+  assert.match(page, /const viewerTeam = game\.teams\[viewerSide\]/);
+  assert.match(page, /const viewerLog = useMemo/);
+  assert.match(page, /hiddenAgentNames\.some\(\(name\) => entry\.includes\(name\)\)/);
+  assert.match(page, /상대 작전 진행 중/);
+  assert.match(page, /game\.lastSkillFx\.owner === viewerSide \|\| observed\.has\(game\.lastSkillFx\.targetRegion\)/);
+  assert.match(css, /combat-modal > \.combat-actions, \.combat-modal > \.combat-continue \{ order: 5/);
+  assert.match(css, /combat-modal > \.combat-map-overview \{ order: 8/);
+  assert.match(page, /combatTurnRef\.current/);
+  assert.match(page, /target\?\.scrollIntoView/);
 });
