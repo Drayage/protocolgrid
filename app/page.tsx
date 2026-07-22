@@ -149,6 +149,32 @@ interface TradeState {
   sourceId: string;
 }
 
+interface CombatFighterView {
+  id: string;
+  name: string;
+  role: Role;
+  weapon: WeaponId;
+  region: number;
+  priority: number;
+  hpBefore: number;
+  hpAfter: number;
+  armorBefore: number;
+  armorAfter: number;
+  shot: ShotResult | null;
+}
+
+interface CombatScene {
+  id: string;
+  mover: CombatFighterView;
+  holder: CombatFighterView;
+  range: number;
+  waiting: boolean;
+  simultaneous: boolean;
+  evaded: boolean;
+  result: string;
+  waitDirections: number[];
+}
+
 interface GameState {
   matchRound: number;
   cycle: number;
@@ -166,6 +192,8 @@ interface GameState {
   stims: ZoneEffect[];
   smokes: SmokeEffect[];
   trade: TradeState | null;
+  combatQueue: CombatScene[];
+  revealedEnemyIds: string[];
   waitCounter: number;
   log: string[];
   winner: Side | null;
@@ -324,9 +352,12 @@ function createTeam(side: Side, names: string[], seed: number): TeamState {
   };
 }
 
-function createInitialGame(): GameState {
-  const attack = createTeam("attack", ["제트", "레이즈", "소바", "브리치", "브림스톤"], 17);
-  const defense = createTeam("defense", ["피닉스", "네온", "사이퍼", "킬조이", "오멘"], 29);
+function createInitialGame(
+  attackNames = ["제트", "레이즈", "소바", "브리치", "브림스톤"],
+  defenseNames = ["피닉스", "네온", "사이퍼", "킬조이", "오멘"],
+): GameState {
+  const attack = createTeam("attack", attackNames, 17);
+  const defense = createTeam("defense", defenseNames, 29);
   return {
     matchRound: 3,
     cycle: 1,
@@ -344,6 +375,8 @@ function createInitialGame(): GameState {
     stims: [],
     smokes: [],
     trade: null,
+    combatQueue: [],
+    revealedEnemyIds: [],
     waitCounter: 0,
     log: ["수비팀이 먼저 행동합니다.", "작전 개시 — 손패에서 카드 3장을 사용하세요."],
     winner: null,
@@ -505,9 +538,29 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     if (path.length > 1 && isSmokeBlocked(game, path[0], path[1])) return;
   }
 
+  if (!game.revealedEnemyIds.includes(enemy.id)) game.revealedEnemyIds.push(enemy.id);
+  const revealedWaitDirs = [...enemy.waitDirs];
+  const moverBefore = { hp: mover.hp, armor: mover.armor };
+  const enemyBefore = { hp: enemy.hp, armor: enemy.armor };
+  const baseMoverStats = finalStats(game, mover);
+  const baseEnemyStats = finalStats(game, enemy);
+  const baseMoverPrio = Math.max(1, moverPriority + mover.status.priorityPenalty - baseMoverStats.priorityBoost);
+  const baseEnemyPrio = Math.max(1, (waiting ? 1 : 3) + enemy.status.priorityPenalty - baseEnemyStats.priorityBoost);
+
   if (mover.status.evadeReady) {
     mover.status.evadeReady = false;
     addLog(game, `${mover.name}의 순풍 — ${enemy.name}의 첫 공격 각을 회피했습니다.`);
+    game.combatQueue.push({
+      id: `combat-${Date.now()}-${game.combatQueue.length}`,
+      mover: { id: mover.id, name: mover.name, role: mover.role, weapon: mover.weapon, region: mover.region, priority: baseMoverPrio, hpBefore: moverBefore.hp, hpAfter: mover.hp, armorBefore: moverBefore.armor, armorAfter: mover.armor, shot: null },
+      holder: { id: enemy.id, name: enemy.name, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: baseEnemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: null },
+      range,
+      waiting,
+      simultaneous: false,
+      evaded: true,
+      result: `${mover.name}이 순풍으로 첫 공격을 회피했습니다.`,
+      waitDirections: revealedWaitDirs,
+    });
     return;
   }
 
@@ -548,6 +601,24 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     shotLabel(mover, enemy, moverShot);
     shotLabel(enemy, mover, enemyShot);
   }
+  const result = !mover.alive && !enemy.alive
+    ? "동시 교전으로 두 요원이 모두 제거되었습니다."
+    : !mover.alive
+      ? `${enemy.name}이 교전을 승리했습니다.`
+      : !enemy.alive
+        ? `${mover.name}이 교전을 승리했습니다.`
+        : "양측 모두 생존했습니다.";
+  game.combatQueue.push({
+    id: `combat-${Date.now()}-${game.combatQueue.length}`,
+    mover: { id: mover.id, name: mover.name, role: mover.role, weapon: mover.weapon, region: mover.region, priority: moverPrio, hpBefore: moverBefore.hp, hpAfter: mover.hp, armorBefore: moverBefore.armor, armorAfter: mover.armor, shot: moverShot },
+    holder: { id: enemy.id, name: enemy.name, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: enemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: enemyShot },
+    range,
+    waiting,
+    simultaneous: moverPrio === enemyPrio,
+    evaded: false,
+    result,
+    waitDirections: revealedWaitDirs,
+  });
   checkWinner(game);
 }
 
@@ -683,6 +754,7 @@ function visibleRegions(game: GameState): Set<number> {
     });
   }
   for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => item.detected)) visible.add(enemy.region);
+  for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => game.revealedEnemyIds.includes(item.id))) visible.add(enemy.region);
   for (const camera of game.deployables.filter((item) => item.kind === "camera" && item.owner === game.turnSide)) {
     visible.add(camera.region);
     (GRAPH.get(camera.region) ?? []).forEach((region) => visible.add(region));
@@ -694,7 +766,130 @@ function regionName(id: number) {
   return REGIONS.find((region) => region.id === id)?.name ?? `${id}번 구역`;
 }
 
+function deckComposition(names: string[]) {
+  const counts: Record<CardKind, number> = { basic: 0, peek: 0, entry: 0, follow: 0, control: 0 };
+  names.forEach((name) => roleCards(AGENTS[name].role).forEach((kind) => { counts[kind] += 1; }));
+  return counts;
+}
+
+function TitleScreen({ onStart }: { onStart: () => void }) {
+  return (
+    <main className="setup-screen title-screen">
+      <div className="title-noise" />
+      <section className="title-hero">
+        <div className="title-kicker"><span /> 5 VS 5 TACTICAL CARD GAME</div>
+        <div className="title-lockup"><span className="title-v">V</span><div><h1>PROTOCOL:<br /><b>GRID</b></h1><p>발로란트식 전술 카드게임</p></div></div>
+        <p className="title-copy">요원을 고르고, 15장의 역할 덱을 완성하고, 정보를 교환하며 두 개의 사이트를 두고 싸우세요.</p>
+        <button className="primary-cta" onClick={onStart}><span>새 작전</span><b>게임 시작</b></button>
+        <div className="title-roadmap"><span><i className="ready" /> PC 핫시트 플레이</span><span><i /> 모바일 전용 UI · 예정</span><span><i /> AI 상대 · 예정</span></div>
+      </section>
+      <aside className="title-map-card">
+        <div className="title-map-image" />
+        <div className="title-map-copy"><span>MAP // GRID-01</span><strong>17개 전술 구역</strong><p>2개 사이트 · 26개 연결 · 사운드 정보 없음</p></div>
+      </aside>
+      <footer className="title-footer"><span>BUILD 0.2 // COMBAT REVEAL UPDATE</span><span>한 화면에서 두 플레이어가 번갈아 진행합니다</span></footer>
+    </main>
+  );
+}
+
+interface SelectionScreenProps {
+  attackPick: string[];
+  defensePick: string[];
+  pickingSide: Side;
+  onPickingSide: (side: Side) => void;
+  onToggle: (name: string) => void;
+  onRecommended: () => void;
+  onBack: () => void;
+  onConfirm: () => void;
+}
+
+function SelectionScreen(props: SelectionScreenProps) {
+  const current = props.pickingSide === "attack" ? props.attackPick : props.defensePick;
+  const attackDeck = deckComposition(props.attackPick);
+  const defenseDeck = deckComposition(props.defensePick);
+  const deckLine = (counts: Record<CardKind, number>) => (Object.keys(counts) as CardKind[]).filter((kind) => counts[kind] > 0);
+  return (
+    <main className="setup-screen selection-screen">
+      <header className="setup-topbar"><button onClick={props.onBack}>← 타이틀</button><div><span>STEP 01</span><strong>요원 선택 · 덱 구성</strong></div><button onClick={props.onRecommended}>추천 조합</button></header>
+      <section className="selection-body">
+        <div className="selection-main">
+          <div className="side-tabs">
+            {(["attack", "defense"] as Side[]).map((side) => {
+              const picks = side === "attack" ? props.attackPick : props.defensePick;
+              return <button key={side} className={`${props.pickingSide === side ? "active" : ""} tab-${side}`} onClick={() => props.onPickingSide(side)}><span>{side === "attack" ? "ATK" : "DEF"}</span><strong>{SIDE_LABEL[side]}</strong><b>{picks.length}/5</b></button>;
+            })}
+          </div>
+          <div className="selection-heading"><div><span className="eyebrow">SELECT YOUR AGENTS</span><h2>{SIDE_LABEL[props.pickingSide]} 조합</h2></div><p>같은 팀 안에서는 요원이 중복될 수 없습니다. 요원 한 명이 역할에 맞는 행동카드 3장을 제공합니다.</p></div>
+          <div className="agent-select-grid">
+            {Object.values(AGENTS).map((agent, index) => {
+              const picked = current.includes(agent.name);
+              const attackIndex = props.attackPick.indexOf(agent.name);
+              const defenseIndex = props.defensePick.indexOf(agent.name);
+              return <button key={agent.name} className={`select-agent-card role-${agent.role} ${picked ? "picked" : ""}`} onClick={() => props.onToggle(agent.name)}>
+                <span className="select-number">{String(index + 1).padStart(2, "0")}</span><span className="select-avatar">{agent.name.slice(0, 1)}</span>
+                <span className="select-agent-copy"><small>{ROLE_LABEL[agent.role]}</small><strong>{agent.name}</strong><em>{roleCards(agent.role).map((kind) => CARD_DATA[kind].name).join(" · ")}</em></span>
+                <span className="pick-badges">{attackIndex >= 0 && <i className="atk">A{attackIndex + 1}</i>}{defenseIndex >= 0 && <i className="def">D{defenseIndex + 1}</i>}</span>
+              </button>;
+            })}
+          </div>
+        </div>
+        <aside className="deck-builder">
+          <span className="eyebrow">LIVE DECK BUILDER</span><h2>15장 덱 구성</h2>
+          {(["attack", "defense"] as Side[]).map((side) => {
+            const picks = side === "attack" ? props.attackPick : props.defensePick;
+            const deck = side === "attack" ? attackDeck : defenseDeck;
+            return <article key={side} className={`deck-preview deck-${side}`}><header><div><span>{side === "attack" ? "ATK" : "DEF"}</span><strong>{SIDE_LABEL[side]}</strong></div><b>{picks.length * 3}/15</b></header>
+              <div className="picked-lineup">{Array.from({ length: 5 }).map((_, index) => <i key={index} className={picks[index] ? `role-${AGENTS[picks[index]].role}` : "empty"}>{picks[index]?.slice(0, 1) ?? "+"}</i>)}</div>
+              <div className="deck-card-counts">{deckLine(deck).map((kind) => <span key={kind} className={`count-${kind}`}><b>{deck[kind]}</b>{CARD_DATA[kind].name}</span>)}</div>
+              <p>{picks.length === 5 ? "덱 구성 완료" : `요원 ${5 - picks.length}명을 더 선택하세요`}</p>
+            </article>;
+          })}
+          <div className="deck-rule"><b>역할 제한</b><span>엔트리 → 타격대</span><span>추종 → 척후대·전략가</span><span>지역 장악 → 감시자</span></div>
+          <button className="confirm-lineup" disabled={props.attackPick.length !== 5 || props.defensePick.length !== 5} onClick={props.onConfirm}><span>STEP 02</span><strong>수비 배치로 이동</strong></button>
+        </aside>
+      </section>
+    </main>
+  );
+}
+
+interface DeploymentScreenProps {
+  game: GameState;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onPlace: (region: number) => void;
+  onBack: () => void;
+  onStart: () => void;
+}
+
+function DeploymentScreen({ game, selectedId, onSelect, onPlace, onBack, onStart }: DeploymentScreenProps) {
+  const defenders = game.teams.defense.agents;
+  const allowed = [7, 10, 13];
+  return (
+    <main className="setup-screen deployment-screen">
+      <header className="setup-topbar"><button onClick={onBack}>← 요원 선택</button><div><span>STEP 02</span><strong>수비팀 사전 배치</strong></div><span className="deck-locked">15장 덱 잠금 완료</span></header>
+      <section className="deployment-body">
+        <aside className="deployment-roster"><span className="eyebrow">DEFENDER LINEUP</span><h2>요원 배치</h2><p>각 요원은 수비 시작 지점에서 연결된 구역으로 최대 1칸 이동할 수 있습니다. 같은 구역에 여러 명을 배치할 수 있습니다.</p>
+          <div>{defenders.map((agent) => <button key={agent.id} className={selectedId === agent.id ? "selected" : ""} onClick={() => onSelect(agent.id)}><i className={`role-${agent.role}`}>{agent.name.slice(0, 1)}</i><span><strong>{agent.name}</strong><small>{ROLE_LABEL[agent.role]}</small></span><b>{agent.region}번</b></button>)}</div>
+          <div className="placement-rule"><span>이동 가능</span><b>7 ↔ 10</b><b>7 ↔ 13</b></div>
+        </aside>
+        <div className="deployment-map">
+          <div className="deployment-map-image" /><div className="deployment-vignette" />
+          {EDGES.map(([a, b]) => { const start = REGIONS.find((region) => region.id === a)!; const end = REGIONS.find((region) => region.id === b)!; const dx = end.x - start.x; const dy = end.y - start.y; const length = Math.sqrt(dx * dx + dy * dy); const angle = Math.atan2(dy, dx) * 180 / Math.PI; return <span key={`${a}-${b}`} className="map-edge" style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />; })}
+          {REGIONS.map((region) => { const units = defenders.filter((agent) => agent.region === region.id); const valid = allowed.includes(region.id); return <button key={region.id} disabled={!valid} className={`deployment-node ${valid ? "valid" : ""}`} style={{ left: `${region.x}%`, top: `${region.y}%` }} onClick={() => onPlace(region.id)}><span>{region.id}</span>{valid && <small>{regionName(region.id)}</small>}<i>{units.map((agent) => <b key={agent.id} className={`role-${agent.role}`}>{agent.name.slice(0, 1)}</b>)}</i></button>; })}
+          <div className="deployment-callout"><span>수비팀 배치 범위</span><strong>시작 지점과 인접 1칸</strong><p>배치를 확정하면 수비팀의 첫 행동 턴이 시작됩니다.</p></div>
+        </div>
+        <aside className="deployment-summary"><span className="eyebrow">READY CHECK</span><h2>작전 준비</h2><div className="versus-line"><article><span>ATK</span>{game.teams.attack.agents.map((agent) => <i key={agent.id}>{agent.name.slice(0, 1)}</i>)}</article><b>VS</b><article><span>DEF</span>{defenders.map((agent) => <i key={agent.id}>{agent.name.slice(0, 1)}</i>)}</article></div><ul><li><i /> 공격팀 시작 위치 1번</li><li><i /> 수비팀 배치 확정</li><li><i /> 수비팀 선행 턴</li></ul><button onClick={onStart}><span>DEPLOYMENT READY</span><strong>작전 시작</strong></button></aside>
+      </section>
+    </main>
+  );
+}
+
 export default function Home() {
+  const [stage, setStage] = useState<"title" | "select" | "deploy" | "play">("title");
+  const [attackPick, setAttackPick] = useState<string[]>([]);
+  const [defensePick, setDefensePick] = useState<string[]>([]);
+  const [pickingSide, setPickingSide] = useState<Side>("attack");
+  const [deploymentAgentId, setDeploymentAgentId] = useState<string | null>(null);
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [showHelp, setShowHelp] = useState(false);
   const [showShop, setShowShop] = useState(false);
@@ -736,6 +931,49 @@ export default function Home() {
       return draft;
     });
   };
+
+  const toggleLineupAgent = (name: string) => {
+    const update = pickingSide === "attack" ? setAttackPick : setDefensePick;
+    const current = pickingSide === "attack" ? attackPick : defensePick;
+    if (current.includes(name)) update(current.filter((item) => item !== name));
+    else if (current.length < 5) update([...current, name]);
+  };
+
+  const recommendedLineups = () => {
+    setAttackPick(["제트", "레이즈", "소바", "브리치", "브림스톤"]);
+    setDefensePick(["피닉스", "네온", "사이퍼", "킬조이", "오멘"]);
+  };
+
+  const confirmLineups = () => {
+    if (attackPick.length !== 5 || defensePick.length !== 5) return;
+    const next = createInitialGame(attackPick, defensePick);
+    setGame(next);
+    setDeploymentAgentId(next.teams.defense.agents[0]?.id ?? null);
+    setStage("deploy");
+  };
+
+  const placeDefender = (region: number) => {
+    if (!deploymentAgentId || ![7, 10, 13].includes(region)) return;
+    mutate((draft) => {
+      const agent = getAgent(draft, deploymentAgentId);
+      if (agent?.team === "defense") agent.region = region;
+    });
+  };
+
+  const restartToTitle = () => {
+    setGame(createInitialGame());
+    setAttackPick([]);
+    setDefensePick([]);
+    setPickingSide("attack");
+    setDeploymentAgentId(null);
+    setShowShop(false);
+    setShowHelp(false);
+    setStage("title");
+  };
+
+  if (stage === "title") return <TitleScreen onStart={() => setStage("select")} />;
+  if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} />;
+  if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => setStage("select")} onStart={() => setStage("play")} />;
 
   const selectAgent = (id: string) => {
     const agent = getAgent(game, id);
@@ -1000,6 +1238,8 @@ export default function Home() {
       }
       drawFive(endingTeam, draft.cycle * 31 + (endingSide === "attack" ? 7 : 3));
       draft.trade = null;
+      draft.revealedEnemyIds = [];
+      draft.combatQueue = [];
       draft.pendingWait = null;
       draft.targeting = null;
       draft.selectedCardId = null;
@@ -1098,11 +1338,13 @@ export default function Home() {
 
   const cancelTargeting = () => mutate((draft) => { draft.targeting = null; draft.selectedCardId = null; });
   const skipWait = () => mutate((draft) => { const agent = getAgent(draft, draft.pendingWait); if (agent) agent.waitDirs = []; draft.pendingWait = null; });
+  const dismissCombat = () => mutate((draft) => { draft.combatQueue.shift(); });
   const selectedRegion = selectedAgent ? REGIONS.find((region) => region.id === selectedAgent.region) : null;
   const droppedHere = selectedAgent ? game.droppedWeapons.find((item) => item.region === selectedAgent.region) : null;
   const canPlant = selectedAgent?.team === "attack" && selectedRegion?.site && game.spike.status === "carried" && game.spike.carrierId === selectedAgent.id;
   const canHalf = selectedAgent?.team === "defense" && game.spike.status === "planted" && game.spike.region === selectedAgent.region;
   const canFinal = selectedAgent?.team === "defense" && game.spike.status === "half" && game.spike.region === selectedAgent.region && game.spike.halfCycle !== game.cycle;
+  const combatScene = game.combatQueue[0] ?? null;
 
   return (
     <main className={`game-shell side-${game.turnSide}`}>
@@ -1122,7 +1364,7 @@ export default function Home() {
         <div className="header-actions">
           <button onClick={() => setShowIntel((value) => !value)} title="정보 시야 표시 전환">{showIntel ? "시야 ON" : "시야 OFF"}</button>
           <button onClick={() => setShowHelp(true)}>규칙</button>
-          <button className="reset-button" onClick={() => setGame(createInitialGame())}>새 게임</button>
+          <button className="reset-button" onClick={restartToTitle}>새 게임</button>
         </div>
       </header>
 
@@ -1151,7 +1393,7 @@ export default function Home() {
           <div className="enemy-summary">
             <span className="eyebrow">OPPOSITION</span>
             <div className="enemy-pips">
-              {game.teams[otherSide(game.turnSide)].agents.map((agent) => <i key={agent.id} className={`${agent.alive ? "" : "down"} ${agent.detected ? "detected" : ""}`} title={`${agent.name}${agent.detected ? " · 탐지됨" : ""}`} />)}
+              {game.teams[otherSide(game.turnSide)].agents.map((agent) => { const revealed = agent.detected || game.revealedEnemyIds.includes(agent.id); return <i key={agent.id} className={`${agent.alive ? "" : "down"} ${revealed ? "detected" : ""}`} title={`${agent.name}${revealed ? " · 위치 공개" : ""}`} />; })}
             </div>
           </div>
           <button className="shop-trigger" disabled={activeTeam.buyLocked || !!game.winner} onClick={() => setShowShop(true)}>
@@ -1182,7 +1424,8 @@ export default function Home() {
               const allies = activeTeam.agents.filter((agent) => agent.alive && agent.region === region.id);
               const enemies = game.teams[otherSide(game.turnSide)].agents.filter((agent) => agent.alive && agent.region === region.id);
               const known = showIntel || visible.has(region.id);
-              const shownEnemies = enemies.filter((agent) => known || agent.detected);
+              const shownEnemies = enemies.filter((agent) => known || agent.detected || game.revealedEnemyIds.includes(agent.id));
+              const revealedEnemies = shownEnemies.filter((agent) => game.revealedEnemyIds.includes(agent.id));
               const isValid = validTargets.has(region.id);
               const devices = game.deployables.filter((item) => item.region === region.id);
               const fire = game.fires.some((item) => item.region === region.id);
@@ -1202,8 +1445,9 @@ export default function Home() {
                     {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${game.selectedAgentId === agent.id ? "selected" : ""}`} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`}>{agent.name.slice(0, 1)}</i>)}
                   </span>
                   <span className="unit-stack enemy-stack">
-                    {shownEnemies.map((agent) => <i key={agent.id} className="unit-token hostile" title={`${agent.detected ? agent.name : "적 요원"} · ${agent.detected ? WEAPONS[agent.weapon].name : "장비 미확인"}`}>{agent.detected ? agent.name.slice(0, 1) : "?"}</i>)}
+                    {shownEnemies.map((agent) => { const identified = agent.detected || game.revealedEnemyIds.includes(agent.id); return <i key={agent.id} className={`unit-token hostile ${identified ? "identified" : ""}`} title={`${identified ? agent.name : "적 요원"} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}`}>{identified ? agent.name.slice(0, 1) : "?"}</i>; })}
                   </span>
+                  {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => <i key={agent.id}><b>{agent.name}</b>{agent.waitDirs.length ? `대기 → ${agent.waitDirs.join(" · ")}` : "대기 없음"}</i>)}</span>}
                   {(devices.length > 0 || fire || stim || hasSpike) && <span className="effect-stack">
                     {devices.map((item) => <i key={item.id} title={item.kind}>{item.kind === "trip" ? "⌁" : item.kind === "camera" ? "◉" : item.kind === "turret" ? "⌖" : "!"}</i>)}
                     {fire && <i className="fire">▲</i>}{stim && <i className="stim">+</i>}{hasSpike && <i className="spike">◆</i>}
@@ -1277,7 +1521,32 @@ export default function Home() {
         </aside>
       </section>
 
-      {game.winner && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner}`}><span className="eyebrow">ROUND COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p><button onClick={() => setGame(createInitialGame())}>새 작전 시작</button></div></div>}
+      {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner}`}><span className="eyebrow">ROUND COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p><button onClick={restartToTitle}>새 작전 시작</button></div></div>}
+
+      {combatScene && <div className="modal-backdrop combat-backdrop"><section className="combat-modal">
+        <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT DETECTED</span><h2>교전 해결</h2></div><div><span>{game.combatQueue.length} ENCOUNTER{game.combatQueue.length > 1 ? "S" : ""}</span><b>{combatScene.simultaneous ? "동시 처리" : "우선도 처리"}</b></div></header>
+        <div className="combat-location"><span>교전 구역</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i>{combatScene.waiting && <b>대기 공격 발동</b>}</div>
+        <div className="combat-stage">
+          {([combatScene.mover, combatScene.holder] as CombatFighterView[]).map((fighter, index) => {
+            const shot = fighter.shot;
+            const isMover = index === 0;
+            const survived = fighter.hpAfter > 0;
+            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} ${survived ? "" : "eliminated"}`}>
+              <div className="combat-side-tag">{isMover ? "진입 요원" : combatScene.waiting ? "대기 요원" : "수비 요원"}</div>
+              <div className={`combat-avatar role-${fighter.role}`}>{fighter.name.slice(0, 1)}<span>{isMover ? "ACT" : "REACT"}</span></div>
+              <h3>{fighter.name}</h3><p>{ROLE_LABEL[fighter.role]} · {WEAPONS[fighter.weapon].name}</p>
+              <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
+              <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div>
+              <div className={`combat-roll ${!shot ? "no-shot" : shot.hit ? shot.head ? "headshot" : "hit" : "miss"}`}>
+                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? `피해 ${shot.damage}` : "피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : "NO ATTACK"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : "행동 규칙상 공격 불가"}</small></div>}
+              </div>
+            </article>;
+          })}
+          <div className="combat-versus"><span>PRIORITY</span><b>VS</b><i>{combatScene.mover.priority === combatScene.holder.priority ? "=" : combatScene.mover.priority < combatScene.holder.priority ? "←" : "→"}</i></div>
+        </div>
+        <div className="combat-result"><div><span>RESULT</span><strong>{combatScene.result}</strong><p>{combatScene.holder.name}의 위치와 대기 방향은 이번 {SIDE_LABEL[game.turnSide]} 턴이 끝날 때까지 지도에 공개됩니다.</p></div><div className="revealed-hold"><span>공개된 대기</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
+        <button className="combat-continue" onClick={dismissCombat}><span>{game.combatQueue.length > 1 ? "다음 1대1 교전" : "전장으로 복귀"}</span><small>{game.combatQueue.length > 1 ? `${game.combatQueue.length - 1}개 교전 대기 중` : "공개 정보가 지도에 표시됩니다"}</small></button>
+      </section></div>}
 
       {showShop && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">TEAM ARMORY</span><h2>{selectedAgent?.name} 장비 구매</h2></div><div><strong>¤ {activeTeam.funds}</strong><button onClick={() => setShowShop(false)}>닫기</button></div></div>
