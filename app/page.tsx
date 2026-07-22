@@ -244,6 +244,8 @@ interface TradeState {
 interface CombatFighterView {
   id: string;
   name: string;
+  kind: "agent" | "turret";
+  team: Side;
   role: Role;
   weapon: WeaponId;
   region: number;
@@ -262,6 +264,8 @@ interface CombatChoice {
 
 interface CombatScene {
   id: string;
+  kind: "agent" | "turret";
+  deviceId?: string;
   mover: CombatFighterView;
   holder: CombatFighterView;
   range: number;
@@ -378,6 +382,16 @@ const WEAPONS: Record<WeaponId, Weapon> = {
   vandal: { id: "vandal", name: "밴달", type: "normal", body: 2, head: 4, price: 24, aim: 1, move: 0, unlock: 3 },
   operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 4, head: 6, price: 32, aim: 0, move: 0, unlock: 3 },
 };
+
+function weaponRuleSummary(weapon: Weapon) {
+  const rules: string[] = [];
+  if (weapon.aim) rules.push(`상시 에임 +${weapon.aim}`);
+  if (weapon.move) rules.push(`상시 무빙 +${weapon.move}`);
+  if (weapon.type === "normal") rules.push("사거리 1", "거리 0 에임 +1");
+  if (weapon.type === "shotgun") rules.push("사거리 1", "거리 1 에임 -2", "거리 0 에임 +2 · 피해 +1");
+  if (weapon.type === "sniper") rules.push("대기 구역 거리 2 지정", "대기 사격 에임 +1", "거리 0 에임 -1");
+  return rules.join(" · ");
+}
 
 const ARMOR_PRICE: Record<Agent["armorType"], number> = { none: 0, light: 2, regen: 4, heavy: 6 };
 
@@ -746,6 +760,21 @@ function setWait(game: GameState, agent: Agent, directions: number[]) {
   agent.waitOrders = Object.fromEntries(directions.map((direction) => [direction, game.waitCounter]));
 }
 
+function waitTargetsFor(agent: Agent) {
+  const maxRange = WEAPONS[agent.weapon].type === "sniper" ? 2 : 1;
+  return REGIONS
+    .filter((region) => {
+      const range = distance(agent.region, region.id);
+      return range >= 1 && range <= maxRange;
+    })
+    .map((region) => region.id);
+}
+
+function isWaitPathSmokeBlocked(game: GameState, from: number, to: number) {
+  const path = shortestPath(from, to);
+  return path.slice(0, -1).some((region, index) => isSmokeBlocked(game, region, path[index + 1]));
+}
+
 function roll(max: number) {
   return Math.floor(Math.random() * Math.max(1, max)) + 1;
 }
@@ -898,8 +927,9 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   addLog(game, `지속 교전 시작: ${mover.name}(우선 ${moverPrio}) ↔ ${enemy.name}(우선 ${enemyPrio}).`);
   game.combatQueue.push({
     id: `combat-${Date.now()}-${game.combatQueue.length}`,
-    mover: { id: mover.id, name: mover.name, role: mover.role, weapon: mover.weapon, region: mover.region, priority: moverPrio, hpBefore: moverBefore.hp, hpAfter: mover.hp, armorBefore: moverBefore.armor, armorAfter: mover.armor, shot: null },
-    holder: { id: enemy.id, name: enemy.name, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: enemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: null },
+    kind: "agent",
+    mover: { id: mover.id, name: mover.name, kind: "agent", team: mover.team, role: mover.role, weapon: mover.weapon, region: mover.region, priority: moverPrio, hpBefore: moverBefore.hp, hpAfter: mover.hp, armorBefore: moverBefore.armor, armorAfter: mover.armor, shot: null },
+    holder: { id: enemy.id, name: enemy.name, kind: "agent", team: enemy.team, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: enemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: null },
     range,
     waiting,
     simultaneous,
@@ -923,6 +953,43 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     tailwindActorId: null,
     pendingShotActorId: null,
   });
+}
+
+function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable) {
+  const owner = getAgent(game, turret.ownerAgentId);
+  const movement = game.pendingMovement?.agentId === mover.id ? game.pendingMovement : null;
+  const profile = movement ? movementCombatProfile(movement) : { priority: 3, canAttack: true, moveBonus: 0 };
+  const turretId = `turret-${turret.id}`;
+  game.combatQueue.push({
+    id: `combat-turret-${Date.now()}-${game.combatQueue.length}`,
+    kind: "turret",
+    deviceId: turret.id,
+    mover: { id: mover.id, name: mover.name, kind: "agent", team: mover.team, role: mover.role, weapon: mover.weapon, region: mover.region, priority: profile.priority, hpBefore: mover.hp, hpAfter: mover.hp, armorBefore: mover.armor, armorAfter: mover.armor, shot: null },
+    holder: { id: turretId, name: `${owner?.name ?? "킬조이"} 포탑`, kind: "turret", team: turret.owner, role: "sentinel", weapon: "classic", region: turret.region, priority: 2, hpBefore: 1, hpAfter: 1, armorBefore: 0, armorAfter: 0, shot: null },
+    range: distance(turret.region, mover.region),
+    waiting: true,
+    simultaneous: false,
+    actorId: turretId,
+    firstActorId: turretId,
+    secondActorId: mover.id,
+    pendingNextActorId: null,
+    round: 1,
+    phase: "encounter",
+    resolved: false,
+    choices: {},
+    canMoverAttack: profile.canAttack,
+    moverAimBonus: 0,
+    moverMoveBonus: profile.moveBonus,
+    moverPriorityBase: profile.priority,
+    moverRetreated: false,
+    moverAdvanced: false,
+    evaded: false,
+    result: `${mover.name}이 ${regionName(turret.to ?? mover.region)} 포탑 감시 구역에 진입했습니다.`,
+    waitDirections: turret.to === undefined ? [] : [turret.to],
+    tailwindActorId: null,
+    pendingShotActorId: null,
+  });
+  addLog(game, `포탑 교전 시작: ${owner?.name ?? "킬조이"} 포탑(우선 2) → ${mover.name}.`);
 }
 
 function triggerHazards(game: GameState, agent: Agent, from: number, to: number): boolean {
@@ -959,20 +1026,14 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
     }
   }
 
-  const turrets = game.deployables.filter((item) => item.kind === "turret" && item.owner === enemy && item.to === to);
-  for (const turret of turrets) {
+  const turret = game.deployables.find((item) => item.kind === "turret" && item.owner === enemy && item.to === to);
+  if (turret) {
     if (agent.status.ignoreGround) {
       agent.status.ignoreGround = false;
       addLog(game, `${agent.name}이 상승 기류로 포탑의 공격을 무시했습니다.`);
-      continue;
+    } else {
+      queueTurretEncounter(game, agent, turret);
     }
-    const aimRoll = roll(5);
-    const moveRoll = roll(Math.max(1, finalStats(game, agent).move));
-    if (aimRoll - moveRoll > 0) {
-      applyDamage(game, getAgent(game, turret.ownerAgentId), agent, 1, "포탑 명중");
-      game.deployables = game.deployables.filter((item) => item.id !== turret.id);
-    } else addLog(game, `포탑이 ${agent.name}을 놓쳤습니다 [${aimRoll} - ${moveRoll}].`);
-    addTrade(game, { enemyId: agent.id, team: enemy, sourceId: turret.id });
   }
   return stopped;
 }
@@ -983,12 +1044,10 @@ function watchersFor(game: GameState, mover: Agent): Agent[] {
     const path = shortestPath(enemy.region, mover.region);
     if (path.length < 2) return false;
     const maxRange = WEAPONS[enemy.weapon].type === "sniper" ? 2 : 1;
-    const smokeAllowsDetectedShot = !isSmokeBlocked(game, path[0], path[1]) || enemy.detected || mover.detected;
-    return path.length - 1 <= maxRange && enemy.waitDirs.includes(path[1]) && smokeAllowsDetectedShot;
+    const smokeAllowsDetectedShot = !isWaitPathSmokeBlocked(game, enemy.region, mover.region) || enemy.detected || mover.detected;
+    return path.length - 1 <= maxRange && enemy.waitDirs.includes(mover.region) && smokeAllowsDetectedShot;
   }).sort((a, b) => {
-    const aDirection = shortestPath(a.region, mover.region)[1];
-    const bDirection = shortestPath(b.region, mover.region)[1];
-    return (a.waitOrders[aDirection] ?? a.waitStamp) - (b.waitOrders[bDirection] ?? b.waitStamp);
+    return (a.waitOrders[mover.region] ?? a.waitStamp) - (b.waitOrders[mover.region] ?? b.waitStamp);
   });
 }
 
@@ -1110,10 +1169,16 @@ function continuePendingMovement(game: GameState) {
     const from = agent.region;
     agent.region = movement.path[movement.nextIndex];
     movement.nextIndex += 1;
+    const combatCountBeforeHazards = game.combatQueue.length;
     const stopped = triggerHazards(game, agent, from, agent.region);
     if (!agent.alive) {
       finishMovement(game, agent, origin, true);
       checkWinner(game);
+      return;
+    }
+    if (game.combatQueue.length > combatCountBeforeHazards) {
+      addLog(game, `${agent.name}의 이동이 포탑 교전 지점에서 일시 정지되었습니다.`);
+      if (stopped) movement.nextIndex = movement.path.length;
       return;
     }
     const profile = movementCombatProfile(movement);
@@ -1427,7 +1492,7 @@ function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onBu
       <section className="purchase-catalog">
         <div className="purchase-agent-head"><div className={`purchase-avatar role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} /><div><span className="eyebrow">SELECTED AGENT</span><h2>{agent.name}</h2><p>{ROLE_LABEL[agent.role]} · 에임 {ROLE_STATS[agent.role].aim} / 무빙 {ROLE_STATS[agent.role].move}</p></div><div className="current-loadout"><span>현재 장비</span><strong>{WEAPONS[agent.weapon].name}</strong><small>방어 {agent.armor} · 스킬 {Object.values(agent.skills).reduce((sum, value) => sum + value, 0)}회</small></div></div>
         <div className="purchase-section-title"><div><span>01</span><strong>총기</strong></div><p>{game.matchRound === 1 ? "클래식 · 셰리프" : game.matchRound === 2 ? "버키 · 스펙터 · 불독 · 아웃로 추가" : "모든 총기 해금"} · 교체 시 기존 장비값 환불</p></div>
-        <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const difference = weapon.price - WEAPONS[agent.weapon].price; const bulkTargets = team.agents.filter((item) => item.weapon !== weapon.id); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + weapon.price - WEAPONS[item.weapon].price, 0); return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || difference > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : difference < 0 ? `환불 ${-difference}원` : difference ? `${difference}원` : "무료 교체"}</b></button><button className="bulk-buy" disabled={locked || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div>
+        <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const difference = weapon.price - WEAPONS[agent.weapon].price; const bulkTargets = team.agents.filter((item) => item.weapon !== weapon.id); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + weapon.price - WEAPONS[item.weapon].price, 0); return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || difference > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)} title={weaponRuleSummary(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : difference < 0 ? `환불 ${-difference}원` : difference ? `${difference}원` : "무료 교체"}</b></button><button className="bulk-buy" disabled={locked || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div>
         <div className="purchase-lower">
           <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors">{([{"type":"none","name":"방어구 없음","detail":"장비값 환불","price":0,"value":0},{"type":"light","name":"소형 방어구","detail":"방어 1","price":2,"value":1},{"type":"regen","name":"회복 방어구","detail":"턴 종료 회복","price":4,"value":1},{"type":"heavy","name":"대형 방어구","detail":"방어 2","price":6,"value":2}] as const).map((armor) => { const difference = armor.price - ARMOR_PRICE[agent.armorType]; const bulkTargets = team.agents.filter((item) => item.armorType !== armor.type); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + armor.price - ARMOR_PRICE[item.armorType], 0); return <div key={armor.type} className="purchase-armor-option"><button className="purchase-primary" disabled={difference > team.funds || agent.armorType === armor.type} onClick={() => onArmor(armor.type, armor.price, armor.value)}><strong>{armor.name}</strong><span>{armor.detail}</span><b>{difference < 0 ? `환불 ${-difference}원` : difference ? `${difference}원` : "무료 교체"}</b></button><button className="bulk-buy" disabled={bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkArmor(armor.type, armor.price, armor.value)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div></div>
           <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
@@ -1561,7 +1626,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAiControlledTurn) return;
-    setShowShop(false);
+    const timer = window.setTimeout(() => setShowShop(false), 0);
+    return () => window.clearTimeout(timer);
   }, [isAiControlledTurn]);
 
   const currentCombatPhase = game.combatQueue[0]?.phase ?? null;
@@ -1577,7 +1643,7 @@ export default function Home() {
   const validTargets = useMemo(() => {
     if (game.pendingWait) {
       const agent = getAgent(game, game.pendingWait);
-      return new Set(agent ? GRAPH.get(agent.region) ?? [] : []);
+      return new Set(agent ? waitTargetsFor(agent) : []);
     }
     if (game.targeting?.kind === "control") {
       const agent = getAgent(game, game.targeting.agentId);
@@ -1822,10 +1888,11 @@ export default function Home() {
   const finishWait = (region: number) => {
     mutate((draft) => {
       const agent = getAgent(draft, draft.pendingWait);
-      if (!agent || !(GRAPH.get(agent.region) ?? []).includes(region)) return;
+      if (!agent || !waitTargetsFor(agent).includes(region)) return;
       setWait(draft, agent, [region]);
       draft.pendingWait = null;
-      addLog(draft, `${agent.name} 대기 설정: ${regionName(region)} 방향 · 우선도 1.`);
+      const range = distance(agent.region, region);
+      addLog(draft, `${agent.name} 대기 설정: ${regionName(region)} 구역 · 거리 ${range} · 우선도 1.`);
     });
   };
 
@@ -1907,11 +1974,9 @@ export default function Home() {
           break;
         case "recon": {
           const scanned = new Set([region, ...(GRAPH.get(region) ?? [])]);
-          const flightPath = shortestPath(agent.region, region);
-          const approach = flightPath.length > 1 ? flightPath[flightPath.length - 2] : agent.region;
           const waitingEnemy = enemies
-            .filter((enemy) => enemy.waitDirs.includes(approach))
-            .sort((a, b) => (a.waitOrders[approach] ?? a.waitStamp) - (b.waitOrders[approach] ?? b.waitStamp))[0];
+            .filter((enemy) => enemy.waitDirs.includes(region))
+            .sort((a, b) => (a.waitOrders[region] ?? a.waitStamp) - (b.waitOrders[region] ?? b.waitStamp))[0];
           if (waitingEnemy) {
             addTrade(draft, { enemyId: waitingEnemy.id, team: agent.team, sourceId: agent.id });
             addLog(draft, `${waitingEnemy.name}이 정찰 화살을 파괴했습니다. 총기 ${WEAPONS[waitingEnemy.weapon].name} 확인 / 트레이드 표식.`);
@@ -2368,6 +2433,42 @@ export default function Home() {
     return { shot, text: shot.hit ? `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"} · 피해 ${shot.damage}` : `${shooter.name}의 공격이 빗나갔습니다.` };
   };
 
+  const performTurretShot = (draft: GameState, scene: CombatScene) => {
+    const target = getAgent(draft, scene.mover.id);
+    const turret = draft.deployables.find((item) => item.id === scene.deviceId && item.kind === "turret");
+    if (!target?.alive || !turret) {
+      scene.resolved = true;
+      scene.phase = "result";
+      scene.result = !target?.alive ? "대상이 이미 제거되어 포탑 교전이 종료됩니다." : "포탑이 파괴되어 교전이 종료됩니다.";
+      return;
+    }
+    const targetBefore = { hp: target.hp, armor: target.armor };
+    const aimRoll = roll(5);
+    const moveSize = Math.max(1, finalStats(draft, target).move + scene.moverMoveBonus);
+    const moveRoll = roll(moveSize);
+    const hit = aimRoll - moveRoll > 0;
+    const vulnerableBonus = hit && target.status.vulnerable ? 1 : 0;
+    const damage = hit ? 1 + vulnerableBonus : 0;
+    const shot: ShotResult = { hit, head: false, damage, aimRoll, moveRoll, aimSize: 5, moveSize };
+    scene.mover.shot = null;
+    scene.holder.shot = shot;
+    if (hit) {
+      if (vulnerableBonus) target.status.vulnerable = false;
+      applyDamage(draft, getAgent(draft, turret.ownerAgentId), target, damage, "포탑 명중");
+      draft.deployables = draft.deployables.filter((item) => item.id !== turret.id);
+      scene.result = `${scene.holder.name} 명중 · 피해 ${damage}. 포탑은 공격 후 소멸합니다.`;
+    } else {
+      addLog(draft, `${scene.holder.name}이 ${target.name}을 놓쳤습니다 [${aimRoll}/5 - ${moveRoll}/${moveSize}].`);
+      scene.result = `${scene.holder.name}의 공격이 빗나갔습니다. 포탑은 감시를 유지합니다.`;
+    }
+    addTrade(draft, { enemyId: target.id, team: turret.owner, sourceId: turret.id });
+    refreshCombatView(scene, target, null, targetBefore);
+    scene.resolved = true;
+    scene.pendingNextActorId = null;
+    scene.phase = "result";
+    checkWinner(draft);
+  };
+
   const executeCombatRetreat = (draft: GameState, scene: CombatScene, agent: Agent, region: number) => {
     const before = { hp: agent.hp, armor: agent.armor };
     const from = agent.region;
@@ -2449,7 +2550,7 @@ export default function Home() {
 
   const combatAttack = () => mutate((draft) => {
     const scene = draft.combatQueue[0];
-    if (!scene || scene.phase !== "choice") return;
+    if (!scene || scene.kind !== "agent" || scene.phase !== "choice") return;
     const actor = getAgent(draft, scene.actorId);
     const targetId = scene.actorId === scene.mover.id ? scene.holder.id : scene.mover.id;
     const target = getAgent(draft, targetId);
@@ -2491,7 +2592,7 @@ export default function Home() {
 
   const combatRetreat = (region: number) => mutate((draft) => {
     const scene = draft.combatQueue[0];
-    if (!scene || scene.phase !== "choice") return;
+    if (!scene || scene.kind !== "agent" || scene.phase !== "choice") return;
     const actor = getAgent(draft, scene.actorId);
     if (!actor?.alive || !(GRAPH.get(actor.region) ?? []).includes(region)) return;
     if (scene.simultaneous) {
@@ -2514,7 +2615,7 @@ export default function Home() {
 
   const combatAdvance = () => mutate((draft) => {
     const scene = draft.combatQueue[0];
-    if (!scene || scene.phase !== "choice" || scene.actorId !== scene.mover.id) return;
+    if (!scene || scene.kind !== "agent" || scene.phase !== "choice" || scene.actorId !== scene.mover.id) return;
     const movement = draft.pendingMovement;
     const mover = getAgent(draft, scene.mover.id);
     const holder = getAgent(draft, scene.holder.id);
@@ -2569,6 +2670,10 @@ export default function Home() {
     const scene = draft.combatQueue[0];
     if (!scene) return;
     if (scene.phase === "encounter") {
+      if (scene.kind === "turret") {
+        performTurretShot(draft, scene);
+        return;
+      }
       scene.phase = "choice";
       scene.actorId = scene.firstActorId;
       scene.result = scene.simultaneous
@@ -2643,8 +2748,8 @@ export default function Home() {
       const agent = getAgent(draft, draft.pendingWait);
       if (agent?.alive) {
         const enemies = draft.teams[otherSide(aiSide)].agents.filter((enemy) => enemy.alive);
-        const direction = [...(GRAPH.get(agent.region) ?? [])].sort((a, b) => Math.min(...enemies.map((enemy) => distance(a, enemy.region)), 99) - Math.min(...enemies.map((enemy) => distance(b, enemy.region)), 99))[0];
-        if (direction !== undefined) setWait(draft, agent, [direction]);
+        const target = waitTargetsFor(agent).sort((a, b) => Math.min(...enemies.map((enemy) => distance(a, enemy.region)), 99) - Math.min(...enemies.map((enemy) => distance(b, enemy.region)), 99))[0];
+        if (target !== undefined) setWait(draft, agent, [target]);
       }
       draft.pendingWait = null;
       return;
@@ -2743,8 +2848,9 @@ export default function Home() {
   const tailwindOptions = tailwindActor ? GRAPH.get(tailwindActor.region) ?? [] : [];
   const nextCombatActor = combatScene ? getAgent(game, combatScene.pendingNextActorId) : null;
   const combatFocusAgent = combatScene?.phase === "encounter" ? getAgent(game, combatScene.firstActorId) : combatScene?.phase === "tailwind" ? tailwindActor : combatScene?.phase === "choice" ? combatActor : nextCombatActor;
+  const combatFocusSide = combatFocusAgent?.team ?? (combatScene?.kind === "turret" ? combatScene.holder.team : game.turnSide);
   const combatantIds = new Set([combatScene?.mover.id, combatScene?.holder.id].filter(Boolean));
-  const activeCombatAction = game.pendingMovement
+  const activeCombatAction = combatScene?.kind === "turret" ? "포탑 자동 방어 사격 · 우선도 2" : game.pendingMovement
     ? `${MOVEMENT_LABEL[game.pendingMovement.kind]} · ${Math.max(0, game.pendingMovement.path.length - game.pendingMovement.nextIndex)}칸 남음`
     : selectedCard?.used ? CARD_DATA[selectedCard.kind].name : "위치 교전";
   const canCombatAdvance = !!(combatScene && combatActor?.id === combatScene.mover.id && game.pendingMovement?.agentId === combatActor.id && game.pendingMovement.nextIndex < game.pendingMovement.path.length);
@@ -2827,7 +2933,7 @@ export default function Home() {
               const smokeKnown = !!smoke && (smoke.owner === viewerSide || observed.has(a) || observed.has(b));
               return <span key={`${a}-${b}`} className={`map-edge ${smokeKnown ? "smoked" : ""}`} style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
             })}
-            {mapWaitCones.map((cone) => <span key={cone.id} className={`wait-cone ${cone.hostile ? "hostile" : "friendly"} ${cone.lastKnown ? "last-known" : ""}`} style={connectionStyle(cone.from, cone.to)} title={`${cone.agentName} · ${cone.to}번 방향 대기`}><i /></span>)}
+            {mapWaitCones.map((cone) => <span key={cone.id} className={`wait-cone ${cone.hostile ? "hostile" : "friendly"} ${cone.lastKnown ? "last-known" : ""}`} style={connectionStyle(cone.from, cone.to)} title={`${cone.agentName} · ${cone.to}번 구역 대기`}><i /></span>)}
             {game.lastSkillFx && (game.lastSkillFx.owner === viewerSide || observed.has(game.lastSkillFx.targetRegion)) && (() => {
               const fx = game.lastSkillFx;
               const target = REGIONS.find((region) => region.id === fx.targetRegion)!;
@@ -2886,8 +2992,8 @@ export default function Home() {
               {["planted", "half", "defusing"].includes(game.spike.status) && <b>{game.spike.explosion}</b>}
             </div>
             {!isAiControlledTurn && (game.pendingWait || game.targeting) && <div className="targeting-banner">
-              <strong>{game.pendingWait ? "대기 방향 선택" : game.targeting?.kind === "control" ? "두 방향을 지정" : game.targeting?.kind === "special" ? `${game.targeting.special === "rush" ? "러쉬" : "커버"} 이동` : "스킬 목표 선택"}</strong>
-              <span>청록색으로 표시된 구역을 선택하세요.</span>
+              <strong>{game.pendingWait ? WEAPONS[getAgent(game, game.pendingWait)?.weapon ?? "classic"].type === "sniper" ? "저격 대기 구역 선택 · 거리 1~2" : "대기 구역 선택 · 거리 1" : game.targeting?.kind === "control" ? "두 방향을 지정" : game.targeting?.kind === "special" ? `${game.targeting.special === "rush" ? "러쉬" : "커버"} 이동` : "스킬 목표 선택"}</strong>
+              <span>{game.pendingWait ? "청록색 구역 하나를 직접 선택하면 해당 구역 진입에 반응합니다." : "청록색으로 표시된 구역을 선택하세요."}</span>
               <button onClick={(event) => { event.stopPropagation(); if (game.pendingWait) skipWait(); else cancelTargeting(); }}>취소</button>
             </div>}
             {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
@@ -2964,18 +3070,18 @@ export default function Home() {
       {game.targeting?.kind === "skill" && ((game.targeting.candidateAgentIds?.length ?? 0) > 0 || (game.targeting.candidateDeployableIds?.length ?? 0) > 0) && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">TARGET SELECT</span><h2>스킬 목표 선택</h2><div className="choice-grid">{game.targeting.candidateAgentIds?.map((id) => { const target = getAgent(game, id); return target ? <button key={id} onClick={() => resolveSkillCandidate(id, "agent")}><b>{target.name}</b><small>{target.team === game.turnSide ? "아군" : "탐지된 적"} · {target.region}번</small></button> : null; })}{game.targeting.candidateDeployableIds?.map((id) => { const device = game.deployables.find((item) => item.id === id); return device ? <button key={id} onClick={() => resolveSkillCandidate(id, "deployable")}><b>{device.kind}</b><small>설치물 · {device.region}번</small></button> : null; })}</div><button className="choice-cancel" onClick={cancelTargeting}>취소</button></section></div>}
 
       {combatScene && <div className="modal-backdrop combat-backdrop"><section className={`combat-modal phase-${combatScene.phase}`} aria-label="전투 진행" aria-live="polite">
-        <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>지속 교전 · {combatScene.round}회차</h2></div><div><span>GAME TURN</span><b>{SIDE_LABEL[game.turnSide]} · 전술 {game.cycle}</b></div></header>
-        <div ref={combatTurnRef} className={`combat-turn-banner focus-${combatFocusAgent?.team ?? game.turnSide}`}>
+        <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>{combatScene.kind === "turret" ? "포탑 자동 교전" : `지속 교전 · ${combatScene.round}회차`}</h2></div><div><span>GAME TURN</span><b>{SIDE_LABEL[game.turnSide]} · 전술 {game.cycle}</b></div></header>
+        <div ref={combatTurnRef} className={`combat-turn-banner focus-${combatFocusSide}`}>
           <div className={`combat-game-turn ${game.turnSide}`}><span>현재 게임 턴</span><b>{SIDE_LABEL[game.turnSide]}</b><small>행동카드 {game.actionsUsed}/3 사용</small></div>
           <i>›</i>
-          <div className="combat-actor-turn"><span>{combatScene.phase === "encounter" ? "적 접촉" : combatScene.phase === "tailwind" ? "반응 선택" : combatScene.phase === "choice" ? "지금 행동" : combatScene.resolved ? "교전 결과" : "다음 행동"}</span><strong>{combatScene.phase === "encounter" ? `${combatScene.mover.name} ↔ ${combatScene.holder.name}` : combatFocusAgent ? `${SIDE_LABEL[combatFocusAgent.team]} · ${combatFocusAgent.name}` : "결과 확인"}</strong><small>{combatScene.phase === "encounter" ? "지도와 대기 방향을 확인한 뒤 교전을 시작하세요" : combatScene.phase === "choice" ? "공격·이탈 중 선택하세요" : combatScene.phase === "tailwind" ? "순풍 이동지를 선택하세요" : combatScene.resolved ? "아래 버튼으로 교전을 정리하세요" : `${nextCombatActor?.name ?? "다음 요원"} 차례가 이어집니다`}</small></div>
-          {combatFocusAgent && <em className={combatFocusAgent.team === game.turnSide ? "team-action" : "reaction-action"}>{combatFocusAgent.team === game.turnSide ? "현재 팀 행동" : "상대 반응 차례"}</em>}
+          <div className="combat-actor-turn"><span>{combatScene.phase === "encounter" ? combatScene.kind === "turret" ? "포탑 감지" : "적 접촉" : combatScene.phase === "tailwind" ? "반응 선택" : combatScene.phase === "choice" ? "지금 행동" : combatScene.resolved ? "교전 결과" : "다음 행동"}</span><strong>{combatScene.phase === "encounter" ? `${combatScene.mover.name} ↔ ${combatScene.holder.name}` : combatFocusAgent ? `${SIDE_LABEL[combatFocusAgent.team]} · ${combatFocusAgent.name}` : combatScene.kind === "turret" ? "포탑 사격 결과" : "결과 확인"}</strong><small>{combatScene.phase === "encounter" ? combatScene.kind === "turret" ? "포탑이 우선도 2로 자동 사격합니다" : "지도와 대기 구역을 확인한 뒤 교전을 시작하세요" : combatScene.phase === "choice" ? "공격·이탈 중 선택하세요" : combatScene.phase === "tailwind" ? "순풍 이동지를 선택하세요" : combatScene.resolved ? "아래 버튼으로 교전을 정리하세요" : `${nextCombatActor?.name ?? "다음 요원"} 차례가 이어집니다`}</small></div>
+          {combatScene.kind === "turret" ? <em className={combatScene.holder.team === game.turnSide ? "team-action" : "reaction-action"}>자동 방어 장치</em> : combatFocusAgent && <em className={combatFocusAgent.team === game.turnSide ? "team-action" : "reaction-action"}>{combatFocusAgent.team === game.turnSide ? "현재 팀 행동" : "상대 반응 차례"}</em>}
         </div>
         <div className="combat-location"><span>교전 위치</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i><strong>{regionName(combatScene.holder.region)}</strong>{combatScene.waiting && <b>대기 공격 발동</b>}</div>
         {combatScene.phase === "encounter" && <section className="encounter-intro">
           <div className={`encounter-portrait ${agentArtClass(combatScene.mover.name)}`}><span>{combatScene.mover.name}</span></div>
-          <div><span>ENEMY CONTACT</span><strong>시야에 적 포착</strong><small>우선도 {combatScene.mover.priority} : {combatScene.holder.priority}{combatScene.waiting ? " · 대기 반응" : " · 범위 교전"}</small></div>
-          <div className={`encounter-portrait hostile ${agentArtClass(combatScene.holder.name)}`}><span>{combatScene.holder.name}</span></div>
+          <div><span>{combatScene.kind === "turret" ? "AUTOMATED DEFENSE" : "ENEMY CONTACT"}</span><strong>{combatScene.kind === "turret" ? "포탑 감시선 진입" : "시야에 적 포착"}</strong><small>우선도 {combatScene.mover.priority} : {combatScene.holder.priority}{combatScene.kind === "turret" ? " · 포탑 선제 사격" : combatScene.waiting ? " · 대기 반응" : " · 범위 교전"}</small></div>
+          <div className={`encounter-portrait hostile ${combatScene.holder.kind === "turret" ? `turret-portrait ${skillArtClass("turret")}` : agentArtClass(combatScene.holder.name)}`}><span>{combatScene.holder.name}</span></div>
         </section>}
         <section className="combat-map-overview">
           <header><div><span>LIVE TACTICAL MAP</span><strong>교전 중 전장 현황</strong></div><small>얼굴 토큰 · 대기 시야 · 이번 턴 마지막 확인 위치</small></header>
@@ -3012,16 +3118,16 @@ export default function Home() {
             const acting = combatScene.phase === "choice" && fighter.id === combatScene.actorId;
             const liveAgent = getAgent(game, fighter.id);
             const liveStats = liveAgent ? finalStats(game, liveAgent) : null;
-            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} ${liveAgent ? `team-${liveAgent.team}` : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${opponentShot?.hit ? "landed" : ""}`}>
+            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} team-${fighter.team} ${fighter.kind === "turret" ? "turret-fighter" : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${opponentShot?.hit ? "landed" : ""}`}>
               {acting && <div className="acting-ribbon">지금 행동</div>}
-              <div className="combat-side-tag">{liveAgent ? SIDE_LABEL[liveAgent.team] : "교전 요원"} · {isMover ? "진입" : combatScene.waiting ? "대기 반응" : "범위 내 반응"}</div>
-              <div className={`combat-avatar role-${fighter.role} ${agentArtClass(fighter.name)}`} aria-label={`${fighter.name} 초상`}><span>{isMover ? "ACT" : "REACT"}</span></div>
-              <h3>{fighter.name}</h3><p>{ROLE_LABEL[fighter.role]} · {WEAPONS[fighter.weapon].name}</p>
+              <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? "진입" : combatScene.waiting ? "대기 반응" : "범위 내 반응"}</div>
+              <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span></div>
+              <h3>{fighter.name}</h3><p>{fighter.kind === "turret" ? "설치물 · 에임 5 · 피해 1" : `${ROLE_LABEL[fighter.role]} · ${WEAPONS[fighter.weapon].name}`}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
               <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div>
-              {liveAgent && <div className="combat-live-stats"><span>HP <b>{liveAgent.hp}</b></span><span>ARMOR <b>{liveAgent.armor}</b></span><span>AIM <b>{liveStats?.aim}</b></span><span>MOVE <b>{liveStats?.move}</b></span></div>}
+              {fighter.kind === "turret" ? <div className="combat-live-stats"><span>MODE <b>AUTO</b></span><span>DMG <b>1</b></span><span>AIM <b>5</b></span><span>PRIO <b>2</b></span></div> : liveAgent && <div className="combat-live-stats"><span>HP <b>{liveAgent.hp}</b></span><span>ARMOR <b>{liveAgent.armor}</b></span><span>AIM <b>{liveStats?.aim}</b></span><span>MOVE <b>{liveStats?.move}</b></span></div>}
               <div className={`combat-roll ${!shot ? "no-shot" : shot.hit ? shot.head ? "headshot" : "hit" : "miss"}`}>
-                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? `피해 ${shot.damage}` : "피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : "상대 행동 대기"}</small></div>}
+                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : fighter.kind === "turret" ? "TURRET HIT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? `피해 ${shot.damage}` : "피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : fighter.kind === "turret" ? "TARGET LOCK" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : fighter.kind === "turret" ? "포탑 자동 사격 대기" : "상대 행동 대기"}</small></div>}
               </div>
             </article>;
           })}
@@ -3033,7 +3139,7 @@ export default function Home() {
             <div><span>진행</span><b>매치 R{game.matchRound} · 전술 {game.cycle}/16</b></div>
             <div><span>현재 행동</span><b>{activeCombatAction}</b></div>
             <div><span>스파이크</span><b>{SPIKE_STATUS_LABEL[game.spike.status]}{game.spike.region ? ` · ${game.spike.region}번` : ""}</b></div>
-            <div><span>교전 규칙</span><b>{combatScene.simultaneous ? "동일 우선도 · 동시 처리" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
+            <div><span>교전 규칙</span><b>{combatScene.kind === "turret" ? "포탑 우선도 2 · 자동 1회 공격" : combatScene.simultaneous ? "동일 우선도 · 동시 처리" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
           </div>
           <div className="combat-intel-grid">
             {(["defense", "attack"] as Side[]).map((side) => <article key={side} className={`combat-team-intel ${side}`}>
@@ -3063,14 +3169,14 @@ export default function Home() {
             </article>)}
           </div>
         </section>
-        <div className="combat-result"><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다.</p></div><div className="revealed-hold"><span>공개된 대기</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
-        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>접촉 확인 · 교전 개시</span><small>우선도와 전술 맵을 확인했습니다</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small></button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}<div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
+        <div className="combat-result"><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
+        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small></button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}<div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
       {showShop && !isAiControlledTurn && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">TEAM ARMORY</span><h2>{selectedAgent?.name} 장비 구매</h2></div><div><strong>¤ {activeTeam.funds}</strong><button onClick={() => setShowShop(false)}>닫기</button></div></div>
         <p className="shop-note">매치 1라운드: 클래식과 셰리프만 해금 · 구매 자금은 팀 공동입니다. 기존 장비 환불은 없습니다.</p>
-        <div className="weapon-grid">{Object.values(WEAPONS).map((weapon) => <button key={weapon.id} className={selectedAgent?.weapon === weapon.id ? "equipped" : ""} disabled={weapon.unlock > game.matchRound || weapon.price > activeTeam.funds || activeTeam.buyLocked} onClick={() => buyWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "RFL"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{weapon.price ? `${weapon.price}원` : "기본"}</b></button>)}</div>
+        <div className="weapon-grid">{Object.values(WEAPONS).map((weapon) => <button key={weapon.id} className={selectedAgent?.weapon === weapon.id ? "equipped" : ""} disabled={weapon.unlock > game.matchRound || weapon.price > activeTeam.funds || activeTeam.buyLocked} onClick={() => buyWeapon(weapon)} title={weaponRuleSummary(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "RFL"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{weapon.price ? `${weapon.price}원` : "기본"}</b></button>)}</div>
         <h3>방어구</h3><div className="armor-grid"><button onClick={() => buyArmor("light", 2, 1)} disabled={activeTeam.funds < 2}><strong>소형 방어구</strong><small>방어 1 · 2원</small></button><button onClick={() => buyArmor("regen", 4, 1)} disabled={activeTeam.funds < 4}><strong>회복 방어구</strong><small>팀 턴 종료 회복 · 4원</small></button><button onClick={() => buyArmor("heavy", 6, 2)} disabled={activeTeam.funds < 6}><strong>대형 방어구</strong><small>방어 2 · 6원</small></button></div>
       </div></div>}
 

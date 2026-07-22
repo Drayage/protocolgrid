@@ -129,3 +129,33 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
   assert.match(page, /combatTurnRef\.current/);
   assert.match(page, /target\?\.scrollIntoView/);
 });
+
+test("sniper waits target exact range-two regions and respect every smoke edge", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function waitTargetsFor\(agent: Agent\)/);
+  assert.match(page, /WEAPONS\[agent\.weapon\]\.type === "sniper" \? 2 : 1/);
+  assert.match(page, /enemy\.waitDirs\.includes\(mover\.region\)/);
+  assert.match(page, /function isWaitPathSmokeBlocked/);
+  assert.match(page, /path\.slice\(0, -1\)\.some/);
+  assert.match(page, /저격 대기 구역 선택 · 거리 1~2/);
+  assert.doesNotMatch(page, /enemy\.waitDirs\.includes\(path\[1\]\)/);
+});
+
+test("turret attacks use the combat scene and weapon cards explain every modifier", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /kind: "agent" \| "turret"/);
+  assert.match(page, /function queueTurretEncounter/);
+  assert.match(page, /const performTurretShot/);
+  assert.match(page, /포탑 우선도 2 · 자동 1회 공격/);
+  assert.match(page, /에임 D5와 대상 무빙 주사위를 굴립니다/);
+  assert.match(page, /function weaponRuleSummary/);
+  assert.match(page, /상시 에임 \+\$\{weapon\.aim\}/);
+  assert.match(page, /상시 무빙 \+\$\{weapon\.move\}/);
+  assert.match(page, /대기 사격 에임 \+1/);
+  assert.match(page, /거리 0 에임 \+2 · 피해 \+1/);
+  assert.match(css, /\.turret-avatar, \.turret-portrait/);
+  assert.match(css, /\.weapon-rule-copy/);
+});
