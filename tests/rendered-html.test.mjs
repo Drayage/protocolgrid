@@ -27,9 +27,10 @@ test("server renders the finished tactical game entry screen", async () => {
 });
 
 test("source keeps the complete round, combat, skill, and economy loops wired", async () => {
-  const [page, css] = await Promise.all([
+  const [page, css, spriteAtlas] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../public/protocol-sprite-atlas.png", import.meta.url)),
   ]);
 
   assert.match(page, /pendingMovement: PendingMovement \| null/);
@@ -60,6 +61,10 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /lastKnown \? "last-known"/);
   assert.match(page, /draft\.revealedEnemyIds = \[\]/);
   assert.match(page, /enemyMemories: EnemyMemory\[\]/);
+  assert.match(page, /function rememberEnemy\([\s\S]*game\.revealedEnemyIds\.push\(enemy\.id\)/);
+  assert.doesNotMatch(page, /function rememberEnemy\([\s\S]{0,700}\bmover\.team/);
+  assert.match(page, /known && isChanneling\(game, agent\)/);
+  assert.doesNotMatch(page, /\bisProgressing\(/);
   assert.match(page, /rememberEnemy\(draft, draft\.turnSide, enemyToRemember\)/);
   assert.match(page, /memory\?\.waitDirs \?\? agent\.waitDirs/);
   assert.match(page, /draft\.enemyMemories = \[\]/);
@@ -67,6 +72,10 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(css, /@keyframes tracerShot/);
   assert.match(css, /\.combat-intel-grid/);
   assert.match(css, /\.unit-token\.hostile\.last-known/);
+  assert.match(css, /protocol-sprite-atlas\.png/);
+  assert.match(page, /agentArtClass/);
+  assert.match(page, /skillArtClass/);
+  assert.ok(spriteAtlas.byteLength > 100_000);
 });
 
 test("non-waiting enemies inside normal range still start combat", async () => {

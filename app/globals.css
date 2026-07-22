@@ -319,6 +319,18 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 @keyframes impactShake { 25% { transform: translateX(-4px); } 55% { transform: translateX(4px); } to { transform: none; } }
 @keyframes agentDown { to { transform: translateY(8px) rotate(4deg); opacity: .28; filter: grayscale(1); } }
 
+/* Generated tactical portrait and ability sprite atlas: 5 columns × 6 rows. */
+.agent-art, .skill-art { background-image: url('/protocol-sprite-atlas.png') !important; background-repeat: no-repeat !important; background-size: 500% 600% !important; color: transparent !important; text-shadow: none !important; }
+.agent-art { background-color: #071317 !important; background-origin: border-box; }
+.agent-art > small, .agent-art > span { color: #dce9e7; }
+.skill-art { background-color: #061014 !important; background-origin: border-box; }
+.agent-art-jett { background-position: 0 0 !important; }.agent-art-raze { background-position: 25% 0 !important; }.agent-art-phoenix { background-position: 50% 0 !important; }.agent-art-neon { background-position: 75% 0 !important; }.agent-art-cypher { background-position: 100% 0 !important; }
+.agent-art-killjoy { background-position: 0 20% !important; }.agent-art-sova { background-position: 25% 20% !important; }.agent-art-breach { background-position: 50% 20% !important; }.agent-art-brimstone { background-position: 75% 20% !important; }.agent-art-omen { background-position: 100% 20% !important; }
+.skill-art-tailwind { background-position: 0 40% !important; }.skill-art-paint { background-position: 25% 40% !important; }.skill-art-curve { background-position: 50% 40% !important; }.skill-art-gear { background-position: 75% 40% !important; }.skill-art-trip { background-position: 100% 40% !important; }
+.skill-art-updraft { background-position: 0 60% !important; }.skill-art-blast { background-position: 25% 60% !important; }.skill-art-hot { background-position: 50% 60% !important; }.skill-art-relay { background-position: 75% 60% !important; }.skill-art-camera { background-position: 100% 60% !important; }
+.skill-art-turret { background-position: 0 80% !important; }.skill-art-recon { background-position: 25% 80% !important; }.skill-art-flash { background-position: 50% 80% !important; }.skill-art-smoke { background-position: 75% 80% !important; }.skill-art-dark { background-position: 100% 80% !important; }
+.skill-art-alarm { background-position: 0 100% !important; }.skill-art-shock { background-position: 25% 100% !important; }.skill-art-aftershock { background-position: 50% 100% !important; }.skill-art-stim { background-position: 75% 100% !important; }.skill-art-shadow { background-position: 100% 100% !important; }
+
 @media (max-height: 760px) {
   .battle-layout { grid-template-columns: 220px minmax(620px, 1fr) 286px; }
   .roster-panel, .intel-panel { padding-top: 10px; }

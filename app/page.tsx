@@ -368,6 +368,14 @@ const AGENTS: Record<string, AgentTemplate> = {
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
 };
 
+const AGENT_ART_KEY: Record<string, string> = {
+  "제트": "jett", "레이즈": "raze", "피닉스": "phoenix", "네온": "neon", "사이퍼": "cypher",
+  "킬조이": "killjoy", "소바": "sova", "브리치": "breach", "브림스톤": "brimstone", "오멘": "omen",
+};
+
+const agentArtClass = (name: string) => `agent-art agent-art-${AGENT_ART_KEY[name] ?? "jett"}`;
+const skillArtClass = (id: string) => `skill-art skill-art-${id}`;
+
 const CARD_DATA: Record<CardKind, { name: string; tag: string; description: string }> = {
   basic: { name: "기본 행동", tag: "MOVE", description: "인접 구역 1칸 이동 · 교전 우선도 3 · 이후 한 방향 대기" },
   peek: { name: "피킹", tag: "SCOUT", description: "이번 행동 무빙 +2 · 공격하지 않고 첫 홀드를 빼낸 뒤 후퇴" },
@@ -687,9 +695,7 @@ function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
   if (!enemy.alive || enemy.team === observer) return;
   game.enemyMemories = game.enemyMemories.filter((memory) => !(memory.observer === observer && memory.agentId === enemy.id));
   game.enemyMemories.push({ observer, agentId: enemy.id, region: enemy.region, waitDirs: [...enemy.waitDirs] });
-  const observedEnemy = mover.team === game.turnSide ? enemy : mover;
-  game.enemyMemories = game.enemyMemories.filter((memory) => !(memory.observer === game.turnSide && memory.agentId === observedEnemy.id));
-  if (!game.revealedEnemyIds.includes(observedEnemy.id)) game.revealedEnemyIds.push(observedEnemy.id);
+  if (!game.revealedEnemyIds.includes(enemy.id)) game.revealedEnemyIds.push(enemy.id);
 }
 
 function clearWait(agent: Agent) {
@@ -830,7 +836,8 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     if (path.length > 1 && isSmokeBlocked(game, path[0], path[1]) && !enemy.detected && !mover.detected) return;
   }
 
-  if (!game.revealedEnemyIds.includes(enemy.id)) game.revealedEnemyIds.push(enemy.id);
+  const observedEnemy = mover.team === game.turnSide ? enemy : mover;
+  rememberEnemy(game, game.turnSide, observedEnemy);
   const revealedWaitDirs = [...enemy.waitDirs];
   const moverBefore = { hp: mover.hp, armor: mover.armor };
   const enemyBefore = { hp: enemy.hp, armor: enemy.armor };
@@ -1188,7 +1195,7 @@ function SelectionScreen(props: SelectionScreenProps) {
               const attackIndex = props.attackPick.indexOf(agent.name);
               const defenseIndex = props.defensePick.indexOf(agent.name);
               return <button key={agent.name} className={`select-agent-card role-${agent.role} ${picked ? "picked" : ""}`} onClick={() => props.onToggle(agent.name)}>
-                <span className="select-number">{String(index + 1).padStart(2, "0")}</span><span className="select-avatar">{agent.name.slice(0, 1)}</span>
+                <span className="select-number">{String(index + 1).padStart(2, "0")}</span><span className={`select-avatar ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} />
                 <span className="select-agent-copy"><small>{ROLE_LABEL[agent.role]}</small><strong>{agent.name}</strong><em>{roleCards(agent.role).map((kind) => CARD_DATA[kind].name).join(" · ")}</em></span>
                 <span className="pick-badges">{attackIndex >= 0 && <i className="atk">A{attackIndex + 1}</i>}{defenseIndex >= 0 && <i className="def">D{defenseIndex + 1}</i>}</span>
               </button>;
@@ -1248,17 +1255,17 @@ function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onBu
   return <main className={`setup-screen purchase-screen purchase-${side}`}>
     <header className="setup-topbar"><button disabled={game.matchRound > 1 && side === "defense"} onClick={onBack}>← 이전 단계</button><div><span>{step}</span><strong>{SIDE_LABEL[side]} 구매 단계 · R{game.matchRound}</strong></div><span className="purchase-wallet">팀 자금 <b>{team.funds}원</b></span></header>
     <section className="purchase-body">
-      <aside className="purchase-roster"><span className="eyebrow">TEAM LOADOUT</span><h2>{SIDE_LABEL[side]}</h2><p>{game.matchRound === 1 ? "모든 요원은 클래식과 방어구 0, 스킬 0회로 시작합니다." : "생존 총기와 무피해 방어구는 보존됐습니다. 스킬은 매 라운드 다시 구매합니다."} 팀 공동 자금을 원하는 요원에게 분배하세요.</p><div>{team.agents.map((item) => <button key={item.id} className={agent?.id === item.id ? "selected" : ""} onClick={() => onSelect(item.id)}><i className={`role-${item.role}`}>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></button>)}</div><footer><span>사용</span><b>{spent}원</b><i style={{ width: `${team.buyStartFunds ? Math.min(100, (spent / team.buyStartFunds) * 100) : 0}%` }} /></footer></aside>
+      <aside className="purchase-roster"><span className="eyebrow">TEAM LOADOUT</span><h2>{SIDE_LABEL[side]}</h2><p>{game.matchRound === 1 ? "모든 요원은 클래식과 방어구 0, 스킬 0회로 시작합니다." : "생존 총기와 무피해 방어구는 보존됐습니다. 스킬은 매 라운드 다시 구매합니다."} 팀 공동 자금을 원하는 요원에게 분배하세요.</p><div>{team.agents.map((item) => <button key={item.id} className={agent?.id === item.id ? "selected" : ""} onClick={() => onSelect(item.id)}><i className={`role-${item.role} ${agentArtClass(item.name)}`} aria-label={`${item.name} 초상`} /><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></button>)}</div><footer><span>사용</span><b>{spent}원</b><i style={{ width: `${team.buyStartFunds ? Math.min(100, (spent / team.buyStartFunds) * 100) : 0}%` }} /></footer></aside>
       <section className="purchase-catalog">
-        <div className="purchase-agent-head"><div className={`purchase-avatar role-${agent.role}`}>{agent.name.slice(0, 1)}</div><div><span className="eyebrow">SELECTED AGENT</span><h2>{agent.name}</h2><p>{ROLE_LABEL[agent.role]} · 에임 {ROLE_STATS[agent.role].aim} / 무빙 {ROLE_STATS[agent.role].move}</p></div><div className="current-loadout"><span>현재 장비</span><strong>{WEAPONS[agent.weapon].name}</strong><small>방어 {agent.armor} · 스킬 {Object.values(agent.skills).reduce((sum, value) => sum + value, 0)}회</small></div></div>
+        <div className="purchase-agent-head"><div className={`purchase-avatar role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} /><div><span className="eyebrow">SELECTED AGENT</span><h2>{agent.name}</h2><p>{ROLE_LABEL[agent.role]} · 에임 {ROLE_STATS[agent.role].aim} / 무빙 {ROLE_STATS[agent.role].move}</p></div><div className="current-loadout"><span>현재 장비</span><strong>{WEAPONS[agent.weapon].name}</strong><small>방어 {agent.armor} · 스킬 {Object.values(agent.skills).reduce((sum, value) => sum + value, 0)}회</small></div></div>
         <div className="purchase-section-title"><div><span>01</span><strong>총기</strong></div><p>{game.matchRound === 1 ? "클래식 · 셰리프" : game.matchRound === 2 ? "버키 · 스펙터 · 불독 · 아웃로 추가" : "모든 총기 해금"}</p></div>
         <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const bulkCount = team.agents.filter((item) => item.weapon !== weapon.id).length; const bulkCost = bulkCount * weapon.price; return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || weapon.price > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : weapon.price ? `${weapon.price}원` : "기본"}</b></button><button className="bulk-buy" disabled={locked || weapon.price === 0 || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost}원</b></button></div>; })}</div>
         <div className="purchase-lower">
           <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors">{([{"type":"light","name":"소형 방어구","detail":"방어 1","price":2,"value":1},{"type":"regen","name":"회복 방어구","detail":"턴 종료 회복","price":4,"value":1},{"type":"heavy","name":"대형 방어구","detail":"방어 2","price":6,"value":2}] as const).map((armor) => { const bulkCount = team.agents.filter((item) => item.armorType !== armor.type).length; const bulkCost = bulkCount * armor.price; return <div key={armor.type} className="purchase-armor-option"><button className="purchase-primary" disabled={team.funds < armor.price || agent.armorType === armor.type} onClick={() => onArmor(armor.type, armor.price, armor.value)}><strong>{armor.name}</strong><span>{armor.detail}</span><b>{armor.price}원</b></button><button className="bulk-buy" disabled={bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkArmor(armor.type, armor.price, armor.value)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost}원</b></button></div>; })}</div></div>
-          <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
+          <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
         </div>
       </section>
-      <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "첫 수비 턴"}</span><strong>구매 확정</strong></button></aside>
+      <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i className={agentArtClass(item.name)} aria-label={`${item.name} 초상`} /><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "첫 수비 턴"}</span><strong>구매 확정</strong></button></aside>
     </section>
   </main>;
 }
@@ -1280,7 +1287,7 @@ function DeploymentScreen({ game, selectedId, onSelect, onPlace, onBack, onStart
       <header className="setup-topbar"><button onClick={onBack}>← 수비 구매</button><div><span>STEP 03</span><strong>수비팀 사전 배치</strong></div><span className="deck-locked">15장 덱 잠금 완료</span></header>
       <section className="deployment-body">
         <aside className="deployment-roster"><span className="eyebrow">DEFENDER LINEUP</span><h2>요원 배치</h2><p>각 요원은 수비 시작 지점에서 연결된 구역으로 최대 1칸 이동할 수 있습니다. 같은 구역에 여러 명을 배치할 수 있습니다.</p>
-          <div>{defenders.map((agent) => <button key={agent.id} className={selectedId === agent.id ? "selected" : ""} onClick={() => onSelect(agent.id)}><i className={`role-${agent.role}`}>{agent.name.slice(0, 1)}</i><span><strong>{agent.name}</strong><small>{ROLE_LABEL[agent.role]}</small></span><b>{agent.region}번</b></button>)}</div>
+          <div>{defenders.map((agent) => <button key={agent.id} className={selectedId === agent.id ? "selected" : ""} onClick={() => onSelect(agent.id)}><i className={`role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} /><span><strong>{agent.name}</strong><small>{ROLE_LABEL[agent.role]}</small></span><b>{agent.region}번</b></button>)}</div>
           <div className="placement-rule"><span>이동 가능</span><b>7 ↔ 10</b><b>7 ↔ 13</b></div>
         </aside>
         <div className="deployment-map">
@@ -2537,7 +2544,7 @@ export default function Home() {
               const stats = finalStats(game, agent);
               return (
                 <button key={agent.id} className={`agent-row ${game.selectedAgentId === agent.id ? "selected" : ""} ${!agent.alive ? "dead" : ""}`} onClick={() => selectAgent(agent.id)}>
-                  <span className={`agent-avatar role-${agent.role}`}>{agent.name.slice(0, 1)}<small>{index + 1}</small></span>
+                  <span className={`agent-avatar role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`}><small>{index + 1}</small></span>
                   <span className="agent-copy"><strong>{agent.name}</strong><small>{ROLE_LABEL[agent.role]} · {WEAPONS[agent.weapon].name}</small></span>
                   <span className="agent-vitals"><b>{agent.hp + agent.armor}</b><small>A{stats.aim} / M{stats.move}</small></span>
                 </button>
@@ -2650,7 +2657,7 @@ export default function Home() {
         <aside className="intel-panel panel">
           {selectedAgent ? <>
             <div className="selected-agent-head">
-              <span className={`large-avatar role-${selectedAgent.role}`}>{selectedAgent.name.slice(0, 1)}</span>
+              <span className={`large-avatar role-${selectedAgent.role} ${agentArtClass(selectedAgent.name)}`} aria-label={`${selectedAgent.name} 초상`} />
               <div><span className="eyebrow">SELECTED AGENT</span><h2>{selectedAgent.name}</h2><p>{ROLE_LABEL[selectedAgent.role]} · {regionName(selectedAgent.region)}</p></div>
             </div>
             <div className="stat-grid">
@@ -2664,7 +2671,7 @@ export default function Home() {
             <div className="skills-list">
               {AGENTS[selectedAgent.name].skills.map((item) => (
                 <button key={item.id} disabled={isAiControlledTurn || selectedAgent.extraActions < 1 || (selectedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.winner} onClick={() => activateSkill(item)} title={item.description}>
-                  <span className="skill-glyph">{item.name.slice(0, 1)}</span><span><strong>{item.name}</strong><small>{item.description}</small></span><b>×{selectedAgent.skills[item.id] ?? 0}</b>
+                  <span className={`skill-glyph ${skillArtClass(item.id)}`} aria-label={`${item.name} 아이콘`} /><span><strong>{item.name}</strong><small>{item.description}</small></span><b>×{selectedAgent.skills[item.id] ?? 0}</b>
                 </button>
               ))}
             </div>
@@ -2712,7 +2719,7 @@ export default function Home() {
             return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} ${liveAgent ? `team-${liveAgent.team}` : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${shot?.hit ? "landed" : ""}`}>
               {acting && <div className="acting-ribbon">지금 행동</div>}
               <div className="combat-side-tag">{liveAgent ? SIDE_LABEL[liveAgent.team] : "교전 요원"} · {isMover ? "진입" : combatScene.waiting ? "대기 반응" : "범위 내 반응"}</div>
-              <div className={`combat-avatar role-${fighter.role}`}>{fighter.name.slice(0, 1)}<span>{isMover ? "ACT" : "REACT"}</span></div>
+              <div className={`combat-avatar role-${fighter.role} ${agentArtClass(fighter.name)}`} aria-label={`${fighter.name} 초상`}><span>{isMover ? "ACT" : "REACT"}</span></div>
               <h3>{fighter.name}</h3><p>{ROLE_LABEL[fighter.role]} · {WEAPONS[fighter.weapon].name}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
               <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div>
@@ -2743,10 +2750,10 @@ export default function Home() {
                   known && agent.waitDirs.length ? `대기 ${agent.waitDirs.join("·")}` : "",
                   known && agent.detected ? "탐지" : "",
                   known && agent.status.vulnerable ? "취약" : "",
-                  known && isProgressing(game, agent) ? game.spike.status === "planting" ? "설치 중" : "해체 중" : "",
+                  known && isChanneling(game, agent) ? game.spike.status === "planting" ? "설치 중" : "해체 중" : "",
                 ].filter(Boolean);
                 return <div key={agent.id} className={`combat-intel-row ${agent.alive ? "" : "down"} ${combatantIds.has(agent.id) ? "engaged" : ""} ${known ? "known" : "unknown"}`}>
-                  <i className={`role-${agent.role}`}>{agent.name.slice(0, 1)}</i>
+                  <i className={`role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} />
                   <span><strong>{agent.name}</strong><small>{known ? `${agent.region}번 · ${WEAPONS[agent.weapon].name}` : "위치·장비 미확인"}</small></span>
                   <b>{known ? agent.alive ? `HP ${agent.hp}+${agent.armor}` : "제거" : agent.alive ? "생존" : "제거"}<small>{stats ? `A${stats.aim} / M${stats.move}` : "NO DATA"}</small></b>
                   <em>{flags.length ? flags.join(" · ") : known ? "대기 없음" : "정보 없음"}</em>
