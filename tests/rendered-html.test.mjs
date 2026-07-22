@@ -73,6 +73,9 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(css, /\.combat-intel-grid/);
   assert.match(css, /\.unit-token\.hostile\.last-known/);
   assert.match(css, /protocol-sprite-atlas\.png/);
+  assert.match(css, /background-size: var\(--sprite-size-x\) var\(--sprite-size-y\)/);
+  assert.doesNotMatch(css, /background-size: 500% 600%/);
+  assert.match(css, /grid-template-columns: 20px 55px minmax\(0, 1fr\) auto/);
   assert.match(page, /agentArtClass/);
   assert.match(page, /skillArtClass/);
   assert.ok(spriteAtlas.byteLength > 100_000);
