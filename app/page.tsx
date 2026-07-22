@@ -163,6 +163,11 @@ interface CombatFighterView {
   shot: ShotResult | null;
 }
 
+interface CombatChoice {
+  type: "attack" | "retreat";
+  retreatRegion?: number;
+}
+
 interface CombatScene {
   id: string;
   mover: CombatFighterView;
@@ -170,6 +175,19 @@ interface CombatScene {
   range: number;
   waiting: boolean;
   simultaneous: boolean;
+  actorId: string;
+  firstActorId: string;
+  secondActorId: string;
+  pendingNextActorId: string | null;
+  round: number;
+  phase: "choice" | "result";
+  resolved: boolean;
+  choices: Record<string, CombatChoice>;
+  canMoverAttack: boolean;
+  moverAimBonus: number;
+  moverMoveBonus: number;
+  moverPriorityBase: number;
+  moverRetreated: boolean;
   evaded: boolean;
   result: string;
   waitDirections: number[];
@@ -305,10 +323,8 @@ function seededShuffle<T>(items: T[], seed: number): T[] {
 
 function createAgent(name: string, team: Side, index: number): Agent {
   const template = AGENTS[name];
-  const presetAttack: WeaponId[] = ["phantom", "judge", "bulldog", "spectre", "outlaw"];
-  const presetDefense: WeaponId[] = ["vandal", "spectre", "outlaw", "bulldog", "operator"];
   const skills: Record<string, number> = {};
-  template.skills.forEach((item) => { skills[item.id] = item.price.includes("2회") ? 2 : 1; });
+  template.skills.forEach((item) => { skills[item.id] = 0; });
   return {
     id: `${team}-${name}`,
     name,
@@ -316,11 +332,11 @@ function createAgent(name: string, team: Side, index: number): Agent {
     team,
     region: team === "attack" ? 1 : 7,
     hp: 2,
-    armor: index < 2 ? 2 : 1,
-    armorType: index < 2 ? "heavy" : "light",
+    armor: 0,
+    armorType: "none",
     armorDamaged: false,
     alive: true,
-    weapon: team === "attack" ? presetAttack[index] : presetDefense[index],
+    weapon: "classic",
     extraActions: 0,
     waitDirs: [],
     waitStamp: 0,
@@ -345,7 +361,7 @@ function createTeam(side: Side, names: string[], seed: number): TeamState {
     hand: shuffled.slice(0, 5),
     deck: shuffled.slice(5),
     discard: [],
-    funds: 65,
+    funds: 25,
     rushUsed: false,
     cover: false,
     buyLocked: false,
@@ -359,7 +375,7 @@ function createInitialGame(
   const attack = createTeam("attack", attackNames, 17);
   const defense = createTeam("defense", defenseNames, 29);
   return {
-    matchRound: 3,
+    matchRound: 1,
     cycle: 1,
     turnSide: "defense",
     actionsUsed: 0,
@@ -542,27 +558,6 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const revealedWaitDirs = [...enemy.waitDirs];
   const moverBefore = { hp: mover.hp, armor: mover.armor };
   const enemyBefore = { hp: enemy.hp, armor: enemy.armor };
-  const baseMoverStats = finalStats(game, mover);
-  const baseEnemyStats = finalStats(game, enemy);
-  const baseMoverPrio = Math.max(1, moverPriority + mover.status.priorityPenalty - baseMoverStats.priorityBoost);
-  const baseEnemyPrio = Math.max(1, (waiting ? 1 : 3) + enemy.status.priorityPenalty - baseEnemyStats.priorityBoost);
-
-  if (mover.status.evadeReady) {
-    mover.status.evadeReady = false;
-    addLog(game, `${mover.name}의 순풍 — ${enemy.name}의 첫 공격 각을 회피했습니다.`);
-    game.combatQueue.push({
-      id: `combat-${Date.now()}-${game.combatQueue.length}`,
-      mover: { id: mover.id, name: mover.name, role: mover.role, weapon: mover.weapon, region: mover.region, priority: baseMoverPrio, hpBefore: moverBefore.hp, hpAfter: mover.hp, armorBefore: moverBefore.armor, armorAfter: mover.armor, shot: null },
-      holder: { id: enemy.id, name: enemy.name, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: baseEnemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: null },
-      range,
-      waiting,
-      simultaneous: false,
-      evaded: true,
-      result: `${mover.name}이 순풍으로 첫 공격을 회피했습니다.`,
-      waitDirections: revealedWaitDirs,
-    });
-    return;
-  }
 
   let tradeAim = 0;
   let tradePriority = 0;
@@ -577,49 +572,34 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const enemyStats = finalStats(game, enemy);
   const moverPrio = Math.max(1, moverPriority + mover.status.priorityPenalty - moverStats.priorityBoost - tradePriority);
   const enemyPrio = Math.max(1, (waiting ? 1 : 3) + enemy.status.priorityPenalty - enemyStats.priorityBoost);
-  const moverShot = canAttack ? makeShot(game, mover, enemy, range, false, tradeAim, 0) : null;
-  const enemyShot = makeShot(game, enemy, mover, range, waiting, 0, moverMoveBonus);
-
-  const shotLabel = (shooter: Agent, target: Agent, shot: ShotResult) => {
-    if (!shot.hit) {
-      addLog(game, `${shooter.name} → ${target.name} 빗나감 [${shot.aimRoll}/${shot.aimSize} - ${shot.moveRoll}/${shot.moveSize}]`);
-      return;
-    }
-    applyDamage(game, shooter, target, shot.damage, `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"}`);
-  };
-
-  addLog(game, `교전: ${mover.name}(우선 ${moverPrio}) ↔ ${enemy.name}(우선 ${enemyPrio})`);
-  if (!moverShot) {
-    shotLabel(enemy, mover, enemyShot);
-  } else if (moverPrio < enemyPrio) {
-    shotLabel(mover, enemy, moverShot);
-    if (enemy.alive) shotLabel(enemy, mover, enemyShot);
-  } else if (enemyPrio < moverPrio) {
-    shotLabel(enemy, mover, enemyShot);
-    if (mover.alive) shotLabel(mover, enemy, moverShot);
-  } else {
-    shotLabel(mover, enemy, moverShot);
-    shotLabel(enemy, mover, enemyShot);
-  }
-  const result = !mover.alive && !enemy.alive
-    ? "동시 교전으로 두 요원이 모두 제거되었습니다."
-    : !mover.alive
-      ? `${enemy.name}이 교전을 승리했습니다.`
-      : !enemy.alive
-        ? `${mover.name}이 교전을 승리했습니다.`
-        : "양측 모두 생존했습니다.";
+  const simultaneous = moverPrio === enemyPrio;
+  const firstActorId = moverPrio <= enemyPrio ? mover.id : enemy.id;
+  const secondActorId = firstActorId === mover.id ? enemy.id : mover.id;
+  addLog(game, `지속 교전 시작: ${mover.name}(우선 ${moverPrio}) ↔ ${enemy.name}(우선 ${enemyPrio}).`);
   game.combatQueue.push({
     id: `combat-${Date.now()}-${game.combatQueue.length}`,
-    mover: { id: mover.id, name: mover.name, role: mover.role, weapon: mover.weapon, region: mover.region, priority: moverPrio, hpBefore: moverBefore.hp, hpAfter: mover.hp, armorBefore: moverBefore.armor, armorAfter: mover.armor, shot: moverShot },
-    holder: { id: enemy.id, name: enemy.name, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: enemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: enemyShot },
+    mover: { id: mover.id, name: mover.name, role: mover.role, weapon: mover.weapon, region: mover.region, priority: moverPrio, hpBefore: moverBefore.hp, hpAfter: mover.hp, armorBefore: moverBefore.armor, armorAfter: mover.armor, shot: null },
+    holder: { id: enemy.id, name: enemy.name, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: enemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: null },
     range,
     waiting,
-    simultaneous: moverPrio === enemyPrio,
+    simultaneous,
+    actorId: firstActorId,
+    firstActorId,
+    secondActorId,
+    pendingNextActorId: null,
+    round: 1,
+    phase: "choice",
+    resolved: false,
+    choices: {},
+    canMoverAttack: canAttack,
+    moverAimBonus: tradeAim,
+    moverMoveBonus,
+    moverPriorityBase: moverPriority,
+    moverRetreated: false,
     evaded: false,
-    result,
+    result: simultaneous ? "동일 우선도입니다. 양쪽 행동을 선택한 뒤 동시에 처리합니다." : `${getAgent(game, firstActorId)?.name}이 우선도에 따라 먼저 행동합니다.`,
     waitDirections: revealedWaitDirs,
   });
-  checkWinner(game);
 }
 
 function triggerHazards(game: GameState, agent: Agent, from: number, to: number) {
@@ -668,7 +648,6 @@ function moveAgent(game: GameState, agent: Agent, target: number, kind: CardKind
   const path = shortestPath(origin, target);
   const entryBonus = kind === "entry" ? 1 : 0;
   const peekBonus = kind === "peek" ? 2 : 0;
-  let engagedEnemy: Agent | null = null;
   agent.waitDirs = [];
   cancelProgress(game, agent);
 
@@ -689,17 +668,13 @@ function moveAgent(game: GameState, agent: Agent, target: number, kind: CardKind
       const priority = kind === "entry" && isFinal ? 2 : kind === "shadow" ? 4 : kind === "special" ? 3 : 3;
       const waiting = watchers.some((watcher) => watcher.id === enemy.id);
       resolveEngagement(game, agent, enemy, priority, canAttack, entryBonus + peekBonus, waiting);
-      engagedEnemy = enemy;
-      if (!agent.alive || game.winner) break;
+      if (game.combatQueue.length > 0 || !agent.alive || game.winner) break;
     }
+    if (game.combatQueue.length > 0) break;
   }
 
-  if (kind === "peek" && engagedEnemy && agent.alive) {
-    const lastRegion = agent.region;
-    agent.region = origin;
-    agent.waitDirs = [];
-    game.trade = { enemyId: engagedEnemy.id, team: agent.team, sourceId: agent.id };
-    addLog(game, `${agent.name} 피킹 이탈: ${lastRegion} → ${origin}. ${engagedEnemy.name} 트레이드 표식 생성.`);
+  if (game.combatQueue.length > 0) {
+    addLog(game, `${agent.name}의 이동이 교전 지점에서 일시 정지되었습니다.`);
   } else if (agent.alive) {
     addLog(game, `${agent.name} 이동 완료: ${REGIONS.find((region) => region.id === origin)?.name} → ${REGIONS.find((region) => region.id === agent.region)?.name}`);
   }
@@ -787,7 +762,7 @@ function TitleScreen({ onStart }: { onStart: () => void }) {
         <div className="title-map-image" />
         <div className="title-map-copy"><span>MAP // GRID-01</span><strong>17개 전술 구역</strong><p>2개 사이트 · 26개 연결 · 사운드 정보 없음</p></div>
       </aside>
-      <footer className="title-footer"><span>BUILD 0.2 // COMBAT REVEAL UPDATE</span><span>한 화면에서 두 플레이어가 번갈아 진행합니다</span></footer>
+      <footer className="title-footer"><span>BUILD 0.3 // PERSISTENT COMBAT UPDATE</span><span>한 화면에서 두 플레이어가 번갈아 진행합니다</span></footer>
     </main>
   );
 }
@@ -845,11 +820,46 @@ function SelectionScreen(props: SelectionScreenProps) {
             </article>;
           })}
           <div className="deck-rule"><b>역할 제한</b><span>엔트리 → 타격대</span><span>추종 → 척후대·전략가</span><span>지역 장악 → 감시자</span></div>
-          <button className="confirm-lineup" disabled={props.attackPick.length !== 5 || props.defensePick.length !== 5} onClick={props.onConfirm}><span>STEP 02</span><strong>수비 배치로 이동</strong></button>
+          <button className="confirm-lineup" disabled={props.attackPick.length !== 5 || props.defensePick.length !== 5} onClick={props.onConfirm}><span>STEP 02</span><strong>수비 구매로 이동</strong></button>
         </aside>
       </section>
     </main>
   );
+}
+
+interface PurchaseScreenProps {
+  game: GameState;
+  side: Side;
+  selectedId: string | null;
+  step: string;
+  onSelect: (id: string) => void;
+  onWeapon: (weapon: Weapon) => void;
+  onArmor: (type: "light" | "regen" | "heavy", price: number, value: number) => void;
+  onSkill: (skill: SkillDefinition) => void;
+  onContinue: () => void;
+  onBack: () => void;
+}
+
+function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onArmor, onSkill, onContinue, onBack }: PurchaseScreenProps) {
+  const team = game.teams[side];
+  const agent = getAgent(game, selectedId) ?? team.agents[0];
+  const spent = 25 - team.funds;
+  return <main className={`setup-screen purchase-screen purchase-${side}`}>
+    <header className="setup-topbar"><button onClick={onBack}>← 이전 단계</button><div><span>{step}</span><strong>{SIDE_LABEL[side]} 구매 단계</strong></div><span className="purchase-wallet">팀 자금 <b>{team.funds}원</b></span></header>
+    <section className="purchase-body">
+      <aside className="purchase-roster"><span className="eyebrow">TEAM LOADOUT</span><h2>{SIDE_LABEL[side]}</h2><p>모든 요원은 클래식과 방어구 0, 스킬 0회로 시작합니다. 팀 공동 자금 25원을 원하는 요원에게 분배하세요.</p><div>{team.agents.map((item) => <button key={item.id} className={agent?.id === item.id ? "selected" : ""} onClick={() => onSelect(item.id)}><i className={`role-${item.role}`}>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></button>)}</div><footer><span>사용</span><b>{spent}원</b><i style={{ width: `${(spent / 25) * 100}%` }} /></footer></aside>
+      <section className="purchase-catalog">
+        <div className="purchase-agent-head"><div className={`purchase-avatar role-${agent.role}`}>{agent.name.slice(0, 1)}</div><div><span className="eyebrow">SELECTED AGENT</span><h2>{agent.name}</h2><p>{ROLE_LABEL[agent.role]} · 에임 {ROLE_STATS[agent.role].aim} / 무빙 {ROLE_STATS[agent.role].move}</p></div><div className="current-loadout"><span>현재 장비</span><strong>{WEAPONS[agent.weapon].name}</strong><small>방어 {agent.armor} · 스킬 {Object.values(agent.skills).reduce((sum, value) => sum + value, 0)}회</small></div></div>
+        <div className="purchase-section-title"><div><span>01</span><strong>총기</strong></div><p>1라운드 해금: 클래식 · 셰리프</p></div>
+        <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > 1; const equipped = agent.weapon === weapon.id; return <button key={weapon.id} disabled={locked || equipped || weapon.price > team.funds} className={`${locked ? "locked" : ""} ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : weapon.price ? `${weapon.price}원` : "기본"}</b></button>; })}</div>
+        <div className="purchase-lower">
+          <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors"><button disabled={team.funds < 2 || agent.armorType === "light"} onClick={() => onArmor("light", 2, 1)}><strong>소형 방어구</strong><span>방어 1</span><b>2원</b></button><button disabled={team.funds < 4 || agent.armorType === "regen"} onClick={() => onArmor("regen", 4, 1)}><strong>회복 방어구</strong><span>턴 종료 회복</span><b>4원</b></button><button disabled={team.funds < 6 || agent.armorType === "heavy"} onClick={() => onArmor("heavy", 6, 2)}><strong>대형 방어구</strong><span>방어 2</span><b>6원</b></button></div></div>
+          <div><div className="purchase-section-title"><div><span>03</span><strong>스킬</strong></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span>{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
+        </div>
+      </section>
+      <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "첫 수비 턴"}</span><strong>구매 확정</strong></button></aside>
+    </section>
+  </main>;
 }
 
 interface DeploymentScreenProps {
@@ -866,7 +876,7 @@ function DeploymentScreen({ game, selectedId, onSelect, onPlace, onBack, onStart
   const allowed = [7, 10, 13];
   return (
     <main className="setup-screen deployment-screen">
-      <header className="setup-topbar"><button onClick={onBack}>← 요원 선택</button><div><span>STEP 02</span><strong>수비팀 사전 배치</strong></div><span className="deck-locked">15장 덱 잠금 완료</span></header>
+      <header className="setup-topbar"><button onClick={onBack}>← 수비 구매</button><div><span>STEP 03</span><strong>수비팀 사전 배치</strong></div><span className="deck-locked">15장 덱 잠금 완료</span></header>
       <section className="deployment-body">
         <aside className="deployment-roster"><span className="eyebrow">DEFENDER LINEUP</span><h2>요원 배치</h2><p>각 요원은 수비 시작 지점에서 연결된 구역으로 최대 1칸 이동할 수 있습니다. 같은 구역에 여러 명을 배치할 수 있습니다.</p>
           <div>{defenders.map((agent) => <button key={agent.id} className={selectedId === agent.id ? "selected" : ""} onClick={() => onSelect(agent.id)}><i className={`role-${agent.role}`}>{agent.name.slice(0, 1)}</i><span><strong>{agent.name}</strong><small>{ROLE_LABEL[agent.role]}</small></span><b>{agent.region}번</b></button>)}</div>
@@ -876,20 +886,21 @@ function DeploymentScreen({ game, selectedId, onSelect, onPlace, onBack, onStart
           <div className="deployment-map-image" /><div className="deployment-vignette" />
           {EDGES.map(([a, b]) => { const start = REGIONS.find((region) => region.id === a)!; const end = REGIONS.find((region) => region.id === b)!; const dx = end.x - start.x; const dy = end.y - start.y; const length = Math.sqrt(dx * dx + dy * dy); const angle = Math.atan2(dy, dx) * 180 / Math.PI; return <span key={`${a}-${b}`} className="map-edge" style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />; })}
           {REGIONS.map((region) => { const units = defenders.filter((agent) => agent.region === region.id); const valid = allowed.includes(region.id); return <button key={region.id} disabled={!valid} className={`deployment-node ${valid ? "valid" : ""}`} style={{ left: `${region.x}%`, top: `${region.y}%` }} onClick={() => onPlace(region.id)}><span>{region.id}</span>{valid && <small>{regionName(region.id)}</small>}<i>{units.map((agent) => <b key={agent.id} className={`role-${agent.role}`}>{agent.name.slice(0, 1)}</b>)}</i></button>; })}
-          <div className="deployment-callout"><span>수비팀 배치 범위</span><strong>시작 지점과 인접 1칸</strong><p>배치를 확정하면 수비팀의 첫 행동 턴이 시작됩니다.</p></div>
+          <div className="deployment-callout"><span>수비팀 배치 범위</span><strong>시작 지점과 인접 1칸</strong><p>배치를 확정하면 공격팀 구매 단계로 넘어갑니다.</p></div>
         </div>
-        <aside className="deployment-summary"><span className="eyebrow">READY CHECK</span><h2>작전 준비</h2><div className="versus-line"><article><span>ATK</span>{game.teams.attack.agents.map((agent) => <i key={agent.id}>{agent.name.slice(0, 1)}</i>)}</article><b>VS</b><article><span>DEF</span>{defenders.map((agent) => <i key={agent.id}>{agent.name.slice(0, 1)}</i>)}</article></div><ul><li><i /> 공격팀 시작 위치 1번</li><li><i /> 수비팀 배치 확정</li><li><i /> 수비팀 선행 턴</li></ul><button onClick={onStart}><span>DEPLOYMENT READY</span><strong>작전 시작</strong></button></aside>
+        <aside className="deployment-summary"><span className="eyebrow">READY CHECK</span><h2>작전 준비</h2><div className="versus-line"><article><span>ATK</span>{game.teams.attack.agents.map((agent) => <i key={agent.id}>{agent.name.slice(0, 1)}</i>)}</article><b>VS</b><article><span>DEF</span>{defenders.map((agent) => <i key={agent.id}>{agent.name.slice(0, 1)}</i>)}</article></div><ul><li><i /> 공격팀 시작 위치 1번</li><li><i /> 수비팀 배치 확정</li><li><i /> 다음: 공격팀 구매</li></ul><button onClick={onStart}><span>STEP 04</span><strong>공격팀 구매</strong></button></aside>
       </section>
     </main>
   );
 }
 
 export default function Home() {
-  const [stage, setStage] = useState<"title" | "select" | "deploy" | "play">("title");
+  const [stage, setStage] = useState<"title" | "select" | "buy_defense" | "deploy" | "buy_attack" | "play">("title");
   const [attackPick, setAttackPick] = useState<string[]>([]);
   const [defensePick, setDefensePick] = useState<string[]>([]);
   const [pickingSide, setPickingSide] = useState<Side>("attack");
   const [deploymentAgentId, setDeploymentAgentId] = useState<string | null>(null);
+  const [setupAgentId, setSetupAgentId] = useState<string | null>(null);
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [showHelp, setShowHelp] = useState(false);
   const [showShop, setShowShop] = useState(false);
@@ -949,8 +960,38 @@ export default function Home() {
     const next = createInitialGame(attackPick, defensePick);
     setGame(next);
     setDeploymentAgentId(next.teams.defense.agents[0]?.id ?? null);
-    setStage("deploy");
+    setSetupAgentId(next.teams.defense.agents[0]?.id ?? null);
+    setStage("buy_defense");
   };
+
+  const setupBuyWeapon = (side: Side, weapon: Weapon) => mutate((draft) => {
+    const team = draft.teams[side];
+    const agent = getAgent(draft, setupAgentId);
+    if (!agent || agent.team !== side || weapon.unlock > 1 || weapon.price > team.funds || agent.weapon === weapon.id) return;
+    agent.weapon = weapon.id;
+    team.funds -= weapon.price;
+  });
+
+  const setupBuyArmor = (side: Side, type: "light" | "regen" | "heavy", price: number, value: number) => mutate((draft) => {
+    const team = draft.teams[side];
+    const agent = getAgent(draft, setupAgentId);
+    if (!agent || agent.team !== side || team.funds < price || agent.armorType === type) return;
+    agent.armorType = type;
+    agent.armor = value;
+    agent.armorDamaged = false;
+    team.funds -= price;
+  });
+
+  const setupBuySkill = (side: Side, definition: SkillDefinition) => mutate((draft) => {
+    const team = draft.teams[side];
+    const agent = getAgent(draft, setupAgentId);
+    if (!agent || agent.team !== side) return;
+    const max = definition.price.includes("2회") ? 2 : 1;
+    const price = max === 2 ? 1 : 2;
+    if ((agent.skills[definition.id] ?? 0) >= max || team.funds < price) return;
+    agent.skills[definition.id] = (agent.skills[definition.id] ?? 0) + 1;
+    team.funds -= price;
+  });
 
   const placeDefender = (region: number) => {
     if (!deploymentAgentId || ![7, 10, 13].includes(region)) return;
@@ -966,6 +1007,7 @@ export default function Home() {
     setDefensePick([]);
     setPickingSide("attack");
     setDeploymentAgentId(null);
+    setSetupAgentId(null);
     setShowShop(false);
     setShowHelp(false);
     setStage("title");
@@ -973,7 +1015,9 @@ export default function Home() {
 
   if (stage === "title") return <TitleScreen onStart={() => setStage("select")} />;
   if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} />;
-  if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => setStage("select")} onStart={() => setStage("play")} />;
+  if (stage === "buy_defense") return <PurchaseScreen game={game} side="defense" selectedId={setupAgentId} step="STEP 02" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("defense", weapon)} onArmor={(type, price, value) => setupBuyArmor("defense", type, price, value)} onSkill={(item) => setupBuySkill("defense", item)} onBack={() => setStage("select")} onContinue={() => setStage("deploy")} />;
+  if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => { setSetupAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("buy_defense"); }} onStart={() => { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("buy_attack"); }} />;
+  if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onBack={() => setStage("deploy")} onContinue={() => { mutate((draft) => { draft.turnSide = "defense"; draft.teams.attack.buyLocked = true; draft.teams.defense.buyLocked = true; draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null; addLog(draft, "공격팀 구매 완료. 수비팀 첫 턴을 시작합니다."); }); setStage("play"); }} />;
 
   const selectAgent = (id: string) => {
     const agent = getAgent(game, id);
@@ -1338,13 +1382,176 @@ export default function Home() {
 
   const cancelTargeting = () => mutate((draft) => { draft.targeting = null; draft.selectedCardId = null; });
   const skipWait = () => mutate((draft) => { const agent = getAgent(draft, draft.pendingWait); if (agent) agent.waitDirs = []; draft.pendingWait = null; });
-  const dismissCombat = () => mutate((draft) => { draft.combatQueue.shift(); });
+
+  const refreshCombatView = (scene: CombatScene, agent: Agent, shot: ShotResult | null, before: { hp: number; armor: number }) => {
+    const view = scene.mover.id === agent.id ? scene.mover : scene.holder;
+    view.region = agent.region;
+    view.weapon = agent.weapon;
+    view.hpBefore = before.hp;
+    view.armorBefore = before.armor;
+    view.hpAfter = agent.hp;
+    view.armorAfter = agent.armor;
+    view.shot = shot;
+  };
+
+  const performCombatShot = (draft: GameState, scene: CombatScene, shooter: Agent, target: Agent) => {
+    const shooterBefore = { hp: shooter.hp, armor: shooter.armor };
+    const targetBefore = { hp: target.hp, armor: target.armor };
+    scene.mover.shot = null;
+    scene.holder.shot = null;
+    if (target.status.evadeReady) {
+      target.status.evadeReady = false;
+      scene.evaded = true;
+      refreshCombatView(scene, shooter, null, shooterBefore);
+      refreshCombatView(scene, target, null, targetBefore);
+      addLog(draft, `${target.name}이 순풍으로 ${shooter.name}의 공격을 회피했습니다.`);
+      return { shot: null, text: `${target.name}이 공격을 회피했습니다.` };
+    }
+    scene.evaded = false;
+    const shooterIsMover = shooter.id === scene.mover.id;
+    const targetMoveBonus = target.id === scene.mover.id ? scene.moverMoveBonus : 0;
+    const shot = makeShot(draft, shooter, target, scene.range, !shooterIsMover && scene.waiting, shooterIsMover ? scene.moverAimBonus : 0, targetMoveBonus);
+    if (shooterIsMover) scene.moverAimBonus = 0;
+    if (shot.hit) applyDamage(draft, shooter, target, shot.damage, `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"}`);
+    else addLog(draft, `${shooter.name} → ${target.name} 빗나감 [${shot.aimRoll}/${shot.aimSize} - ${shot.moveRoll}/${shot.moveSize}]`);
+    refreshCombatView(scene, shooter, shot, shooterBefore);
+    refreshCombatView(scene, target, null, targetBefore);
+    return { shot, text: shot.hit ? `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"} · 피해 ${shot.damage}` : `${shooter.name}의 공격이 빗나갔습니다.` };
+  };
+
+  const executeCombatRetreat = (draft: GameState, scene: CombatScene, agent: Agent, region: number) => {
+    const before = { hp: agent.hp, armor: agent.armor };
+    const from = agent.region;
+    agent.waitDirs = [];
+    if (draft.pendingWait === agent.id) draft.pendingWait = null;
+    cancelProgress(draft, agent);
+    agent.region = region;
+    agent.status.aimPenalty += 1;
+    agent.status.moveBonus -= 1;
+    if (agent.id === scene.mover.id) scene.moverRetreated = true;
+    const opponentId = agent.id === scene.mover.id ? scene.holder.id : scene.mover.id;
+    if (agent.team === draft.turnSide) draft.trade = { enemyId: opponentId, team: agent.team, sourceId: agent.id };
+    refreshCombatView(scene, agent, null, before);
+    addLog(draft, `${agent.name} 교전 이탈: ${regionName(from)} → ${regionName(region)} · 에임/무빙 -1.`);
+  };
+
+  const resolveSimultaneousChoices = (draft: GameState, scene: CombatScene) => {
+    const mover = getAgent(draft, scene.mover.id);
+    const holder = getAgent(draft, scene.holder.id);
+    if (!mover || !holder) return;
+    const moverChoice = scene.choices[mover.id];
+    const holderChoice = scene.choices[holder.id];
+    if (!moverChoice || !holderChoice) return;
+    const lines: string[] = [];
+    scene.mover.shot = null;
+    scene.holder.shot = null;
+    const moverBefore = { hp: mover.hp, armor: mover.armor };
+    const holderBefore = { hp: holder.hp, armor: holder.armor };
+    let moverShot: ShotResult | null = null;
+    let holderShot: ShotResult | null = null;
+    if (moverChoice.type === "attack" && scene.canMoverAttack) {
+      if (holder.status.evadeReady) { holder.status.evadeReady = false; scene.evaded = true; lines.push(`${holder.name} 회피`); }
+      else moverShot = makeShot(draft, mover, holder, scene.range, false, scene.moverAimBonus, 0);
+    }
+    if (holderChoice.type === "attack") {
+      if (mover.status.evadeReady) { mover.status.evadeReady = false; scene.evaded = true; lines.push(`${mover.name} 회피`); }
+      else holderShot = makeShot(draft, holder, mover, scene.range, scene.waiting, 0, scene.moverMoveBonus);
+    }
+    scene.moverAimBonus = 0;
+    if (moverShot?.hit) applyDamage(draft, mover, holder, moverShot.damage, `${mover.name} ${moverShot.head ? "헤드샷" : "몸통 명중"}`);
+    if (holderShot?.hit) applyDamage(draft, holder, mover, holderShot.damage, `${holder.name} ${holderShot.head ? "헤드샷" : "몸통 명중"}`);
+    if (moverChoice.type === "attack" && moverShot) lines.push(moverShot.hit ? `${mover.name} 피해 ${moverShot.damage}` : `${mover.name} 빗나감`);
+    if (holderChoice.type === "attack" && holderShot) lines.push(holderShot.hit ? `${holder.name} 피해 ${holderShot.damage}` : `${holder.name} 빗나감`);
+    refreshCombatView(scene, mover, moverShot, moverBefore);
+    refreshCombatView(scene, holder, holderShot, holderBefore);
+    if (mover.alive && moverChoice.type === "retreat" && moverChoice.retreatRegion) executeCombatRetreat(draft, scene, mover, moverChoice.retreatRegion);
+    if (holder.alive && holderChoice.type === "retreat" && holderChoice.retreatRegion) executeCombatRetreat(draft, scene, holder, holderChoice.retreatRegion);
+    const retreated = moverChoice.type === "retreat" || holderChoice.type === "retreat";
+    scene.resolved = retreated || !mover.alive || !holder.alive;
+    scene.pendingNextActorId = scene.resolved ? null : scene.firstActorId;
+    scene.phase = "result";
+    scene.result = retreated ? "동일 우선도 행동에서 이탈이 선언되어 교전이 종료됩니다." : lines.join(" · ") || "양쪽 행동이 처리되었습니다.";
+    checkWinner(draft);
+  };
+
+  const combatAttack = () => mutate((draft) => {
+    const scene = draft.combatQueue[0];
+    if (!scene || scene.phase !== "choice") return;
+    const actor = getAgent(draft, scene.actorId);
+    const targetId = scene.actorId === scene.mover.id ? scene.holder.id : scene.mover.id;
+    const target = getAgent(draft, targetId);
+    if (!actor?.alive || !target?.alive || (actor.id === scene.mover.id && !scene.canMoverAttack)) return;
+    if (scene.simultaneous) {
+      scene.choices[actor.id] = { type: "attack" };
+      const otherId = actor.id === scene.firstActorId ? scene.secondActorId : scene.firstActorId;
+      if (!scene.choices[otherId]) {
+        scene.actorId = otherId;
+        scene.result = `${actor.name} 행동 선택 완료. 동일 우선도 상대의 선택을 기다립니다.`;
+        return;
+      }
+      resolveSimultaneousChoices(draft, scene);
+      return;
+    }
+    const outcome = performCombatShot(draft, scene, actor, target);
+    scene.resolved = !target.alive || !actor.alive;
+    scene.pendingNextActorId = scene.resolved ? null : target.id;
+    scene.phase = "result";
+    scene.result = scene.resolved ? `${target.name}이 제거되어 교전이 종료됩니다.` : outcome.text;
+    checkWinner(draft);
+  });
+
+  const combatRetreat = (region: number) => mutate((draft) => {
+    const scene = draft.combatQueue[0];
+    if (!scene || scene.phase !== "choice") return;
+    const actor = getAgent(draft, scene.actorId);
+    if (!actor?.alive || !(GRAPH.get(actor.region) ?? []).includes(region)) return;
+    if (scene.simultaneous) {
+      scene.choices[actor.id] = { type: "retreat", retreatRegion: region };
+      const otherId = actor.id === scene.firstActorId ? scene.secondActorId : scene.firstActorId;
+      if (!scene.choices[otherId]) {
+        scene.actorId = otherId;
+        scene.result = `${actor.name} 행동 선택 완료. 동일 우선도 상대의 선택을 기다립니다.`;
+        return;
+      }
+      resolveSimultaneousChoices(draft, scene);
+      return;
+    }
+    executeCombatRetreat(draft, scene, actor, region);
+    scene.resolved = true;
+    scene.pendingNextActorId = null;
+    scene.phase = "result";
+    scene.result = `${actor.name}이 교전에서 이탈했습니다.`;
+  });
+
+  const advanceCombat = () => mutate((draft) => {
+    const scene = draft.combatQueue[0];
+    if (!scene || scene.phase !== "result") return;
+    if (!scene.resolved && scene.pendingNextActorId) {
+      if (scene.pendingNextActorId === scene.firstActorId) scene.round += 1;
+      scene.actorId = scene.pendingNextActorId;
+      scene.pendingNextActorId = null;
+      scene.phase = "choice";
+      scene.choices = {};
+      scene.result = `${getAgent(draft, scene.actorId)?.name}의 교전 차례입니다. 공격 또는 이탈을 선택하세요.`;
+      return;
+    }
+    draft.combatQueue.shift();
+    const mover = getAgent(draft, scene.mover.id);
+    if (!mover?.alive || scene.moverRetreated || draft.combatQueue.length > 0) return;
+    const watchers = watchersFor(draft, mover);
+    const occupants = draft.teams[otherSide(mover.team)].agents.filter((enemy) => enemy.alive && enemy.region === mover.region && !watchers.some((watcher) => watcher.id === enemy.id));
+    const nextEnemy = [...watchers, ...occupants][0];
+    if (nextEnemy) resolveEngagement(draft, mover, nextEnemy, scene.moverPriorityBase, scene.canMoverAttack, scene.moverMoveBonus, watchers.some((watcher) => watcher.id === nextEnemy.id));
+    else addLog(draft, `${mover.name}의 교전이 종료되었습니다.`);
+  });
   const selectedRegion = selectedAgent ? REGIONS.find((region) => region.id === selectedAgent.region) : null;
   const droppedHere = selectedAgent ? game.droppedWeapons.find((item) => item.region === selectedAgent.region) : null;
   const canPlant = selectedAgent?.team === "attack" && selectedRegion?.site && game.spike.status === "carried" && game.spike.carrierId === selectedAgent.id;
   const canHalf = selectedAgent?.team === "defense" && game.spike.status === "planted" && game.spike.region === selectedAgent.region;
   const canFinal = selectedAgent?.team === "defense" && game.spike.status === "half" && game.spike.region === selectedAgent.region && game.spike.halfCycle !== game.cycle;
   const combatScene = game.combatQueue[0] ?? null;
+  const combatActor = combatScene ? getAgent(game, combatScene.actorId) : null;
+  const combatRetreatOptions = combatActor ? GRAPH.get(combatActor.region) ?? [] : [];
 
   return (
     <main className={`game-shell side-${game.turnSide}`}>
@@ -1524,33 +1731,34 @@ export default function Home() {
       {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner}`}><span className="eyebrow">ROUND COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p><button onClick={restartToTitle}>새 작전 시작</button></div></div>}
 
       {combatScene && <div className="modal-backdrop combat-backdrop"><section className="combat-modal">
-        <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT DETECTED</span><h2>교전 해결</h2></div><div><span>{game.combatQueue.length} ENCOUNTER{game.combatQueue.length > 1 ? "S" : ""}</span><b>{combatScene.simultaneous ? "동시 처리" : "우선도 처리"}</b></div></header>
+        <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>지속 교전 · {combatScene.round}회차</h2></div><div><span>{combatScene.phase === "choice" ? "ACTION REQUIRED" : "ACTION RESOLVED"}</span><b>{combatScene.simultaneous ? "동일 우선도 동시 처리" : "낮은 숫자부터 행동"}</b></div></header>
         <div className="combat-location"><span>교전 구역</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i>{combatScene.waiting && <b>대기 공격 발동</b>}</div>
         <div className="combat-stage">
           {([combatScene.mover, combatScene.holder] as CombatFighterView[]).map((fighter, index) => {
             const shot = fighter.shot;
             const isMover = index === 0;
             const survived = fighter.hpAfter > 0;
-            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} ${survived ? "" : "eliminated"}`}>
+            const acting = combatScene.phase === "choice" && fighter.id === combatScene.actorId;
+            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""}`}>
               <div className="combat-side-tag">{isMover ? "진입 요원" : combatScene.waiting ? "대기 요원" : "수비 요원"}</div>
               <div className={`combat-avatar role-${fighter.role}`}>{fighter.name.slice(0, 1)}<span>{isMover ? "ACT" : "REACT"}</span></div>
               <h3>{fighter.name}</h3><p>{ROLE_LABEL[fighter.role]} · {WEAPONS[fighter.weapon].name}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
               <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div>
               <div className={`combat-roll ${!shot ? "no-shot" : shot.hit ? shot.head ? "headshot" : "hit" : "miss"}`}>
-                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? `피해 ${shot.damage}` : "피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : "NO ATTACK"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : "행동 규칙상 공격 불가"}</small></div>}
+                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? `피해 ${shot.damage}` : "피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : "상대 행동 대기"}</small></div>}
               </div>
             </article>;
           })}
           <div className="combat-versus"><span>PRIORITY</span><b>VS</b><i>{combatScene.mover.priority === combatScene.holder.priority ? "=" : combatScene.mover.priority < combatScene.holder.priority ? "←" : "→"}</i></div>
         </div>
-        <div className="combat-result"><div><span>RESULT</span><strong>{combatScene.result}</strong><p>{combatScene.holder.name}의 위치와 대기 방향은 이번 {SIDE_LABEL[game.turnSide]} 턴이 끝날 때까지 지도에 공개됩니다.</p></div><div className="revealed-hold"><span>공개된 대기</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
-        <button className="combat-continue" onClick={dismissCombat}><span>{game.combatQueue.length > 1 ? "다음 1대1 교전" : "전장으로 복귀"}</span><small>{game.combatQueue.length > 1 ? `${game.combatQueue.length - 1}개 교전 대기 중` : "공개 정보가 지도에 표시됩니다"}</small></button>
+        <div className="combat-result"><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다.</p></div><div className="revealed-hold"><span>공개된 대기</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
+        {combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small></button><div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1을 시작합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
       {showShop && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">TEAM ARMORY</span><h2>{selectedAgent?.name} 장비 구매</h2></div><div><strong>¤ {activeTeam.funds}</strong><button onClick={() => setShowShop(false)}>닫기</button></div></div>
-        <p className="shop-note">매치 3라운드 테스트: 모든 총기 해금 · 구매 자금은 팀 공동입니다. 기존 장비 환불은 없습니다.</p>
+        <p className="shop-note">매치 1라운드: 클래식과 셰리프만 해금 · 구매 자금은 팀 공동입니다. 기존 장비 환불은 없습니다.</p>
         <div className="weapon-grid">{Object.values(WEAPONS).map((weapon) => <button key={weapon.id} className={selectedAgent?.weapon === weapon.id ? "equipped" : ""} disabled={weapon.unlock > game.matchRound || weapon.price > activeTeam.funds || activeTeam.buyLocked} onClick={() => buyWeapon(weapon)}><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "RFL"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><b>{weapon.price ? `${weapon.price}원` : "기본"}</b></button>)}</div>
         <h3>방어구</h3><div className="armor-grid"><button onClick={() => buyArmor("light", 2, 1)} disabled={activeTeam.funds < 2}><strong>소형 방어구</strong><small>방어 1 · 2원</small></button><button onClick={() => buyArmor("regen", 4, 1)} disabled={activeTeam.funds < 4}><strong>회복 방어구</strong><small>팀 턴 종료 회복 · 4원</small></button><button onClick={() => buyArmor("heavy", 6, 2)} disabled={activeTeam.funds < 6}><strong>대형 방어구</strong><small>방어 2 · 6원</small></button></div>
       </div></div>}
@@ -1558,14 +1766,14 @@ export default function Home() {
       {showHelp && <div className="modal-backdrop" onMouseDown={() => setShowHelp(false)}><div className="rules-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">FIELD MANUAL // V0.1</span><h2>핵심 규칙</h2></div><button onClick={() => setShowHelp(false)}>닫기</button></div>
         <div className="rules-grid">
-          <article><b>01</b><h3>턴</h3><p>수비 → 공격 순서. 손패 5장 중 카드 3장을 사용하고, 턴 종료 시 손패 전부를 버리고 다시 5장을 뽑습니다.</p></article>
-          <article><b>02</b><h3>교전</h3><p>대기 우선도 1, 엔트리 도착 2, 기본 이동 3. 에임 주사위−무빙 주사위가 0 이하면 빗나감, 1–4 몸통, 5+ 헤드샷입니다.</p></article>
+          <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 후 수비가 먼저 행동합니다. 손패 5장 중 카드 3장을 사용합니다.</p></article>
+          <article><b>02</b><h3>지속 교전</h3><p>낮은 우선도 숫자부터 행동합니다. 각 교전 차례에 공격 또는 이탈을 선택하며, 제거되거나 이탈할 때까지 1대1이 계속됩니다.</p></article>
           <article><b>03</b><h3>추가행동</h3><p>카드 한 장마다 해당 요원이 추가행동 1회를 얻습니다. 스킬, 설치·해체, 총기·스파이크 줍기에 사용합니다.</p></article>
           <article><b>04</b><h3>시야</h3><p>아군이 있는 구역과 인접 구역만 확인합니다. 연막은 시야와 대기를 끊지만 이동은 막지 않습니다.</p></article>
           <article><b>05</b><h3>트레이드</h3><p>아군 사망·이탈·정찰 장치 파괴 시 적에게 표식. 같은 턴 다음 아군의 첫 교전에 에임 +1, 우선도 1단계 향상.</p></article>
           <article><b>06</b><h3>스파이크</h3><p>설치는 다음 공격 턴 시작, 최종 해체는 다음 수비 턴 시작에 완료됩니다. 같은 시점이면 해체가 먼저입니다.</p></article>
         </div>
-        <p className="prototype-note">이 버전은 한 화면에서 번갈아 조작하는 밸런스 테스트용 수직 프로토타입입니다. 중간 교전의 수동 후퇴, 다중 목표 선택, 매치 간 장비 보존은 다음 구현 단계입니다.</p>
+        <p className="prototype-note">이 버전은 한 화면에서 번갈아 조작하는 밸런스 테스트용 수직 프로토타입입니다. 지속 교전과 수동 이탈이 구현되어 있으며, 모바일 전용 UI와 AI 상대는 다음 개발 단계입니다.</p>
       </div></div>}
     </main>
   );
