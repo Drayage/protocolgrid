@@ -368,6 +368,28 @@ const CARD_DATA: Record<CardKind, { name: string; tag: string; description: stri
   control: { name: "지역 장악", tag: "HOLD ×2", description: "감시자 전용 · 현재 구역에서 인접 두 방향 동시 대기" },
 };
 
+const SPIKE_STATUS_LABEL: Record<SpikeState["status"], string> = {
+  carried: "운반 중",
+  dropped: "회수 필요",
+  planting: "설치 진행",
+  planted: "설치됨",
+  half: "반 해체",
+  defusing: "최종 해체",
+  defused: "해체 완료",
+  exploded: "폭발",
+};
+
+const MOVEMENT_LABEL: Record<PendingMovement["kind"], string> = {
+  basic: "기본 이동",
+  peek: "피킹",
+  entry: "엔트리",
+  follow: "추종",
+  control: "지역 장악",
+  shadow: "어둠의 발걸음",
+  special: "특수 이동",
+  forced: "강제 이동",
+};
+
 const ROLE_STATS: Record<Role, { aim: number; move: number }> = {
   duelist: { aim: 5, move: 2 },
   initiator: { aim: 6, move: 1 },
@@ -2384,6 +2406,12 @@ export default function Home() {
   const combatRetreatOptions = combatActor ? GRAPH.get(combatActor.region) ?? [] : [];
   const tailwindActor = combatScene ? getAgent(game, combatScene.tailwindActorId) : null;
   const tailwindOptions = tailwindActor ? GRAPH.get(tailwindActor.region) ?? [] : [];
+  const nextCombatActor = combatScene ? getAgent(game, combatScene.pendingNextActorId) : null;
+  const combatFocusAgent = combatScene?.phase === "tailwind" ? tailwindActor : combatScene?.phase === "choice" ? combatActor : nextCombatActor;
+  const combatantIds = new Set([combatScene?.mover.id, combatScene?.holder.id].filter(Boolean));
+  const activeCombatAction = game.pendingMovement
+    ? `${MOVEMENT_LABEL[game.pendingMovement.kind]} · ${Math.max(0, game.pendingMovement.path.length - game.pendingMovement.nextIndex)}칸 남음`
+    : selectedCard?.used ? CARD_DATA[selectedCard.kind].name : "위치 교전";
   const canCombatAdvance = !!(combatScene && combatActor?.id === combatScene.mover.id && game.pendingMovement?.agentId === combatActor.id && game.pendingMovement.nextIndex < game.pendingMovement.path.length);
   const winnerReward = game.winner ? roundIncome(game.teams[game.winner], true, game.matchRound) : null;
   const loserReward = game.winner ? roundIncome(game.teams[otherSide(game.winner)], false, game.matchRound) : null;
@@ -2573,21 +2601,31 @@ export default function Home() {
 
       {game.targeting?.kind === "skill" && ((game.targeting.candidateAgentIds?.length ?? 0) > 0 || (game.targeting.candidateDeployableIds?.length ?? 0) > 0) && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">TARGET SELECT</span><h2>스킬 목표 선택</h2><div className="choice-grid">{game.targeting.candidateAgentIds?.map((id) => { const target = getAgent(game, id); return target ? <button key={id} onClick={() => resolveSkillCandidate(id, "agent")}><b>{target.name}</b><small>{target.team === game.turnSide ? "아군" : "탐지된 적"} · {target.region}번</small></button> : null; })}{game.targeting.candidateDeployableIds?.map((id) => { const device = game.deployables.find((item) => item.id === id); return device ? <button key={id} onClick={() => resolveSkillCandidate(id, "deployable")}><b>{device.kind}</b><small>설치물 · {device.region}번</small></button> : null; })}</div><button className="choice-cancel" onClick={cancelTargeting}>취소</button></section></div>}
 
-      {combatScene && <div className="modal-backdrop combat-backdrop"><section className="combat-modal">
-        <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>지속 교전 · {combatScene.round}회차</h2></div><div><span>{combatScene.phase === "choice" ? "ACTION REQUIRED" : "ACTION RESOLVED"}</span><b>{combatScene.simultaneous ? "동일 우선도 동시 처리" : "낮은 숫자부터 행동"}</b></div></header>
-        <div className="combat-location"><span>교전 구역</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i>{combatScene.waiting && <b>대기 공격 발동</b>}</div>
+      {combatScene && <div className="modal-backdrop combat-backdrop"><section className="combat-modal" aria-label="전투 진행" aria-live="polite">
+        <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>지속 교전 · {combatScene.round}회차</h2></div><div><span>GAME TURN</span><b>{SIDE_LABEL[game.turnSide]} · 전술 {game.cycle}</b></div></header>
+        <div className={`combat-turn-banner focus-${combatFocusAgent?.team ?? game.turnSide}`}>
+          <div className={`combat-game-turn ${game.turnSide}`}><span>현재 게임 턴</span><b>{SIDE_LABEL[game.turnSide]}</b><small>행동카드 {game.actionsUsed}/3 사용</small></div>
+          <i>›</i>
+          <div className="combat-actor-turn"><span>{combatScene.phase === "tailwind" ? "반응 선택" : combatScene.phase === "choice" ? "지금 행동" : combatScene.resolved ? "교전 결과" : "다음 행동"}</span><strong>{combatFocusAgent ? `${SIDE_LABEL[combatFocusAgent.team]} · ${combatFocusAgent.name}` : "결과 확인"}</strong><small>{combatScene.phase === "choice" ? "공격·이탈 중 선택하세요" : combatScene.phase === "tailwind" ? "순풍 이동지를 선택하세요" : combatScene.resolved ? "아래 버튼으로 교전을 정리하세요" : `${nextCombatActor?.name ?? "다음 요원"} 차례가 이어집니다`}</small></div>
+          {combatFocusAgent && <em className={combatFocusAgent.team === game.turnSide ? "team-action" : "reaction-action"}>{combatFocusAgent.team === game.turnSide ? "현재 팀 행동" : "상대 반응 차례"}</em>}
+        </div>
+        <div className="combat-location"><span>교전 위치</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i><strong>{regionName(combatScene.holder.region)}</strong>{combatScene.waiting && <b>대기 공격 발동</b>}</div>
         <div className="combat-stage">
           {([combatScene.mover, combatScene.holder] as CombatFighterView[]).map((fighter, index) => {
             const shot = fighter.shot;
             const isMover = index === 0;
             const survived = fighter.hpAfter > 0;
             const acting = combatScene.phase === "choice" && fighter.id === combatScene.actorId;
-            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${shot?.hit ? "landed" : ""}`}>
-              <div className="combat-side-tag">{isMover ? "진입 요원" : combatScene.waiting ? "대기 요원" : "수비 요원"}</div>
+            const liveAgent = getAgent(game, fighter.id);
+            const liveStats = liveAgent ? finalStats(game, liveAgent) : null;
+            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} ${liveAgent ? `team-${liveAgent.team}` : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${shot?.hit ? "landed" : ""}`}>
+              {acting && <div className="acting-ribbon">지금 행동</div>}
+              <div className="combat-side-tag">{liveAgent ? SIDE_LABEL[liveAgent.team] : "교전 요원"} · {isMover ? "진입" : combatScene.waiting ? "대기 반응" : "범위 내 반응"}</div>
               <div className={`combat-avatar role-${fighter.role}`}>{fighter.name.slice(0, 1)}<span>{isMover ? "ACT" : "REACT"}</span></div>
               <h3>{fighter.name}</h3><p>{ROLE_LABEL[fighter.role]} · {WEAPONS[fighter.weapon].name}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
               <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div>
+              {liveAgent && <div className="combat-live-stats"><span>HP <b>{liveAgent.hp}</b></span><span>ARMOR <b>{liveAgent.armor}</b></span><span>AIM <b>{liveStats?.aim}</b></span><span>MOVE <b>{liveStats?.move}</b></span></div>}
               <div className={`combat-roll ${!shot ? "no-shot" : shot.hit ? shot.head ? "headshot" : "hit" : "miss"}`}>
                 {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? `피해 ${shot.damage}` : "피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : "상대 행동 대기"}</small></div>}
               </div>
@@ -2595,6 +2633,37 @@ export default function Home() {
           })}
           <div className="combat-versus"><span>PRIORITY</span><b>VS</b><i>{combatScene.mover.priority === combatScene.holder.priority ? "=" : combatScene.mover.priority < combatScene.holder.priority ? "←" : "→"}</i></div>
         </div>
+        <section className="combat-situation">
+          <header><div><span>SITUATION BOARD</span><strong>현재 전장 현황</strong></div><small>이번 팀 턴에 확인된 정보가 계속 표시됩니다</small></header>
+          <div className="combat-context-grid">
+            <div><span>진행</span><b>매치 R{game.matchRound} · 전술 {game.cycle}/16</b></div>
+            <div><span>현재 행동</span><b>{activeCombatAction}</b></div>
+            <div><span>스파이크</span><b>{SPIKE_STATUS_LABEL[game.spike.status]}{game.spike.region ? ` · ${game.spike.region}번` : ""}</b></div>
+            <div><span>교전 규칙</span><b>{combatScene.simultaneous ? "동일 우선도 · 동시 처리" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
+          </div>
+          <div className="combat-intel-grid">
+            {(["defense", "attack"] as Side[]).map((side) => <article key={side} className={`combat-team-intel ${side}`}>
+              <h4><span>{side === "defense" ? "DEF" : "ATK"}</span>{SIDE_LABEL[side]}<b>{game.teams[side].agents.filter((agent) => agent.alive).length}명 생존</b></h4>
+              {game.teams[side].agents.map((agent) => {
+                const known = side === game.turnSide || combatantIds.has(agent.id) || agent.detected || game.revealedEnemyIds.includes(agent.id) || visible.has(agent.region);
+                const stats = known ? finalStats(game, agent) : null;
+                const flags = [
+                  !agent.alive ? "제거" : "",
+                  known && agent.waitDirs.length ? `대기 ${agent.waitDirs.join("·")}` : "",
+                  known && agent.detected ? "탐지" : "",
+                  known && agent.status.vulnerable ? "취약" : "",
+                  known && isProgressing(game, agent) ? game.spike.status === "planting" ? "설치 중" : "해체 중" : "",
+                ].filter(Boolean);
+                return <div key={agent.id} className={`combat-intel-row ${agent.alive ? "" : "down"} ${combatantIds.has(agent.id) ? "engaged" : ""} ${known ? "known" : "unknown"}`}>
+                  <i className={`role-${agent.role}`}>{agent.name.slice(0, 1)}</i>
+                  <span><strong>{agent.name}</strong><small>{known ? `${agent.region}번 · ${WEAPONS[agent.weapon].name}` : "위치·장비 미확인"}</small></span>
+                  <b>{known ? agent.alive ? `HP ${agent.hp}+${agent.armor}` : "제거" : agent.alive ? "생존" : "제거"}<small>{stats ? `A${stats.aim} / M${stats.move}` : "NO DATA"}</small></b>
+                  <em>{flags.length ? flags.join(" · ") : known ? "대기 없음" : "정보 없음"}</em>
+                </div>;
+              })}
+            </article>)}
+          </div>
+        </section>
         <div className="combat-result"><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다.</p></div><div className="revealed-hold"><span>공개된 대기</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
         {combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small></button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}<div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
