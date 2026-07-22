@@ -158,6 +158,13 @@ interface TimedStatusEffect {
   consumeOnAttack?: boolean;
 }
 
+interface EnemyMemory {
+  observer: Side;
+  agentId: string;
+  region: number;
+  waitDirs: number[];
+}
+
 interface PendingMovement {
   agentId: string;
   path: number[];
@@ -282,6 +289,7 @@ interface GameState {
   pendingReengagements: PendingReengagement[];
   groupMovement: GroupMovement | null;
   revealedEnemyIds: string[];
+  enemyMemories: EnemyMemory[];
   waitCounter: number;
   log: string[];
   winner: Side | null;
@@ -500,6 +508,7 @@ function createInitialGame(
     pendingReengagements: [],
     groupMovement: null,
     revealedEnemyIds: [],
+    enemyMemories: [],
     waitCounter: 0,
     log: ["수비팀이 먼저 행동합니다.", "작전 개시 — 손패에서 카드 3장을 사용하세요."],
     winner: null,
@@ -614,6 +623,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.pendingReengagements = [];
   game.groupMovement = null;
   game.revealedEnemyIds = [];
+  game.enemyMemories = [];
   game.waitCounter = 0;
   game.log = [`매치 ${game.matchRound}라운드 준비. 수비팀 구매부터 시작합니다.`];
   game.winner = null;
@@ -671,6 +681,15 @@ function addLog(game: GameState, message: string) {
 function addTrade(game: GameState, trade: TradeState) {
   if (game.trade.some((item) => item.enemyId === trade.enemyId && item.team === trade.team)) return;
   game.trade.push(trade);
+}
+
+function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
+  if (!enemy.alive || enemy.team === observer) return;
+  game.enemyMemories = game.enemyMemories.filter((memory) => !(memory.observer === observer && memory.agentId === enemy.id));
+  game.enemyMemories.push({ observer, agentId: enemy.id, region: enemy.region, waitDirs: [...enemy.waitDirs] });
+  const observedEnemy = mover.team === game.turnSide ? enemy : mover;
+  game.enemyMemories = game.enemyMemories.filter((memory) => !(memory.observer === game.turnSide && memory.agentId === observedEnemy.id));
+  if (!game.revealedEnemyIds.includes(observedEnemy.id)) game.revealedEnemyIds.push(observedEnemy.id);
 }
 
 function clearWait(agent: Agent) {
@@ -1096,7 +1115,10 @@ function observedRegions(game: GameState): Set<number> {
 
 function visibleRegions(game: GameState): Set<number> {
   const visible = observedRegions(game);
-  for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => game.revealedEnemyIds.includes(item.id))) visible.add(enemy.region);
+  const memories = game.enemyMemories.filter((memory) => memory.observer === game.turnSide);
+  const rememberedIds = new Set(memories.map((memory) => memory.agentId));
+  memories.forEach((memory) => visible.add(memory.region));
+  for (const enemy of game.teams[otherSide(game.turnSide)].agents.filter((item) => game.revealedEnemyIds.includes(item.id) && !rememberedIds.has(item.id))) visible.add(enemy.region);
   return visible;
 }
 
@@ -1967,6 +1989,7 @@ export default function Home() {
       drawFive(endingTeam, draft.cycle * 31 + (endingSide === "attack" ? 7 : 3));
       draft.trade = [];
       draft.revealedEnemyIds = [];
+      draft.enemyMemories = [];
       draft.combatQueue = [];
       draft.pendingWait = null;
       draft.targeting = null;
@@ -2126,8 +2149,11 @@ export default function Home() {
     agent.status.moveBonus = Math.min(-1, agent.status.moveBonus);
     if (agent.id === scene.mover.id) scene.moverRetreated = true;
     const opponentId = agent.id === scene.mover.id ? scene.holder.id : scene.mover.id;
+    const opponent = getAgent(draft, opponentId);
     if (agent.team === draft.turnSide) addTrade(draft, { enemyId: opponentId, team: agent.team, sourceId: agent.id });
     triggerHazards(draft, agent, from, region);
+    const enemyToRemember = agent.team === draft.turnSide ? opponent : agent;
+    if (enemyToRemember) rememberEnemy(draft, draft.turnSide, enemyToRemember);
     if (agent.alive) draft.pendingReengagements.push({
       agentId: agent.id,
       priority: 5,
@@ -2550,10 +2576,16 @@ export default function Home() {
             })}
             {REGIONS.map((region) => {
               const allies = activeTeam.agents.filter((agent) => agent.alive && agent.region === region.id);
-              const enemies = game.teams[otherSide(game.turnSide)].agents.filter((agent) => agent.alive && agent.region === region.id);
-              const observedNow = observed.has(region.id);
-              const remembered = visible.has(region.id);
-              const shownEnemies = enemies.filter((agent) => observedNow || agent.detected || game.revealedEnemyIds.includes(agent.id));
+               const enemies = game.teams[otherSide(game.turnSide)].agents.filter((agent) => agent.alive && agent.region === region.id);
+               const observedNow = observed.has(region.id);
+               const remembered = visible.has(region.id);
+               const memoriesHere = game.enemyMemories.filter((memory) => memory.observer === game.turnSide && memory.region === region.id);
+               const rememberedEnemies = memoriesHere.map((memory) => getAgent(game, memory.agentId)).filter((agent): agent is Agent => !!agent?.alive && !agent.detected && !observed.has(agent.region));
+               const shownEnemies = [...enemies.filter((agent) => {
+                 const memory = game.enemyMemories.find((item) => item.observer === game.turnSide && item.agentId === agent.id);
+                 if (memory && memory.region !== agent.region && !observedNow && !agent.detected) return false;
+                 return observedNow || agent.detected || game.revealedEnemyIds.includes(agent.id);
+               }), ...rememberedEnemies.filter((agent) => !enemies.some((enemy) => enemy.id === agent.id))];
               const revealedEnemies = shownEnemies.filter((agent) => game.revealedEnemyIds.includes(agent.id));
               const isValid = validTargets.has(region.id);
               const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === game.turnSide || observedNow));
@@ -2574,9 +2606,9 @@ export default function Home() {
                     {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${game.selectedAgentId === agent.id ? "selected" : ""}`} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`}>{agent.name.slice(0, 1)}</i>)}
                   </span>
                   <span className="unit-stack enemy-stack">
-                    {shownEnemies.map((agent) => { const identified = agent.detected || game.revealedEnemyIds.includes(agent.id); const lastKnown = game.revealedEnemyIds.includes(agent.id) && !agent.detected && !observed.has(agent.region); return <i key={agent.id} className={`unit-token hostile ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""}`} title={`${identified ? agent.name : "적 요원"} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`}>{identified ? agent.name.slice(0, 1) : "?"}{lastKnown && <small>잔상</small>}</i>; })}
+                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = agent.detected || game.revealedEnemyIds.includes(agent.id); const lastKnown = !!memory && !agent.detected; return <i key={agent.id} className={`unit-token hostile ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""}`} title={`${identified ? agent.name : "적 요원"} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`}>{identified ? agent.name.slice(0, 1) : "?"}{lastKnown && <small>잔상</small>}</i>; })}
                   </span>
-                  {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => <i key={agent.id}><b>{agent.name}</b>{agent.waitDirs.length ? `대기 → ${agent.waitDirs.join(" · ")}` : "대기 없음"}</i>)}</span>}
+                  {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}
                   {(devices.length > 0 || fire || stim || hasSpike) && <span className="effect-stack">
                     {devices.map((item) => <i key={item.id} title={item.kind}>{item.kind === "trip" ? "⌁" : item.kind === "camera" ? "◉" : item.kind === "turret" ? "⌖" : "!"}</i>)}
                     {fire && <i className="fire">▲</i>}{stim && <i className="stim">+</i>}{hasSpike && <i className="spike">◆</i>}

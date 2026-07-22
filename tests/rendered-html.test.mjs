@@ -59,6 +59,10 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /function observedRegions/);
   assert.match(page, /lastKnown \? "last-known"/);
   assert.match(page, /draft\.revealedEnemyIds = \[\]/);
+  assert.match(page, /enemyMemories: EnemyMemory\[\]/);
+  assert.match(page, /rememberEnemy\(draft, draft\.turnSide, enemyToRemember\)/);
+  assert.match(page, /memory\?\.waitDirs \?\? agent\.waitDirs/);
+  assert.match(page, /draft\.enemyMemories = \[\]/);
   assert.match(css, /@media \(max-width: 800px\)/);
   assert.match(css, /@keyframes tracerShot/);
   assert.match(css, /\.combat-intel-grid/);
