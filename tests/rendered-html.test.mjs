@@ -37,7 +37,7 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /continuePendingMovement\(draft\)/);
   assert.match(page, /pendingReengagements\.push/);
   assert.match(page, /priority:\s*5/);
-  assert.match(page, /phase: "choice" \| "result" \| "tailwind"/);
+  assert.match(page, /phase: "encounter" \| "choice" \| "result" \| "tailwind"/);
   assert.match(page, /type: "attack" \| "retreat" \| "advance"/);
   assert.match(page, /waitOrders: Record<number, number>/);
   assert.match(page, /roundIncome\(/);
@@ -78,12 +78,33 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(css, /grid-template-columns: 20px 55px minmax\(0, 1fr\) auto/);
   assert.match(page, /agentArtClass/);
   assert.match(page, /skillArtClass/);
+  assert.match(page, /function waitConeViews/);
+  assert.match(page, /교전 중 전장 현황/);
+  assert.match(page, /ENEMY CONTACT/);
+  assert.match(page, /lastSkillFx: SkillFx \| null/);
+  assert.match(page, /enemy\.region === region \|\| enemy\.waitDirs\.includes\(region\)/);
+  assert.match(page, /weapon\.price - WEAPONS\[agent\.weapon\]\.price/);
+  assert.match(page, /pendingContact: PendingContact \| null/);
+  assert.match(page, /VISUAL CONTACT \/\/ 거리 1/);
+  assert.match(page, /queueNextTurnStartContact/);
+  assert.match(page, /game\.targeting\.origin !== undefined/);
+  assert.match(page, /state\.origin === undefined/);
+  assert.match(css, /\.wait-cone/);
+  assert.match(css, /\.combat-mini-map/);
+  assert.match(css, /\.map-coordinate-layer/);
+  assert.match(css, /width: min\(100cqw, 100cqh\)/);
+  assert.match(css, /\.map-board:has\(\.targeting-banner\) \.map-coordinate-layer/);
+  assert.match(css, /pointer-events: none/);
+  assert.match(css, /@keyframes skillProjectile/);
   assert.ok(spriteAtlas.byteLength > 100_000);
 });
 
-test("non-waiting enemies inside normal range still start combat", async () => {
+test("distance-one sight is optional while same-region and waiting contacts stay mandatory", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /const enemiesInRange =/);
-  assert.match(page, /if \(distance < 0 \|\| distance > 1\) return false/);
-  assert.match(page, /const enemy = \[\.\.\.watchers, \.\.\.enemiesInRange\]\[0\]/);
+  assert.match(page, /const sameRegionEnemies =/);
+  assert.match(page, /mandatoryEnemy\.region === agent\.region && mandatoryEnemy\.waitDirs\.length > 0/);
+  assert.match(page, /const optionalEnemies =/);
+  assert.match(page, /path\.length !== 2/);
+  assert.match(page, /game\.pendingContact =/);
+  assert.match(page, /카드 소모 없이 교전 여부를 선택하세요/);
 });
