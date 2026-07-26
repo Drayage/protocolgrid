@@ -306,6 +306,8 @@ interface CombatScene {
   evaded: boolean;
   result: string;
   waitDirections: number[];
+  retreatLockedIds: string[];
+  waitClaim: { actorId: string; region: number; originRegion: number } | null;
   tailwindActorId: string | null;
   pendingShotActorId: string | null;
 }
@@ -1084,6 +1086,17 @@ function waitTargetsFor(agent: Agent) {
     .map((region) => region.id);
 }
 
+function controlWaitTargetsFor(game: GameState, agent: Agent) {
+  const observed = observedRegions(game, agent.team);
+  const knownOccupied = new Set(
+    game.teams[otherSide(agent.team)].agents
+      .filter((enemy) => enemy.alive && observed.has(enemy.region))
+      .map((enemy) => enemy.region),
+  );
+  return waitTargetsFor(agent)
+    .filter((region) => distance(agent.region, region) === 1 && !knownOccupied.has(region));
+}
+
 function isWaitPathSmokeBlocked(game: GameState, from: number, to: number) {
   const path = shortestPath(from, to);
   return path.slice(0, -1).some((region, index) => isSmokeBlocked(game, region, path[index + 1]));
@@ -1233,7 +1246,10 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const observedEnemy = mover.team === game.turnSide ? enemy : mover;
   rememberEnemy(game, game.turnSide, observedEnemy);
   const revealedWaitDirs = [...enemy.waitDirs];
-  const offAngle = range === 1 && !waiting && revealedWaitDirs.length > 0;
+  const offAngle = range === 1
+    && !waiting
+    && revealedWaitDirs.length > 0
+    && !revealedWaitDirs.includes(mover.region);
   const moverBefore = { hp: mover.hp, armor: mover.armor };
   const enemyBefore = { hp: enemy.hp, armor: enemy.armor };
 
@@ -1295,9 +1311,59 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     evaded: false,
     result: `${mover.name}과 ${enemy.name}이 ${regionName(mover.region)} 전선에서 마주쳤습니다.`,
     waitDirections: revealedWaitDirs,
+    retreatLockedIds: [],
+    waitClaim: null,
     tailwindActorId: null,
     pendingShotActorId: null,
   });
+}
+
+function queueWaitClaimEncounter(
+  game: GameState,
+  agent: Agent,
+  region: number,
+  originRegion = agent.region,
+): boolean {
+  const enemy = game.teams[otherSide(agent.team)].agents
+    .filter((candidate) => {
+      if (!candidate.alive || candidate.region !== region) return false;
+      return !isWaitPathSmokeBlocked(game, agent.region, candidate.region) || agent.detected || candidate.detected;
+    })
+    .sort((a, b) => a.id.localeCompare(b.id))[0];
+  if (!enemy) {
+    setWait(game, agent, [region]);
+    if (game.pendingWait === agent.id) game.pendingWait = null;
+    addLog(game, `${agent.name} 대기 설정: ${regionName(region)} 구역 · 거리 ${distance(agent.region, region)} · 우선도 1.`);
+    return false;
+  }
+
+  const queueIndex = game.combatQueue.length;
+  resolveEngagement(game, agent, enemy, 3, true, 0, false);
+  const scene = game.combatQueue[queueIndex];
+  if (!scene) return false;
+  scene.retreatLockedIds = [agent.id];
+  scene.waitClaim = { actorId: agent.id, region, originRegion };
+  scene.result = `${agent.name}이 ${regionName(region)} 대기를 확보하기 전에 점유 중인 ${enemy.name}과 교전합니다.`;
+  addLog(game, `${agent.name} 대기 확보 교전: ${regionName(region)}의 ${enemy.name}을 먼저 몰아내야 합니다. 대기 시도자는 후퇴할 수 없습니다.`);
+  return true;
+}
+
+function startWaitAttempt(game: GameState, agent: Agent, region: number) {
+  if (!agent.alive || !waitTargetsFor(agent).includes(region)) return;
+  clearWait(agent);
+  queueWaitClaimEncounter(game, agent, region);
+}
+
+function continueWaitClaim(game: GameState, claim: NonNullable<CombatScene["waitClaim"]>) {
+  const agent = getAgent(game, claim.actorId);
+  if (!agent?.alive || agent.region !== claim.originRegion || game.pendingWait !== agent.id) {
+    if (game.pendingWait === claim.actorId) game.pendingWait = null;
+    if (agent?.alive && agent.region !== claim.originRegion) {
+      addLog(game, `${agent.name}이 위치를 벗어나 ${regionName(claim.region)} 대기 확보가 취소됐습니다.`);
+    }
+    return false;
+  }
+  return queueWaitClaimEncounter(game, agent, claim.region, claim.originRegion);
 }
 
 function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable) {
@@ -1333,6 +1399,8 @@ function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable)
     evaded: false,
     result: `${mover.name}이 ${regionName(turret.to ?? mover.region)} 포탑 감시 구역에 진입했습니다.`,
     waitDirections: turret.to === undefined ? [] : [turret.to],
+    retreatLockedIds: [],
+    waitClaim: null,
     tailwindActorId: null,
     pendingShotActorId: null,
   });
@@ -1416,7 +1484,9 @@ function queueCurrentEncounter(
   allowOptional = true,
   source: PendingContact["source"] = "movement",
 ): boolean {
-  const watchers = watchersFor(game, agent);
+  // A hold reacts to a new entry, not to an enemy who was already occupying
+  // the watched region when the hold was established.
+  const watchers = source === "turn-start" ? [] : watchersFor(game, agent);
   const sameRegionEnemies = game.teams[otherSide(agent.team)].agents
     .filter((enemy) => enemy.alive && enemy.region === agent.region && !watchers.some((watcher) => watcher.id === enemy.id));
   const mandatoryEnemy = [...watchers, ...sameRegionEnemies][0];
@@ -1616,7 +1686,7 @@ function cardTargets(game: GameState, agent: Agent, card: ActionCard): number[] 
   if (card.kind === "follow") {
     return [...new Set(game.teams[agent.team].agents.filter((ally) => ally.alive && ally.id !== agent.id && distance(agent.region, ally.region) <= 2).map((ally) => ally.region))];
   }
-  if (card.kind === "control") return GRAPH.get(agent.region) ?? [];
+  if (card.kind === "control") return controlWaitTargetsFor(game, agent);
   return [];
 }
 
@@ -1805,7 +1875,9 @@ function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiE
 
 function aiStrategicWaitDirections(game: GameState, agent: Agent, count: number) {
   const intel = aiEnemyIntel(game, agent.team);
-  const options = count === 1 ? waitTargetsFor(agent) : GRAPH.get(agent.region) ?? [];
+  const options = count === 1
+    ? waitTargetsFor(agent)
+    : controlWaitTargetsFor(game, agent);
   const attackWaypoints = agent.team === "attack" ? attackPlanWaypoints(game, agent) : [];
   return [...options].sort((a, b) => {
     if (agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
@@ -2763,7 +2835,7 @@ function AiController(props: AiControllerProps) {
         const actor = getAgent(props.game, scene.actorId);
         if (actor && props.sides.includes(actor.team)) {
           const canAdvance = actor.id === scene.mover.id && props.game.pendingMovement?.agentId === actor.id && props.game.pendingMovement.nextIndex < props.game.pendingMovement.path.length;
-          const retreatOptions = GRAPH.get(actor.region) ?? [];
+          const retreatOptions = scene.retreatLockedIds.includes(actor.id) ? [] : GRAPH.get(actor.region) ?? [];
           const retreatTarget = aiRetreatDestination(props.game, actor, retreatOptions);
           if (actor.id === scene.mover.id && !scene.canMoverAttack) {
             if (canAdvance) action = props.onCombatAdvance;
@@ -2851,7 +2923,7 @@ export default function Home() {
     }
     if (game.targeting?.kind === "control") {
       const agent = getAgent(game, game.targeting.agentId);
-      return new Set(agent ? GRAPH.get(agent.region) ?? [] : []);
+      return new Set(agent ? controlWaitTargetsFor(game, agent) : []);
     }
     if (game.targeting?.kind === "skill") {
       const agent = getAgent(game, game.targeting.agentId);
@@ -3098,10 +3170,7 @@ export default function Home() {
     mutate((draft) => {
       const agent = getAgent(draft, draft.pendingWait);
       if (!agent || !waitTargetsFor(agent).includes(region)) return;
-      setWait(draft, agent, [region]);
-      draft.pendingWait = null;
-      const range = distance(agent.region, region);
-      addLog(draft, `${agent.name} 대기 설정: ${regionName(region)} 구역 · 거리 ${range} · 우선도 1.`);
+      startWaitAttempt(draft, agent, region);
     });
   };
 
@@ -3740,13 +3809,15 @@ export default function Home() {
     const holderBefore = { hp: holder.hp, armor: holder.armor };
     let moverShot: ShotResult | null = null;
     let holderShot: ShotResult | null = null;
+    const moverRetreatMoveBonus = moverChoice.type === "retreat" ? 2 : 0;
+    const holderRetreatMoveBonus = holderChoice.type === "retreat" ? 2 : 0;
     if (moverChoice.type === "attack" && scene.canMoverAttack) {
       if (holder.status.evadeReady) { holder.status.evadeReady = false; scene.evaded = true; lines.push(`${holder.name} 회피`); }
-      else moverShot = makeShot(draft, mover, holder, scene.range, false, scene.moverAimBonus, 0);
+      else moverShot = makeShot(draft, mover, holder, scene.range, false, scene.moverAimBonus, holderRetreatMoveBonus);
     }
     if (holderChoice.type === "attack") {
       if (mover.status.evadeReady) { mover.status.evadeReady = false; scene.evaded = true; lines.push(`${mover.name} 회피`); }
-      else holderShot = makeShot(draft, holder, mover, scene.range, scene.waiting, scene.holderAimBonus, scene.moverMoveBonus);
+      else holderShot = makeShot(draft, holder, mover, scene.range, scene.waiting, scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus);
     }
     if (moverShot) recordShot(draft, mover.team, moverShot, `${mover.name} → ${holder.name}`);
     if (holderShot) recordShot(draft, holder.team, holderShot, `${holder.name} → ${mover.name}`);
@@ -3756,6 +3827,8 @@ export default function Home() {
     if (holderShot?.hit) applyDamage(draft, holder, mover, holderShot.damage, `${holder.name} ${holderShot.head ? "헤드샷" : "몸통 명중"}`);
     if (moverChoice.type === "attack" && moverShot) lines.push(moverShot.hit ? `${mover.name} 피해 ${moverShot.damage}` : `${mover.name} 빗나감`);
     if (holderChoice.type === "attack" && holderShot) lines.push(holderShot.hit ? `${holder.name} 피해 ${holderShot.damage}` : `${holder.name} 빗나감`);
+    if (moverRetreatMoveBonus) lines.push(`${mover.name} 동시 후퇴 무빙 +2`);
+    if (holderRetreatMoveBonus) lines.push(`${holder.name} 동시 후퇴 무빙 +2`);
     refreshCombatView(scene, mover, moverShot, moverBefore);
     refreshCombatView(scene, holder, holderShot, holderBefore);
     if (mover.alive && moverChoice.type === "retreat" && moverChoice.retreatRegion) executeCombatRetreat(draft, scene, mover, moverChoice.retreatRegion);
@@ -3819,7 +3892,7 @@ export default function Home() {
     const scene = draft.combatQueue[0];
     if (!scene || scene.kind !== "agent" || scene.phase !== "choice") return;
     const actor = getAgent(draft, scene.actorId);
-    if (!actor?.alive || !(GRAPH.get(actor.region) ?? []).includes(region)) return;
+    if (!actor?.alive || scene.retreatLockedIds.includes(actor.id) || !(GRAPH.get(actor.region) ?? []).includes(region)) return;
     if (scene.simultaneous) {
       scene.choices[actor.id] = { type: "retreat", retreatRegion: region };
       const otherId = actor.id === scene.firstActorId ? scene.secondActorId : scene.firstActorId;
@@ -3918,6 +3991,8 @@ export default function Home() {
     }
     draft.combatQueue.shift();
     const mover = getAgent(draft, scene.mover.id);
+    const handledWaitClaim = !!scene.waitClaim;
+    if (scene.waitClaim && continueWaitClaim(draft, scene.waitClaim)) return;
     while (!draft.combatQueue.length && !draft.pendingContact && draft.pendingReengagements.length) {
       const pending = draft.pendingReengagements.shift()!;
       const agent = getAgent(draft, pending.agentId);
@@ -3926,7 +4001,7 @@ export default function Home() {
       agent.status.aimPenalty = 0;
       agent.status.moveBonus = 0;
     }
-    if (!draft.combatQueue.length && !draft.pendingContact && mover?.alive && !scene.moverRetreated) {
+    if (!handledWaitClaim && !draft.combatQueue.length && !draft.pendingContact && mover?.alive && !scene.moverRetreated) {
       if (scene.moverAdvanced && draft.pendingMovement?.agentId === mover.id) continuePendingMovement(draft);
       else if (!queueCurrentEncounter(draft, mover, scene.moverPriorityBase, scene.canMoverAttack, scene.moverMoveBonus, false, "movement")) {
         if (draft.pendingMovement?.agentId === mover.id) continuePendingMovement(draft);
@@ -3978,10 +4053,11 @@ export default function Home() {
       const agent = getAgent(draft, draft.pendingWait);
       if (agent?.alive) {
         const preferred = aiStrategicWaitDirections(draft, agent, 1)[0];
-        const target = preferred !== undefined && waitTargetsFor(agent).includes(preferred) ? preferred : waitTargetsFor(agent)[0];
-        if (target !== undefined) setWait(draft, agent, [target]);
+        const legalTargets = waitTargetsFor(agent);
+        const target = preferred !== undefined && legalTargets.includes(preferred) ? preferred : legalTargets[0];
+        if (target !== undefined) startWaitAttempt(draft, agent, target);
       }
-      draft.pendingWait = null;
+      if (!draft.combatQueue.length) draft.pendingWait = null;
       return;
     }
     if (draft.targeting) {
@@ -4137,14 +4213,17 @@ export default function Home() {
   const canFinal = selectedAgent?.team === "defense" && game.spike.status === "half" && game.spike.region === selectedAgent.region && game.spike.halfCycle !== game.cycle;
   const combatScene = game.combatQueue[0] ?? null;
   const combatActor = combatScene ? getAgent(game, combatScene.actorId) : null;
-  const combatRetreatOptions = combatActor ? GRAPH.get(combatActor.region) ?? [] : [];
+  const combatRetreatLocked = !!(combatScene && combatActor && combatScene.retreatLockedIds.includes(combatActor.id));
+  const combatRetreatOptions = combatActor && !combatRetreatLocked ? GRAPH.get(combatActor.region) ?? [] : [];
   const tailwindActor = combatScene ? getAgent(game, combatScene.tailwindActorId) : null;
   const tailwindOptions = tailwindActor ? GRAPH.get(tailwindActor.region) ?? [] : [];
   const nextCombatActor = combatScene ? getAgent(game, combatScene.pendingNextActorId) : null;
   const combatFocusAgent = combatScene?.phase === "encounter" ? getAgent(game, combatScene.firstActorId) : combatScene?.phase === "tailwind" ? tailwindActor : combatScene?.phase === "choice" ? combatActor : nextCombatActor;
   const combatFocusSide = combatFocusAgent?.team ?? (combatScene?.kind === "turret" ? combatScene.holder.team : game.turnSide);
   const combatantIds = new Set([combatScene?.mover.id, combatScene?.holder.id].filter(Boolean));
-  const activeCombatAction = combatScene?.kind === "turret" ? "포탑 자동 방어 사격 · 우선도 2" : game.pendingMovement
+  const activeCombatAction = combatScene?.kind === "turret" ? "포탑 자동 방어 사격 · 우선도 2" : combatScene?.waitClaim
+    ? "대기 확보 교전 · 시도자 후퇴 불가"
+    : game.pendingMovement
     ? `${MOVEMENT_LABEL[game.pendingMovement.kind]} · ${Math.max(0, game.pendingMovement.path.length - game.pendingMovement.nextIndex)}칸 남음`
     : selectedCard?.used ? CARD_DATA[selectedCard.kind].name : "위치 교전";
   const canCombatAdvance = !!(combatScene && combatActor?.id === combatScene.mover.id && game.pendingMovement?.agentId === combatActor.id && game.pendingMovement.nextIndex < game.pendingMovement.path.length);
@@ -4297,12 +4376,12 @@ export default function Home() {
             </div>
             {!isAiControlledTurn && (game.pendingWait || game.targeting) && <div className="targeting-banner">
               <strong>{game.pendingWait ? WEAPONS[getAgent(game, game.pendingWait)?.weapon ?? "classic"].type === "sniper" ? "저격 대기 구역 선택 · 거리 1~2" : "대기 구역 선택 · 거리 1" : game.targeting?.kind === "control" ? "두 방향을 지정" : game.targeting?.kind === "special" ? `${game.targeting.special === "rush" ? "러쉬" : "커버"} 이동` : "스킬 목표 선택"}</strong>
-              <span>{game.pendingWait ? "청록색 구역 하나를 직접 선택하면 해당 구역 진입에 반응합니다." : "청록색으로 표시된 구역을 선택하세요."}</span>
+              <span>{game.pendingWait ? "점유 중인 적이 있으면 먼저 일반 교전을 벌입니다. 대기 시도자는 이 교전에서 후퇴할 수 없습니다." : "청록색으로 표시된 구역을 선택하세요."}</span>
               <button onClick={(event) => { event.stopPropagation(); if (game.pendingWait) skipWait(); else cancelTargeting(); }}>취소</button>
             </div>}
             {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
               <header><span>VISUAL CONTACT // 거리 1</span><strong>{pendingContactAgent.name}이 적을 발견했습니다</strong><p>보이는 것만으로는 교전하지 않습니다. 카드 소모 없이 지금 교전을 시작할 수 있습니다.</p></header>
-              <div>{pendingContactEnemies.map((enemy) => { const offAngle = enemy.waitDirs.length > 0; return <button key={enemy.id} className={`contact-engage ${offAngle ? "off-angle-contact" : ""}`} onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{offAngle ? `기습 우선도 ${Math.max(1, (game.pendingContact?.priority ?? 3) - 1)} · 적 대응 우선도 3` : `${regionName(enemy.region)} · 양쪽 보너스 없음`}</small>{offAngle && <em>다른 방향 대기 중: {enemy.waitDirs.map((region) => `${region}번`).join(" · ")} · 대기 미발동</em>}</span></button>; })}</div>
+              <div>{pendingContactEnemies.map((enemy) => { const offAngle = enemy.waitDirs.length > 0 && !enemy.waitDirs.includes(pendingContactAgent.region); return <button key={enemy.id} className={`contact-engage ${offAngle ? "off-angle-contact" : ""}`} onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{offAngle ? `기습 우선도 ${Math.max(1, (game.pendingContact?.priority ?? 3) - 1)} · 적 대응 우선도 3` : `${regionName(enemy.region)} · 양쪽 보너스 없음`}</small>{offAngle && <em>다른 방향 대기 중: {enemy.waitDirs.map((region) => `${region}번`).join(" · ")} · 대기 미발동</em>}</span></button>; })}</div>
               <button className="contact-skip" onClick={skipOptionalContact}><b>교전하지 않기</b><small>{game.pendingContact.source === "turn-start" ? "턴을 그대로 시작합니다" : "남은 이동·행동을 계속합니다"}</small></button>
             </section>}
           </div>
@@ -4382,7 +4461,7 @@ export default function Home() {
           <div className="combat-actor-turn"><span>{combatScene.phase === "encounter" ? combatScene.kind === "turret" ? "포탑 감지" : "적 접촉" : combatScene.phase === "tailwind" ? "반응 선택" : combatScene.phase === "choice" ? "지금 행동" : combatScene.resolved ? "교전 결과" : "다음 행동"}</span><strong>{combatScene.phase === "encounter" ? `${combatScene.mover.name} ↔ ${combatScene.holder.name}` : combatFocusAgent ? `${SIDE_LABEL[combatFocusAgent.team]} · ${combatFocusAgent.name}` : combatScene.kind === "turret" ? "포탑 사격 결과" : "결과 확인"}</strong><small>{combatScene.phase === "encounter" ? combatScene.kind === "turret" ? "포탑이 우선도 2로 자동 사격합니다" : "지도와 대기 구역을 확인한 뒤 교전을 시작하세요" : combatScene.phase === "choice" ? "공격·이탈 중 선택하세요" : combatScene.phase === "tailwind" ? "순풍 이동지를 선택하세요" : combatScene.resolved ? "아래 버튼으로 교전을 정리하세요" : `${nextCombatActor?.name ?? "다음 요원"} 차례가 이어집니다`}</small></div>
           {combatScene.kind === "turret" ? <em className={combatScene.holder.team === game.turnSide ? "team-action" : "reaction-action"}>자동 방어 장치</em> : combatFocusAgent && <em className={combatFocusAgent.team === game.turnSide ? "team-action" : "reaction-action"}>{combatFocusAgent.team === game.turnSide ? "현재 팀 행동" : "상대 반응 차례"}</em>}
         </div>
-        <div className="combat-location"><span>교전 위치</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i><strong>{regionName(combatScene.holder.region)}</strong>{combatScene.waiting && <b>대기 공격 발동</b>}{combatScene.offAngle && <b className="off-angle-tag">기습 · 공격 우선도 +1</b>}</div>
+        <div className="combat-location"><span>교전 위치</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i><strong>{regionName(combatScene.holder.region)}</strong>{combatScene.waiting && <b>대기 공격 발동</b>}{combatScene.waitClaim && <b>대기 구역 확보전</b>}{combatScene.offAngle && <b className="off-angle-tag">기습 · 공격 우선도 +1</b>}</div>
         {combatScene.phase === "encounter" && <section className="encounter-intro">
           <div className={`encounter-portrait ${agentArtClass(combatScene.mover.name)}`}><span>{combatScene.mover.name}</span></div>
           <div><span>{combatScene.kind === "turret" ? "AUTOMATED DEFENSE" : combatScene.offAngle ? "OFF-ANGLE CONTACT" : "ENEMY CONTACT"}</span><strong>{combatScene.kind === "turret" ? "포탑 감시선 진입" : combatScene.offAngle ? "다른 방향 대기 · 일반 대응" : "시야에 적 포착"}</strong><small>우선도 {combatScene.mover.priority} : {combatScene.holder.priority}{combatScene.kind === "turret" ? " · 포탑 선제 사격" : combatScene.waiting ? " · 대기 반응" : combatScene.offAngle ? " · 측면 공격" : " · 범위 교전"}</small></div>
@@ -4447,7 +4526,7 @@ export default function Home() {
             <div><span>진행</span><b>매치 R{game.matchRound} · 전술 {game.cycle}/16</b></div>
             <div><span>현재 행동</span><b>{activeCombatAction}</b></div>
             <div><span>스파이크</span><b>{SPIKE_STATUS_LABEL[game.spike.status]}{game.spike.region ? ` · ${game.spike.region}번` : ""}</b></div>
-            <div><span>교전 규칙</span><b>{combatScene.kind === "turret" ? "포탑 우선도 2 · 자동 1회 공격" : combatScene.offAngle ? `기습 · 공격 ${combatScene.mover.priority} / 대응 ${combatScene.holder.priority} · 대기 보너스 없음` : combatScene.simultaneous ? "동일 우선도 · 동시 처리" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
+            <div><span>교전 규칙</span><b>{combatScene.kind === "turret" ? "포탑 우선도 2 · 자동 1회 공격" : combatScene.waitClaim ? `일반 교전 · ${combatScene.mover.name} 후퇴 불가` : combatScene.offAngle ? `기습 · 공격 ${combatScene.mover.priority} / 대응 ${combatScene.holder.priority} · 대기 보너스 없음` : combatScene.simultaneous ? "동일 우선도 · 후퇴자는 무빙 +2" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
           </div>
           <div className="combat-intel-grid">
             {(["defense", "attack"] as Side[]).map((side) => <article key={side} className={`combat-team-intel ${side}`}>
@@ -4477,8 +4556,8 @@ export default function Home() {
             </article>)}
           </div>
         </section>
-        <div className="combat-result"><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
-        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small></button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}<div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
+        <div className="combat-result"><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : combatScene.waitClaim ? "점유한 적이 모두 제거되거나 후퇴하면 선택한 구역에 대기가 완성됩니다. 대기 시도자는 후퇴할 수 없습니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
+        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small></button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>이 요원은 대기 구역을 확보할 때까지 후퇴할 수 없습니다.</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
       {showShop && !isAiControlledTurn && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
@@ -4492,7 +4571,7 @@ export default function Home() {
         <div className="modal-head"><div><span className="eyebrow">FIELD MANUAL // V0.1</span><h2>핵심 규칙</h2></div><button onClick={() => setShowHelp(false)}>닫기</button></div>
         <div className="rules-grid">
           <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 → 공격 본진 대기 설정 후 수비가 먼저 행동합니다. 공격 요원은 1번에 고정된 채 초반 진입로를 대기합니다.</p></article>
-          <article><b>02</b><h3>지속 교전</h3><p>거리 1에서 다른 방향을 대기 중인 적을 선택 공격하면 기습으로 공격 우선도가 1단계 향상되고 적 대기는 발동하지 않습니다. 적이 대기 중이 아니면 양쪽 모두 보너스가 없습니다. 같은 구역에서는 대기 방향과 무관하게 대기 우선도 1입니다.</p></article>
+          <article><b>02</b><h3>지속 교전</h3><p>거리 1에서 다른 방향을 대기 중인 적을 선택 공격하면 기습으로 공격 우선도가 1단계 향상됩니다. 같은 구역에서는 대기 방향과 무관하게 대기 우선도 1입니다. 점유 구역에 대기를 시도하면 먼저 일반 교전하며 시도자는 후퇴할 수 없습니다. 동일 우선도에서 후퇴하면 그 동시 공격에 무빙 +2를 받습니다.</p></article>
           <article><b>03</b><h3>추가행동</h3><p>카드 한 장마다 해당 요원이 추가행동 1회를 얻습니다. 스킬, 설치·해체, 총기·스파이크 줍기에 사용합니다.</p></article>
           <article><b>04</b><h3>시야</h3><p>아군이 있는 구역과 인접 구역만 확인합니다. 연막은 시야와 대기를 끊지만 이동은 막지 않습니다.</p></article>
           <article><b>05</b><h3>트레이드</h3><p>아군 사망·이탈·정찰 장치 파괴 시 적에게 표식. 같은 턴 다음 아군의 첫 교전에 에임 +1, 우선도 1단계 향상.</p></article>

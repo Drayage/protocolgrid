@@ -99,18 +99,20 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.ok(spriteAtlas.byteLength > 100_000);
 });
 
-test("distance-one sight is optional while same-region and waiting contacts stay mandatory", async () => {
+test("distance-one sight is optional while same-region and new-entry waits stay mandatory", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /const sameRegionEnemies =/);
+  assert.match(page, /const watchers = source === "turn-start" \? \[\] : watchersFor\(game, agent\)/);
   assert.match(page, /mandatoryEnemy\.region === agent\.region && mandatoryEnemy\.waitDirs\.length > 0/);
   assert.match(page, /const optionalEnemies =/);
   assert.match(page, /path\.length !== 2/);
   assert.match(page, /game\.pendingContact =/);
   assert.match(page, /카드 소모 없이 교전 여부를 선택하세요/);
-  assert.match(page, /const offAngle = range === 1 && !waiting && revealedWaitDirs\.length > 0/);
+  assert.match(page, /!revealedWaitDirs\.includes\(mover\.region\)/);
+  assert.match(page, /!enemy\.waitDirs\.includes\(pendingContactAgent\.region\)/);
   assert.match(page, /const surprisePriority = offAngle \? 1 : 0/);
   assert.match(page, /moverTradePriority - surprisePriority/);
   assert.match(page, /\(waiting \? 1 : 3\)/);
@@ -343,11 +345,24 @@ test("sniper waits target exact range-two regions and respect every smoke edge",
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function waitTargetsFor\(agent: Agent\)/);
   assert.match(page, /WEAPONS\[agent\.weapon\]\.type === "sniper" \? 2 : 1/);
+  assert.match(page, /function queueWaitClaimEncounter/);
+  assert.match(page, /scene\.retreatLockedIds = \[agent\.id\]/);
+  assert.match(page, /scene\.waitClaim = \{ actorId: agent\.id, region, originRegion \}/);
+  assert.match(page, /startWaitAttempt\(draft, agent, region\)/);
   assert.match(page, /enemy\.waitDirs\.includes\(mover\.region\)/);
   assert.match(page, /function isWaitPathSmokeBlocked/);
   assert.match(page, /path\.slice\(0, -1\)\.some/);
   assert.match(page, /저격 대기 구역 선택 · 거리 1~2/);
   assert.doesNotMatch(page, /enemy\.waitDirs\.includes\(path\[1\]\)/);
+});
+
+test("same-priority retreat gains temporary movement and wait claimants cannot retreat", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /moverChoice\.type === "retreat" \? 2 : 0/);
+  assert.match(page, /holderChoice\.type === "retreat" \? 2 : 0/);
+  assert.match(page, /scene\.moverMoveBonus \+ moverRetreatMoveBonus/);
+  assert.match(page, /scene\.retreatLockedIds\.includes\(actor\.id\)/);
+  assert.match(page, /대기 확보 교전 · 시도자 후퇴 불가/);
 });
 
 test("turret attacks use the combat scene and weapon cards explain every modifier", async () => {
