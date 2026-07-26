@@ -193,7 +193,7 @@ test("defense AI holds the site perimeter, spreads cards, and retreats when heav
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /const DEFENSE_OPERATING_REGIONS = new Set/);
   assert.match(page, /function aiDefenseDestination/);
-  assert.match(page, /safeTargets = flanking \? targets : targets\.filter\(\(region\) => DEFENSE_OPERATING_REGIONS\.has\(region\)\)/);
+  assert.match(page, /safeTargets = guardingDroppedSpike \|\| flanking \? targets : targets\.filter\(\(region\) => DEFENSE_OPERATING_REGIONS\.has\(region\)\)/);
   assert.match(page, /const cardsUsedByAgent = \(agent: Agent\)/);
   assert.match(page, /cardsUsedByAgent\(a\) \* 20 \+ rotationRank\(a\)/);
   assert.match(page, /function shouldAiRetreat/);
@@ -284,6 +284,59 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /작전 선택 · \$\{game\.attackPlan\.label\}/);
   assert.match(page, /className="analysis-plan"/);
   assert.match(css, /\.analysis-plan/);
+});
+
+test("AI protects spike transport, recovers drops, and converts defense to spike denial", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function selectSpikeCarrierId/);
+  assert.match(page, /agent\.name !== plan\.lurkerName/);
+  assert.match(page, /roleOrder: Record<Role, number> = \{ controller: 0, initiator: 1, sentinel: 2, duelist: 3 \}/);
+  assert.match(page, /game\.spike\.carrierId === agent\.id\) return attackCoreWaypoints/);
+  assert.match(page, /function attackCarrierEscortAgents/);
+  assert.match(page, /function aiSpikeEscortDestination/);
+  assert.match(page, /const escortDestination = side === "attack" \? aiSpikeEscortDestination/);
+  assert.match(page, /side === "attack" && draft\.spike\.status === "dropped"/);
+  assert.match(page, /-40 \+ distance\(agent\.region, draft\.spike\.region\) \* 5/);
+  assert.match(page, /draft\.spike\.status !== "dropped" && draft\.cycle <= 2/);
+  assert.match(page, /spikeKnownByDefense: boolean/);
+  assert.match(page, /스파이크 확보 · 인접 구역 교차 대기 · 공격팀 회수 차단/);
+  assert.match(page, /a === game\.spike\.region \? -20 : 0/);
+  assert.match(page, /guardingDroppedSpike/);
+});
+
+test("AI remembers visible weapon drops and prioritizes upgrades for classic users", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /interface DroppedWeapon/);
+  assert.match(page, /knownBy: Side\[\]/);
+  assert.match(page, /function rememberObservedDroppedWeapons/);
+  assert.match(page, /function aiWeaponPickupObjective/);
+  assert.match(page, /ally\.weapon === "classic" \? 24 : 0/);
+  assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
+  assert.match(page, /if \(aiPickupWeaponAtCurrentRegion\(draft, side\)\) return/);
+  assert.match(page, /const weaponDestination = aiWeaponDestination/);
+  assert.match(page, /className="weapon-drop"/);
+  assert.match(css, /\.effect-stack i\.weapon-drop/);
+});
+
+test("attackers configure opening waits at spawn before the first defense turn", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /"setup_attack_wait"/);
+  assert.match(page, /function AttackWaitSetupScreen/);
+  assert.match(page, /공격팀 본진 대기 설정/);
+  assert.match(page, /agent\.region !== 1/);
+  assert.match(page, /waitTargetsFor\(agent\)\.includes\(region\)/);
+  assert.match(page, /function autoSetAttackOpeningWaits/);
+  assert.match(page, /\[12, 17, 6, 2, 4, 5\] : \[2, 4, 5\]/);
+  assert.match(page, /autoSetAttackOpeningWaits\(draft\)/);
+  assert.match(page, /수비팀 첫 턴 시작/);
+  assert.match(css, /\.opening-wait-line/);
+  assert.match(css, /\.opening-wait-screen/);
 });
 
 test("sniper waits target exact range-two regions and respect every smoke edge", async () => {

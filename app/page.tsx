@@ -130,6 +130,13 @@ interface SpikeState {
   explosion: number;
 }
 
+interface DroppedWeapon {
+  id: string;
+  region: number;
+  weapon: WeaponId;
+  knownBy: Side[];
+}
+
 interface Deployable {
   id: string;
   kind: "trip" | "camera" | "turret" | "alarm";
@@ -369,7 +376,8 @@ interface GameState {
   targeting: TargetingState | null;
   teams: Record<Side, TeamState>;
   spike: SpikeState;
-  droppedWeapons: { id: string; region: number; weapon: WeaponId }[];
+  spikeKnownByDefense: boolean;
+  droppedWeapons: DroppedWeapon[];
   deployables: Deployable[];
   fires: ZoneEffect[];
   stims: ZoneEffect[];
@@ -671,6 +679,13 @@ function createTeam(side: Side, names: string[], seed: number): TeamState {
   };
 }
 
+function selectSpikeCarrierId(agents: Agent[], plan: AttackPlan) {
+  const roleOrder: Record<Role, number> = { controller: 0, initiator: 1, sentinel: 2, duelist: 3 };
+  const mainBody = agents.filter((agent) => agent.name !== plan.lurkerName);
+  return [...(mainBody.length ? mainBody : agents)]
+    .sort((a, b) => roleOrder[a.role] - roleOrder[b.role] || agents.indexOf(a) - agents.indexOf(b))[0]?.id ?? null;
+}
+
 function createInitialGame(
   attackNames = ["제트", "레이즈", "소바", "브리치", "브림스톤"],
   defenseNames = ["피닉스", "네온", "사이퍼", "킬조이", "오멘"],
@@ -678,11 +693,13 @@ function createInitialGame(
 ): GameState {
   const attack = createTeam("attack", attackNames, 17);
   const defense = createTeam("defense", defenseNames, 29);
+  const attackPlan = createAttackPlan(1, attackNames, strategySeed);
+  const defensePlan = createDefensePlan(1, defenseNames, strategySeed);
   return {
     matchRound: 1,
     strategySeed,
-    attackPlan: createAttackPlan(1, attackNames, strategySeed),
-    defensePlan: createDefensePlan(1, defenseNames, strategySeed),
+    attackPlan,
+    defensePlan,
     cycle: 1,
     turnSerial: 1,
     teamTurns: { attack: 0, defense: 1 },
@@ -693,7 +710,8 @@ function createInitialGame(
     pendingWait: null,
     targeting: null,
     teams: { attack, defense },
-    spike: { status: "carried", carrierId: attack.agents[0].id, region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: 8 },
+    spike: { status: "carried", carrierId: selectSpikeCarrierId(attack.agents, attackPlan), region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: 8 },
+    spikeKnownByDefense: false,
     droppedWeapons: [],
     deployables: [],
     fires: [],
@@ -814,7 +832,8 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.selectedCardId = null;
   game.pendingWait = null;
   game.targeting = null;
-  game.spike = { status: "carried", carrierId: game.teams.attack.agents[0]?.id ?? null, region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: 8 };
+  game.spike = { status: "carried", carrierId: selectSpikeCarrierId(game.teams.attack.agents, game.attackPlan), region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: 8 };
+  game.spikeKnownByDefense = false;
   game.droppedWeapons = [];
   game.deployables = [];
   game.fires = [];
@@ -911,6 +930,25 @@ function attackMainAgents(game: GameState) {
   return game.teams.attack.agents.filter((agent) => agent.name !== game.attackPlan.lurkerName);
 }
 
+function attackCarrierEscortAgents(game: GameState) {
+  const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
+  if (!carrier?.alive) return [];
+  const nearbyEscortCount = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== carrier.id && distance(ally.region, carrier.region) <= 1).length;
+  if (nearbyEscortCount >= 2) return [];
+  return game.teams.attack.agents
+    .filter((ally) => ally.alive && ally.id !== carrier.id && !isAttackLurker(game, ally))
+    .sort((a, b) => distance(a.region, carrier.region) - distance(b.region, carrier.region))
+    .slice(0, 2);
+}
+
+function aiSpikeEscortDestination(game: GameState, agent: Agent, targets: number[]) {
+  const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
+  if (!carrier?.alive || !attackCarrierEscortAgents(game).some((escort) => escort.id === agent.id) || distance(agent.region, carrier.region) <= 1) return null;
+  const destination = [...targets].sort((a, b) => distance(a, carrier.region) - distance(b, carrier.region))[0];
+  if (destination === undefined || distance(destination, carrier.region) >= distance(agent.region, carrier.region)) return null;
+  return destination;
+}
+
 function attackCoreWaypoints(game: GameState): number[] {
   const phase = attackPlanPhase(game);
   const targetSite = game.attackPlan.targetSite;
@@ -963,6 +1001,7 @@ function attackLurkerWaypoints(game: GameState, agent: Agent) {
 }
 
 function attackPlanWaypoints(game: GameState, agent?: Agent): number[] {
+  if (agent && game.spike.status === "carried" && game.spike.carrierId === agent.id) return attackCoreWaypoints(game);
   if (agent && isAttackLurker(game, agent)) return attackLurkerWaypoints(game, agent);
   if (!agent || game.attackPlan.formation === "five" || attackPlanPhase(game) === "execute" || attackPlanPhase(game) === "postplant") return attackCoreWaypoints(game);
   const mainAgents = attackMainAgents(game);
@@ -1110,6 +1149,7 @@ function cancelProgress(game: GameState, agent: Agent) {
     game.spike.status = "carried";
     game.spike.carrierId = agent.id;
     game.spike.region = null;
+    game.spikeKnownByDefense = false;
     addLog(game, `${agent.name}의 스파이크 설치가 취소됐습니다.`);
   } else if (game.spike.status === "defusing") {
     game.spike.status = "half";
@@ -1143,7 +1183,12 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   if (game.pendingWait === defender.id) game.pendingWait = null;
   cancelProgress(game, defender);
   if (defender.weapon !== "classic") {
-    game.droppedWeapons.push({ id: `drop-${Date.now()}-${defender.id}`, region: defender.region, weapon: defender.weapon });
+    game.droppedWeapons.push({
+      id: `drop-${Date.now()}-${defender.id}`,
+      region: defender.region,
+      weapon: defender.weapon,
+      knownBy: [...new Set<Side>([defender.team, ...(attacker ? [attacker.team] : [])])],
+    });
   }
   if (attacker) {
     game.teams[attacker.team].killsThisRound += 1;
@@ -1152,7 +1197,10 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   }
   if (game.spike.carrierId === defender.id && game.spike.status === "carried") {
     game.spike = { ...game.spike, status: "dropped", carrierId: null, region: defender.region, actorId: null };
+    game.spikeKnownByDefense = true;
     addLog(game, `스파이크가 ${REGIONS.find((region) => region.id === defender.region)?.name}에 떨어졌습니다.`);
+    addAnalyticsEvent(game, "attack", "objective", `${defender.region}번 스파이크 드롭 · 회수 작전 전환`);
+    addAnalyticsEvent(game, "defense", "objective", `${defender.region}번 스파이크 확보 · 회수 차단 전환`);
   }
   addLog(game, `${defender.name} 제거.`);
   if (attacker) {
@@ -1675,7 +1723,76 @@ function aiEnemyIntel(game: GameState, side: Side): AiEnemyIntel[] {
   });
 }
 
+function rememberObservedDroppedWeapons(game: GameState, side: Side) {
+  const observed = observedRegions(game, side);
+  game.droppedWeapons.forEach((item) => {
+    if (observed.has(item.region) && !item.knownBy.includes(side)) item.knownBy.push(side);
+  });
+}
+
+function weaponTacticalValue(weaponId: WeaponId) {
+  const weapon = WEAPONS[weaponId];
+  return weapon.price * 2 + weapon.body * 3 + weapon.head * 2 + weapon.aim * 8 + weapon.move * 6;
+}
+
+function weaponUpgradeValue(agent: Agent, weaponId: WeaponId) {
+  return weaponTacticalValue(weaponId) - weaponTacticalValue(agent.weapon);
+}
+
+function hasCriticalSpikeObjective(game: GameState, side: Side) {
+  if (game.spike.status === "dropped") return true;
+  return side === "defense" && ["planted", "half", "defusing"].includes(game.spike.status);
+}
+
+function aiWeaponPickupObjective(game: GameState, agent: Agent): DroppedWeapon | null {
+  if (hasCriticalSpikeObjective(game, agent.team)) return null;
+  const known = game.droppedWeapons.filter((item) => item.knownBy.includes(agent.team) && weaponUpgradeValue(agent, item.weapon) >= 6);
+  const assigned = known.filter((item) => {
+    const claimant = game.teams[agent.team].agents
+      .filter((ally) => ally.alive && weaponUpgradeValue(ally, item.weapon) >= 6)
+      .map((ally) => ({
+        ally,
+        score: weaponUpgradeValue(ally, item.weapon) * 5 + (ally.weapon === "classic" ? 24 : 0) - distance(ally.region, item.region) * 7,
+      }))
+      .sort((a, b) => b.score - a.score)[0];
+    return claimant?.ally.id === agent.id && claimant.score > 0;
+  });
+  return assigned
+    .map((item) => ({ item, score: weaponUpgradeValue(agent, item.weapon) * 5 - distance(agent.region, item.region) * 7 }))
+    .sort((a, b) => b.score - a.score)[0]?.item ?? null;
+}
+
+function aiWeaponDestination(game: GameState, agent: Agent, targets: number[]) {
+  const objective = aiWeaponPickupObjective(game, agent);
+  if (!objective) return null;
+  const destination = [...targets].sort((a, b) => distance(a, objective.region) - distance(b, objective.region))[0];
+  if (destination === undefined || distance(destination, objective.region) >= distance(agent.region, objective.region)) return null;
+  return destination;
+}
+
+function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
+  const candidates = game.teams[side].agents
+    .filter((agent) => agent.alive && agent.extraActions > 0)
+    .flatMap((agent) => game.droppedWeapons
+      .filter((item) => item.region === agent.region && item.knownBy.includes(side) && weaponUpgradeValue(agent, item.weapon) > 0)
+      .map((item) => ({ agent, item, upgrade: weaponUpgradeValue(agent, item.weapon) })))
+    .sort((a, b) => (b.agent.weapon === "classic" ? 1 : 0) - (a.agent.weapon === "classic" ? 1 : 0) || b.upgrade - a.upgrade)[0];
+  if (!candidates) return false;
+  const { agent, item } = candidates;
+  const priorWeapon = agent.weapon;
+  game.droppedWeapons = game.droppedWeapons.filter((dropped) => dropped.id !== item.id);
+  if (priorWeapon !== "classic") {
+    game.droppedWeapons.push({ id: `ai-swap-${Date.now()}-${agent.id}`, region: agent.region, weapon: priorWeapon, knownBy: [side] });
+  }
+  agent.weapon = item.weapon;
+  agent.extraActions -= 1;
+  addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}이 확인된 ${WEAPONS[item.weapon].name}을 주워 ${WEAPONS[priorWeapon].name}과 교체했습니다.`);
+  addAnalyticsEvent(game, side, "objective", `${agent.name} 총기 회수 · ${WEAPONS[item.weapon].name}`);
+  return true;
+}
+
 function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiEnemyIntel[]) {
+  if (game.spike.status === "dropped" && game.spike.region !== null && (side === "attack" || game.spikeKnownByDefense)) return game.spike.region;
   if (game.spike.region !== null && (
     side === "defense" && ["planted", "half", "defusing"].includes(game.spike.status)
     || side === "attack" && ["planting", "planted", "half", "defusing"].includes(game.spike.status)
@@ -1691,6 +1808,11 @@ function aiStrategicWaitDirections(game: GameState, agent: Agent, count: number)
   const options = count === 1 ? waitTargetsFor(agent) : GRAPH.get(agent.region) ?? [];
   const attackWaypoints = agent.team === "attack" ? attackPlanWaypoints(game, agent) : [];
   return [...options].sort((a, b) => {
+    if (agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
+      const spikeA = (a === game.spike.region ? -20 : 0) + distance(a, game.spike.region);
+      const spikeB = (b === game.spike.region ? -20 : 0) + distance(b, game.spike.region);
+      if (spikeA !== spikeB) return spikeA - spikeB;
+    }
     if (intel.length) {
       const distanceA = Math.min(...intel.map((item) => distance(a, item.region)));
       const distanceB = Math.min(...intel.map((item) => distance(b, item.region)));
@@ -1752,6 +1874,10 @@ function defenseShouldFlank(game: GameState, agent: Agent, threat: "A" | "B" | n
 }
 
 function updateDefensePlanReadout(game: GameState) {
+  if (game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
+    game.defensePlan.readout = `${game.spike.region}번 스파이크 확보 · 인접 구역 교차 대기 · 공격팀 회수 차단`;
+    return;
+  }
   const threat = defenseThreatSite(game);
   if (!threat) return;
   const plan = game.defensePlan;
@@ -1767,6 +1893,9 @@ function updateDefensePlanReadout(game: GameState) {
 }
 
 function defensePlanWaypoints(game: GameState, agent: Agent) {
+  if (game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
+    return [game.spike.region, ...(GRAPH.get(game.spike.region) ?? [])];
+  }
   const lane = defenseAssignedLane(game, agent);
   const threat = defenseThreatSite(game);
   if (!threat) return defenseLaneAnchors(lane);
@@ -1787,9 +1916,10 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
 }
 
 function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) {
+  const guardingDroppedSpike = game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null;
   const threat = defenseThreatSite(game);
-  const flanking = defenseShouldFlank(game, agent, threat);
-  const safeTargets = flanking ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
+  const flanking = !guardingDroppedSpike && defenseShouldFlank(game, agent, threat);
+  const safeTargets = guardingDroppedSpike || flanking ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
   if (!safeTargets.length) return null;
   const waypoints = defensePlanWaypoints(game, agent);
   const routeDistance = (region: number) => Math.min(...waypoints.map((waypoint) => distance(region, waypoint)));
@@ -1813,6 +1943,11 @@ function updateAttackLurkerPlan(game: GameState) {
   if (plan.formation !== "four-one" || !plan.lurkerName) return;
   const lurker = game.teams.attack.agents.find((agent) => agent.alive && agent.name === plan.lurkerName);
   if (!lurker) return;
+  if (game.spike.status === "dropped" || game.spike.carrierId === lurker.id) {
+    plan.lurkerMode = "regroup";
+    plan.readout = `${lurker.name} 러커 복귀 · 스파이크 회수와 본대 호위 우선`;
+    return;
+  }
   if (["planting", "planted", "half", "defusing"].includes(game.spike.status)) {
     plan.lurkerMode = "regroup";
     return;
@@ -1863,6 +1998,17 @@ function adaptAttackPlan(game: GameState) {
 }
 
 function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
+  if (game.spike.status === "dropped" && game.spike.region !== null) {
+    const destination = [...targets].sort((a, b) => {
+      const distanceA = distance(a, game.spike.region!);
+      const distanceB = distance(b, game.spike.region!);
+      const occupiedA = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
+      const occupiedB = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
+      return distanceA * 5 + occupiedA - (distanceB * 5 + occupiedB);
+    })[0];
+    if (destination === undefined || distance(destination, game.spike.region) >= distance(agent.region, game.spike.region)) return null;
+    return destination;
+  }
   const phase = attackPlanPhase(game);
   const deepFlanking = isAttackLurker(game, agent) && game.attackPlan.lurkerMode === "deep-flank";
   const allowedTargets = targets.filter((region) => {
@@ -1889,8 +2035,9 @@ function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) 
   return [...options].sort((a, b) => {
     const safetyA = Math.min(...enemyRegions.map((region) => distance(a, region)), 9);
     const safetyB = Math.min(...enemyRegions.map((region) => distance(b, region)), 9);
-    const territoryA = agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, 1);
-    const territoryB = agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, 1);
+    const guardingDrop = agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null;
+    const territoryA = guardingDrop ? 8 - distance(a, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, 1);
+    const territoryB = guardingDrop ? 8 - distance(b, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, 1);
     return safetyB * 3 + territoryB - (safetyA * 3 + territoryA);
   })[0];
 }
@@ -1899,7 +2046,8 @@ function shouldAiRetreat(game: GameState, agent: Agent) {
   const nearbyEnemies = aiEnemyIntel(game, agent.team).filter((enemy) => distance(agent.region, enemy.region) <= 1).length;
   const nearbyAllies = game.teams[agent.team].agents.filter((ally) => ally.alive && distance(agent.region, ally.region) <= 1).length;
   const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
-  const defenseOverextended = agent.team === "defense" && !spikeActive && !DEFENSE_OPERATING_REGIONS.has(agent.region);
+  const guardingDroppedSpike = agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null && distance(agent.region, game.spike.region) <= 1;
+  const defenseOverextended = agent.team === "defense" && !spikeActive && !guardingDroppedSpike && !DEFENSE_OPERATING_REGIONS.has(agent.region);
   const heavilyOutnumbered = nearbyEnemies >= nearbyAllies + 2;
   return defenseOverextended || heavilyOutnumbered || (agent.hp === 1 && nearbyEnemies > nearbyAllies);
 }
@@ -2261,8 +2409,10 @@ function analysisInsights(game: GameState) {
       ? `${rateGap > 0 ? "공격팀" : "수비팀"} 명중률이 ${Math.abs(rateGap)}%p 앞섭니다. 낮은 쪽은 정면 재교전보다 이탈·트레이드가 유리합니다.`
       : "양 팀 명중률 차이가 작습니다. 피해 집중과 생존 총기 보존이 더 중요한 구간입니다.";
   const third = game.spike.status === "carried"
-    ? `공격은 ‘${game.attackPlan.label}’·${attackFormationLabel(game.attackPlan)}, 수비는 ‘${game.defensePlan.label}’입니다. 공격은 현재 ${attackPlanPhaseLabel(game)} 단계이며 ${game.attackPlan.readout}.`
-    : ["planting", "planted", "half", "defusing"].includes(game.spike.status)
+    ? `공격은 ‘${game.attackPlan.label}’·${attackFormationLabel(game.attackPlan)}, 수비는 ‘${game.defensePlan.label}’입니다. ${getAgent(game, game.spike.carrierId)?.name ?? "본대 요원"}이 스파이크를 운반하며 공격은 현재 ${attackPlanPhaseLabel(game)} 단계입니다.`
+    : game.spike.status === "dropped" && game.spike.region !== null
+      ? `스파이크가 ${game.spike.region}번에 떨어졌습니다. 공격은 회수·호위가 최우선이고 수비는 해당 구역과 진입로를 장악하면 시간 승리를 만들 수 있습니다.`
+      : ["planting", "planted", "half", "defusing"].includes(game.spike.status)
       ? `스파이크 ${SPIKE_STATUS_LABEL[game.spike.status]} 단계입니다. 수비 재진입과 해체 진행이 최우선입니다.`
       : `현재 승리 조건: ${game.winReason ?? SPIKE_STATUS_LABEL[game.spike.status]}.`;
   return [first, second, third];
@@ -2272,7 +2422,7 @@ function MatchAnalysisPanel({ game, compact = false }: { game: GameState; compac
   const insights = analysisInsights(game);
   return <section className={`match-analysis ${compact ? "compact" : ""}`} aria-label="AI 경기 분석">
     <header><div><span>TACTICAL ANALYSIS</span><strong>{game.winner ? "라운드 분석" : "실시간 전술 분석"}</strong></div><small>실제 교전·행동 데이터 기준</small></header>
-    <div className="analysis-plan"><span>ATK PLAN</span><b>{game.attackPlan.label} · {attackTempoLabel(game.attackPlan.tempo)}</b><small>{attackFormationLabel(game.attackPlan)} · {attackPlanPhaseLabel(game)} · 목표 {game.attackPlan.targetSite} · 최종 진입 전술 {game.attackPlan.commitCycle}<br />{game.attackPlan.readout}</small></div>
+    <div className="analysis-plan"><span>ATK PLAN</span><b>{game.attackPlan.label} · {attackTempoLabel(game.attackPlan.tempo)}</b><small>{attackFormationLabel(game.attackPlan)} · {attackPlanPhaseLabel(game)} · 목표 {game.attackPlan.targetSite} · 최종 진입 전술 {game.attackPlan.commitCycle}<br />스파이크 {game.spike.status === "carried" ? `${getAgent(game, game.spike.carrierId)?.name ?? "본대"} 운반` : game.spike.status === "dropped" ? `${game.spike.region}번 회수 작전` : SPIKE_STATUS_LABEL[game.spike.status]} · {game.attackPlan.readout}</small></div>
     <div className="analysis-plan defense-plan"><span>DEF PLAN</span><b>{game.defensePlan.label}</b><small>A {game.defensePlan.distribution.A} · MID {game.defensePlan.distribution.MID} · B {game.defensePlan.distribution.B}<br />{game.defensePlan.readout}</small></div>
     <div className="analysis-teams">
       {(["defense", "attack"] as Side[]).map((side) => {
@@ -2426,15 +2576,31 @@ function autoDeployDefense(game: GameState) {
   });
 }
 
+function autoSetAttackOpeningWaits(game: GameState) {
+  const assigned = new Map<number, number>();
+  game.teams.attack.agents.forEach((agent) => {
+    const preferred = WEAPONS[agent.weapon].type === "sniper" ? [12, 17, 6, 2, 4, 5] : [2, 4, 5];
+    const legal = waitTargetsFor(agent);
+    const target = preferred
+      .filter((region) => legal.includes(region))
+      .sort((a, b) => (assigned.get(a) ?? 0) - (assigned.get(b) ?? 0))[0] ?? legal[0];
+    if (target === undefined) return;
+    setWait(game, agent, [target]);
+    assigned.set(target, (assigned.get(target) ?? 0) + 1);
+  });
+  addLog(game, "공격팀이 1번 본진에서 초반 돌진 대응 대기를 분산 설정했습니다.");
+}
+
 function prepareAiVsAiRound(game: GameState) {
   autoBuyTeamLoadout(game, "defense");
   autoDeployDefense(game);
   autoBuyTeamLoadout(game, "attack");
+  autoSetAttackOpeningWaits(game);
   game.turnSide = "defense";
   game.teams.attack.buyLocked = true;
   game.teams.defense.buyLocked = true;
   game.selectedAgentId = game.teams.defense.agents.find((agent) => agent.alive)?.id ?? null;
-  addLog(game, "AI 대 AI 관전 시작 · 양 팀 자동 구매와 수비 배치를 완료했습니다.");
+  addLog(game, "AI 대 AI 관전 시작 · 양 팀 자동 구매, 수비 배치, 공격 본진 대기를 완료했습니다.");
   addLog(game, `공격 AI 작전 브리핑 · ${game.attackPlan.label} · ${attackTempoLabel(game.attackPlan.tempo)} · 전술 ${game.attackPlan.commitCycle}부터 최종 진입.`);
   addLog(game, `수비 AI 작전 브리핑 · ${game.defensePlan.label} · ${game.defensePlan.readout}.`);
   addAnalyticsEvent(game, "defense", "objective", `수비 진형 · ${game.defensePlan.label}`);
@@ -2478,7 +2644,7 @@ function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onBu
           <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
         </div>
       </section>
-      <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i className={agentArtClass(item.name)} aria-label={`${item.name} 초상`} /><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "첫 수비 턴"}</span><strong>구매 확정</strong></button></aside>
+      <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i className={agentArtClass(item.name)} aria-label={`${item.name} 초상`} /><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "본진 대기 설정"}</span><strong>구매 확정</strong></button></aside>
     </section>
   </main>;
 }
@@ -2516,6 +2682,48 @@ function DeploymentScreen({ game, selectedId, onSelect, onPlace, onBack, onStart
       </section>
     </main>
   );
+}
+
+interface AttackWaitSetupScreenProps {
+  game: GameState;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onSetWait: (region: number) => void;
+  onAuto: () => void;
+  onClear: () => void;
+  onBack: () => void;
+  onStart: () => void;
+}
+
+function AttackWaitSetupScreen({ game, selectedId, onSelect, onSetWait, onAuto, onClear, onBack, onStart }: AttackWaitSetupScreenProps) {
+  const attackers = game.teams.attack.agents;
+  const selected = getAgent(game, selectedId) ?? attackers[0];
+  const validTargets = selected ? waitTargetsFor(selected) : [];
+  const configured = attackers.filter((agent) => agent.waitDirs.length > 0).length;
+  return <main className="setup-screen deployment-screen opening-wait-screen">
+    <header className="setup-topbar"><button onClick={onBack}>← 공격 구매</button><div><span>STEP 05</span><strong>공격팀 본진 대기 설정</strong></div><span className="deck-locked">위치 고정 · 1번</span></header>
+    <section className="deployment-body">
+      <aside className="deployment-roster"><span className="eyebrow">ATTACKER OPENING HOLD</span><h2>초반 돌진 대비</h2><p>공격 요원은 모두 1번에 고정됩니다. 요원을 고른 뒤 수비가 진입할 때 반응할 대기 구역 하나를 지정하세요.</p>
+        <div>{attackers.map((agent) => <button key={agent.id} className={selected?.id === agent.id ? "selected" : ""} onClick={() => onSelect(agent.id)}><i className={`role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} /><span><strong>{agent.name}</strong><small>{WEAPONS[agent.weapon].name} · {WEAPONS[agent.weapon].type === "sniper" ? "거리 1~2" : "거리 1"}</small></span><b>{agent.waitDirs.length ? `→ ${agent.waitDirs[0]}` : "미설정"}</b></button>)}</div>
+        <div className="placement-rule"><span>선택 요원</span><b>{selected?.name}</b><button disabled={!selected?.waitDirs.length} onClick={onClear}>대기 해제</button></div>
+      </aside>
+      <div className="deployment-map opening-wait-map">
+        <div className="deployment-vignette" />
+        <div className="map-coordinate-layer deployment-coordinate-layer">
+          <div className="deployment-map-image" />
+          {EDGES.map(([a, b]) => <span key={`${a}-${b}`} className="map-edge" style={connectionStyle(a, b)} />)}
+          {attackers.flatMap((agent) => agent.waitDirs.map((target) => <span key={`${agent.id}-${target}`} className={`opening-wait-line ${agent.id === selected?.id ? "selected" : ""}`} style={connectionStyle(1, target)} />))}
+          {REGIONS.map((region) => {
+            const valid = validTargets.includes(region.id);
+            const watchedBy = attackers.filter((agent) => agent.waitDirs.includes(region.id));
+            return <button key={region.id} disabled={!valid} className={`deployment-node ${valid ? "valid" : ""} ${watchedBy.length ? "watched" : ""}`} style={{ left: `${region.x}%`, top: `${region.y}%` }} onClick={() => onSetWait(region.id)}><span>{region.id}</span>{valid && <small>{distance(1, region.id)}칸 · {regionName(region.id)}</small>}{region.id === 1 && <i>{attackers.map((agent) => <b key={agent.id} className={`role-${agent.role} ${agentArtClass(agent.name)}`} title={agent.name} />)}</i>}{watchedBy.length > 0 && <em>{watchedBy.map((agent) => agent.name.slice(0, 1)).join(" · ")}</em>}</button>;
+          })}
+        </div>
+        <div className="deployment-callout"><span>공격팀 사전 대기</span><strong>수비 첫 턴부터 즉시 적용</strong><p>수비가 지정 구역으로 진입하면 우선도 1 대기 교전이 발생합니다.</p></div>
+      </div>
+      <aside className="deployment-summary"><span className="eyebrow">OPENING READY</span><h2>{configured}/5 설정</h2><div className="versus-line"><article><span>ATK</span>{attackers.map((agent) => <i key={agent.id} className={agent.waitDirs.length ? "ready" : ""}>{agent.name.slice(0, 1)}</i>)}</article><b>HOLD</b></div><ul><li><i /> 모든 공격 요원 1번 고정</li><li><i /> 일반 총기 거리 1</li><li><i /> 저격총 거리 1~2</li></ul><button className="opening-auto" onClick={onAuto}><span>자동 분산</span><strong>2 · 4 · 5 진입로 배치</strong></button><button onClick={onStart}><span>미설정 요원은 대기 없음</span><strong>수비팀 첫 턴 시작</strong></button></aside>
+    </section>
+  </main>;
 }
 
 interface AiControllerProps {
@@ -2582,7 +2790,7 @@ function AiController(props: AiControllerProps) {
 }
 
 export default function Home() {
-  const [stage, setStage] = useState<"title" | "select" | "buy_defense" | "deploy" | "buy_attack" | "play">("title");
+  const [stage, setStage] = useState<"title" | "select" | "buy_defense" | "deploy" | "buy_attack" | "setup_attack_wait" | "play">("title");
   const [attackPick, setAttackPick] = useState<string[]>([]);
   const [defensePick, setDefensePick] = useState<string[]>([]);
   const [pickingSide, setPickingSide] = useState<Side>("attack");
@@ -2782,14 +2990,39 @@ export default function Home() {
     });
   };
 
-  const autoBuyAttackAndStart = () => {
+  const setAttackOpeningWait = (region: number) => mutate((draft) => {
+    const agent = getAgent(draft, setupAgentId);
+    if (!agent || agent.team !== "attack" || agent.region !== 1 || !waitTargetsFor(agent).includes(region)) return;
+    setWait(draft, agent, [region]);
+  });
+
+  const clearAttackOpeningWait = () => mutate((draft) => {
+    const agent = getAgent(draft, setupAgentId);
+    if (agent?.team === "attack") clearWait(agent);
+  });
+
+  const startFirstDefenseTurn = (message: string) => {
     mutate((draft) => {
-      autoBuyTeamLoadout(draft, "attack");
       draft.turnSide = "defense";
       draft.teams.attack.buyLocked = true;
       draft.teams.defense.buyLocked = true;
       draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null;
-      addLog(draft, `공격팀 AI가 구매를 마쳤습니다. 수비팀 첫 턴을 시작합니다.`);
+      addLog(draft, message);
+      draft.turnStartContactQueue = draft.teams.defense.agents.filter((agent) => agent.alive).map((agent) => agent.id);
+      queueNextTurnStartContact(draft);
+    });
+    setStage("play");
+  };
+
+  const autoBuyAttackAndStart = () => {
+    mutate((draft) => {
+      autoBuyTeamLoadout(draft, "attack");
+      autoSetAttackOpeningWaits(draft);
+      draft.turnSide = "defense";
+      draft.teams.attack.buyLocked = true;
+      draft.teams.defense.buyLocked = true;
+      draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null;
+      addLog(draft, `공격팀 AI가 구매와 본진 대기 설정을 마쳤습니다. 수비팀 첫 턴을 시작합니다.`);
       draft.turnStartContactQueue = draft.teams.defense.agents.filter((agent) => agent.alive).map((agent) => agent.id);
       queueNextTurnStartContact(draft);
     });
@@ -2828,7 +3061,8 @@ export default function Home() {
   if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} playMode={playMode} onPlayMode={setPlayMode} />;
   if (stage === "buy_defense") return <PurchaseScreen game={game} side="defense" selectedId={setupAgentId} step="STEP 02" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("defense", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("defense", weapon)} onArmor={(type, price, value) => setupBuyArmor("defense", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("defense", type, price, value)} onSkill={(item) => setupBuySkill("defense", item)} onAllSkills={(scope) => setupBuyAllSkills("defense", scope)} onBack={() => { if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); }} onContinue={() => { setDeploymentAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("deploy"); }} />;
   if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => { setSetupAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("buy_defense"); }} onStart={() => { if (aiSide === "attack") autoBuyAttackAndStart(); else { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("buy_attack"); } }} />;
-  if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onAllSkills={(scope) => setupBuyAllSkills("attack", scope)} onBack={() => setStage("deploy")} onContinue={() => { mutate((draft) => { draft.turnSide = "defense"; draft.teams.attack.buyLocked = true; draft.teams.defense.buyLocked = true; draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null; addLog(draft, "공격팀 구매 완료. 수비팀 첫 턴을 시작합니다."); draft.turnStartContactQueue = draft.teams.defense.agents.filter((agent) => agent.alive).map((agent) => agent.id); queueNextTurnStartContact(draft); }); setStage("play"); }} />;
+  if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onAllSkills={(scope) => setupBuyAllSkills("attack", scope)} onBack={() => setStage("deploy")} onContinue={() => { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("setup_attack_wait"); }} />;
+  if (stage === "setup_attack_wait") return <AttackWaitSetupScreen game={game} selectedId={setupAgentId} onSelect={setSetupAgentId} onSetWait={setAttackOpeningWait} onAuto={() => mutate((draft) => autoSetAttackOpeningWaits(draft))} onClear={clearAttackOpeningWait} onBack={() => setStage("buy_attack")} onStart={() => startFirstDefenseTurn("공격팀 구매와 본진 대기 설정 완료. 수비팀 첫 턴을 시작합니다.")} />;
 
   const selectAgent = (id: string) => {
     if (isAiControlledTurn || game.pendingContact) return;
@@ -3214,7 +3448,7 @@ export default function Home() {
       if (type === "pickup") {
         const dropped = draft.droppedWeapons.find((item) => item.region === agent.region);
         if (!dropped) return;
-        if (agent.weapon !== "classic") draft.droppedWeapons.push({ id: `swap-${Date.now()}`, region: agent.region, weapon: agent.weapon });
+        if (agent.weapon !== "classic") draft.droppedWeapons.push({ id: `swap-${Date.now()}`, region: agent.region, weapon: agent.weapon, knownBy: [agent.team] });
         agent.weapon = dropped.weapon;
         draft.droppedWeapons = draft.droppedWeapons.filter((item) => item.id !== dropped.id);
         agent.extraActions -= 1;
@@ -3225,6 +3459,7 @@ export default function Home() {
         draft.spike.status = "carried";
         draft.spike.carrierId = agent.id;
         draft.spike.region = null;
+        draft.spikeKnownByDefense = false;
         agent.extraActions -= 1;
         addLog(draft, `${agent.name}이 스파이크를 회수했습니다.`);
       }
@@ -3725,6 +3960,7 @@ export default function Home() {
       updateAttackLurkerPlan(draft);
       adaptAttackPlan(draft);
     } else updateDefensePlanReadout(draft);
+    rememberObservedDroppedWeapons(draft, side);
     const pendingShock = draft.aftershocks
       .filter((effect) => effect.owner !== side && draft.teamTurns[side] >= effect.readyOnTurn)
       .flatMap((effect) => effect.targetIds.map((agentId) => ({ effect, agent: getAgent(draft, agentId) })))
@@ -3772,18 +4008,21 @@ export default function Home() {
         return;
       }
     }
-    if (draft.spike.status === "dropped") {
+    if (side === "attack" && draft.spike.status === "dropped") {
       const retriever = draft.teams.attack.agents.find((agent) => agent.alive && agent.region === draft.spike.region && agent.extraActions > 0);
       if (retriever) {
         retriever.extraActions -= 1;
         draft.spike.status = "carried";
         draft.spike.carrierId = retriever.id;
         draft.spike.region = null;
-        addLog(draft, `공격팀 AI가 스파이크를 회수했습니다.`);
+        draft.spikeKnownByDefense = false;
+        draft.attackPlan.lurkerMode = "regroup";
+        addLog(draft, `공격팀 AI가 ${retriever.name}으로 스파이크를 회수하고 본대 호위 진형으로 전환했습니다.`);
+        addAnalyticsEvent(draft, "attack", "objective", `${retriever.name} 스파이크 회수 완료`);
         return;
       }
     }
-    if (draft.spike.status === "carried") {
+    if (side === "attack" && draft.spike.status === "carried") {
       const carrier = getAgent(draft, draft.spike.carrierId);
       const carrierRegion = carrier ? REGIONS.find((region) => region.id === carrier.region) : null;
       if (carrier?.alive && carrier.extraActions > 0 && carrierRegion?.site) {
@@ -3795,8 +4034,9 @@ export default function Home() {
         return;
       }
     }
+    if (aiPickupWeaponAtCurrentRegion(draft, side)) return;
     if (tryUseAiSkill(draft, side)) return;
-    if (draft.turnSide === "attack" && draft.cycle <= 2 && !draft.teams.attack.rushUsed) {
+    if (draft.turnSide === "attack" && draft.spike.status !== "dropped" && draft.cycle <= 2 && !draft.teams.attack.rushUsed) {
       const groups = new Map<number, Agent[]>();
       draft.teams.attack.agents.filter((agent) => agent.alive).forEach((agent) => groups.set(agent.region, [...(groups.get(agent.region) ?? []), agent]));
       const group = [...groups.entries()].sort((a, b) => b[1].length - a[1].length)[0];
@@ -3825,7 +4065,16 @@ export default function Home() {
         const index = Math.max(0, team.agents.findIndex((item) => item.id === agent.id));
         return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
       };
-      const strategicBias = (agent: Agent) => side === "attack" && isAttackLurker(draft, agent) && draft.attackPlan.lurkerMode === "probe" ? -6 : 0;
+      const strategicBias = (agent: Agent) => {
+        if (side === "attack" && draft.spike.status === "dropped" && draft.spike.region !== null) return -40 + distance(agent.region, draft.spike.region) * 5;
+        if (side === "attack" && draft.spike.status === "carried") {
+          const escortAgents = attackCarrierEscortAgents(draft);
+          if (escortAgents.length && draft.spike.carrierId === agent.id) return 18;
+          if (escortAgents.some((escort) => escort.id === agent.id)) return distance(agent.region, getAgent(draft, draft.spike.carrierId)?.region ?? agent.region) <= 1 ? 14 : -16;
+        }
+        if (aiWeaponPickupObjective(draft, agent)) return agent.weapon === "classic" ? -18 : -10;
+        return side === "attack" && isAttackLurker(draft, agent) && draft.attackPlan.lurkerMode === "probe" ? -6 : 0;
+      };
       const candidates = team.agents
         .filter((agent) => agent.alive && canUseCard(card, agent))
         .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
@@ -3846,11 +4095,13 @@ export default function Home() {
           : objectiveRegion !== null
             ? distance(a, objectiveRegion) - distance(b, objectiveRegion)
             : 0)[0];
-        const tacticalDestination = side === "attack"
+        const escortDestination = side === "attack" ? aiSpikeEscortDestination(draft, agent, targets) : null;
+        const weaponDestination = aiWeaponDestination(draft, agent, targets);
+        const tacticalDestination = escortDestination ?? weaponDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
           : objectiveRegion === null
             ? aiDefenseDestination(draft, agent, targets)
-            : destination;
+            : destination);
         if (tacticalDestination === null || tacticalDestination === undefined) continue;
         draft.selectedAgentId = agent.id;
         playCard(draft, card, agent);
@@ -3865,6 +4116,13 @@ export default function Home() {
   });
   const selectedRegion = selectedAgent ? REGIONS.find((region) => region.id === selectedAgent.region) : null;
   const droppedHere = selectedAgent ? game.droppedWeapons.find((item) => item.region === selectedAgent.region) : null;
+  const spikeCarrier = getAgent(game, game.spike.carrierId);
+  const spikeCarrierKnown = !!spikeCarrier && (viewerSide === "attack" || observed.has(spikeCarrier.region) || spikeCarrier.detected);
+  const spikeHudLabel = game.spike.status === "carried"
+    ? `운반 중${spikeCarrierKnown ? ` · ${spikeCarrier!.name}` : ""}`
+    : game.spike.status === "dropped"
+      ? `회수 필요${game.spike.region !== null && (viewerSide === "attack" || game.spikeKnownByDefense) ? ` · ${game.spike.region}번` : ""}`
+      : game.spike.status === "planting" ? "설치 진행" : game.spike.status === "planted" ? "설치됨" : game.spike.status === "half" ? "반 해체" : game.spike.status === "defusing" ? "최종 해체" : game.spike.status === "defused" ? "해체 완료" : "폭발";
   const nearbyEnemyDeployables = selectedAgent ? game.deployables.filter((item) => item.owner !== selectedAgent.team && distance(selectedAgent.region, item.region) <= 1 && visible.has(item.region)) : [];
   const friendlyCamera = selectedAgent?.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === selectedAgent.team) : null;
   const cameraTargets = friendlyCamera ? game.teams[otherSide(selectedAgent!.team)].agents.filter((enemy) => enemy.alive && !enemy.detected && [friendlyCamera.region, ...(GRAPH.get(friendlyCamera.region) ?? [])].includes(enemy.region)) : [];
@@ -4000,8 +4258,13 @@ export default function Home() {
               const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const fire = game.fires.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const stim = game.stims.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
-              const installedSpike = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
-              const hasSpike = game.spike.region === region.id && (viewerSide === "attack" || observedNow || installedSpike);
+               const installedSpike = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+               const carriedSpikeHere = game.spike.status === "carried" && spikeCarrier?.region === region.id;
+               const droppedSpikeHere = game.spike.status === "dropped" && game.spike.region === region.id;
+               const hasSpike = installedSpike && game.spike.region === region.id
+                 || carriedSpikeHere && (viewerSide === "attack" || observedNow || !!spikeCarrier?.detected)
+                 || droppedSpikeHere && (viewerSide === "attack" || observedNow || game.spikeKnownByDefense);
+               const knownWeapons = game.droppedWeapons.filter((item) => item.region === region.id && (item.knownBy.includes(viewerSide) || observedNow));
               return (
                 <button
                   key={region.id}
@@ -4019,9 +4282,9 @@ export default function Home() {
                     {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""}`} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{lastKnown && <small>잔상</small>}</i>; })}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}
-                  {(devices.length > 0 || fire || stim || hasSpike) && <span className="effect-stack">
+                  {(devices.length > 0 || fire || stim || hasSpike || knownWeapons.length > 0) && <span className="effect-stack">
                     {devices.map((item) => <i key={item.id} title={item.kind}>{item.kind === "trip" ? "⌁" : item.kind === "camera" ? "◉" : item.kind === "turret" ? "⌖" : "!"}</i>)}
-                    {fire && <i className="fire">▲</i>}{stim && <i className="stim">+</i>}{hasSpike && <i className="spike">◆</i>}
+                    {fire && <i className="fire">▲</i>}{stim && <i className="stim">+</i>}{knownWeapons.map((item) => <i key={item.id} className="weapon-drop" title={`드롭 총기 · ${WEAPONS[item.weapon].name}`}>▰</i>)}{hasSpike && <i className="spike" title={game.spike.status === "carried" ? `스파이크 운반 · ${spikeCarrier?.name ?? "미확인"}` : "스파이크 위치"}>◆</i>}
                   </span>}
                 </button>
               );
@@ -4029,7 +4292,7 @@ export default function Home() {
             </div>
             <div className="objective-hud">
               <span className={`spike-icon status-${game.spike.status}`}>◆</span>
-              <div><small>SPIKE</small><strong>{game.spike.status === "carried" ? "운반 중" : game.spike.status === "dropped" ? "회수 필요" : game.spike.status === "planting" ? "설치 진행" : game.spike.status === "planted" ? "설치됨" : game.spike.status === "half" ? "반 해체" : game.spike.status === "defusing" ? "최종 해체" : game.spike.status === "defused" ? "해체 완료" : "폭발"}</strong></div>
+              <div><small>SPIKE</small><strong>{spikeHudLabel}</strong></div>
               {["planted", "half", "defusing"].includes(game.spike.status) && <b>{game.spike.explosion}</b>}
             </div>
             {!isAiControlledTurn && (game.pendingWait || game.targeting) && <div className="targeting-banner">
@@ -4228,7 +4491,7 @@ export default function Home() {
       {showHelp && <div className="modal-backdrop" onMouseDown={() => setShowHelp(false)}><div className="rules-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">FIELD MANUAL // V0.1</span><h2>핵심 규칙</h2></div><button onClick={() => setShowHelp(false)}>닫기</button></div>
         <div className="rules-grid">
-          <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 후 수비가 먼저 행동합니다. 손패 5장 중 카드 3장을 사용합니다.</p></article>
+          <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 → 공격 본진 대기 설정 후 수비가 먼저 행동합니다. 공격 요원은 1번에 고정된 채 초반 진입로를 대기합니다.</p></article>
           <article><b>02</b><h3>지속 교전</h3><p>거리 1에서 다른 방향을 대기 중인 적을 선택 공격하면 기습으로 공격 우선도가 1단계 향상되고 적 대기는 발동하지 않습니다. 적이 대기 중이 아니면 양쪽 모두 보너스가 없습니다. 같은 구역에서는 대기 방향과 무관하게 대기 우선도 1입니다.</p></article>
           <article><b>03</b><h3>추가행동</h3><p>카드 한 장마다 해당 요원이 추가행동 1회를 얻습니다. 스킬, 설치·해체, 총기·스파이크 줍기에 사용합니다.</p></article>
           <article><b>04</b><h3>시야</h3><p>아군이 있는 구역과 인접 구역만 확인합니다. 연막은 시야와 대기를 끊지만 이동은 막지 않습니다.</p></article>
