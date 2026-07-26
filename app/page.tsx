@@ -1428,6 +1428,312 @@ function showSkillFx(game: GameState, agent: Agent, skillId: string, label: stri
   };
 }
 
+interface AiEnemyIntel {
+  agent: Agent;
+  region: number;
+  exact: boolean;
+}
+
+function aiEnemyIntel(game: GameState, side: Side): AiEnemyIntel[] {
+  const observed = observedRegions(game, side);
+  return game.teams[otherSide(side)].agents.flatMap<AiEnemyIntel>((enemy) => {
+    if (!enemy.alive) return [];
+    if (enemy.detected || observed.has(enemy.region)) return [{ agent: enemy, region: enemy.region, exact: true }];
+    const memory = game.enemyMemories.find((item) => item.observer === side && item.agentId === enemy.id);
+    return memory ? [{ agent: enemy, region: memory.region, exact: false }] : [];
+  });
+}
+
+function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiEnemyIntel[]) {
+  if (side === "defense" && game.spike.region !== null && ["planted", "half", "defusing"].includes(game.spike.status)) return game.spike.region;
+  if (intel.length) return [...intel].sort((a, b) => distance(from, a.region) - distance(from, b.region))[0].region;
+  const objectives = side === "attack" ? [9, 14] : [9, 14];
+  return [...objectives].sort((a, b) => distance(from, a) - distance(from, b))[0];
+}
+
+function aiSkillRegions(agent: Agent, target: SkillTarget) {
+  return REGIONS
+    .filter((region) => {
+      const range = distance(agent.region, region.id);
+      if (target === "any") return true;
+      if (target === "self") return range === 0;
+      if (target === "adjacent") return range === 1;
+      return range <= 2;
+    })
+    .map((region) => region.id);
+}
+
+function aiWatchDirection(game: GameState, agent: Agent, intel: AiEnemyIntel[], kind: "trip" | "turret") {
+  const objective = aiObjectiveRegion(game, agent.team, agent.region, intel);
+  const options = (GRAPH.get(agent.region) ?? []).filter((region) => !game.deployables.some((item) => item.owner === agent.team && item.kind === kind && item.region === agent.region && item.to === region));
+  return [...options].sort((a, b) => {
+    const enemyDistanceA = intel.length ? Math.min(...intel.map((item) => distance(a, item.region))) : distance(a, objective);
+    const enemyDistanceB = intel.length ? Math.min(...intel.map((item) => distance(b, item.region))) : distance(b, objective);
+    return enemyDistanceA - enemyDistanceB;
+  })[0];
+}
+
+function aiSmokeEdge(game: GameState, agent: Agent, skillId: "smoke" | "dark", intel: AiEnemyIntel[]): [number, number] | null {
+  const objective = aiObjectiveRegion(game, agent.team, agent.region, intel);
+  const ownPath = shortestPath(agent.region, objective);
+  const ownPathEdges = new Set(ownPath.slice(0, -1).map((region, index) => edgeKey(region, ownPath[index + 1])));
+  const candidates = EDGES
+    .filter(([a, b]) => !isSmokeBlocked(game, a, b) && (skillId === "dark" || distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2))
+    .map(([a, b]) => {
+      let score = Math.max(0, 5 - Math.min(distance(a, objective), distance(b, objective)));
+      for (const enemy of intel) {
+        if (enemy.region === a || enemy.region === b) score += 10;
+        const enemyPath = shortestPath(enemy.region, objective);
+        const enemyEdges = enemyPath.slice(0, -1).map((region, index) => edgeKey(region, enemyPath[index + 1]));
+        if (enemyEdges.includes(edgeKey(a, b))) score += 6;
+      }
+      if (ownPathEdges.has(edgeKey(a, b))) score -= agent.team === "attack" ? 7 : 2;
+      return { a, b, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  if (!best || (!intel.length && best.score <= 0)) return null;
+  if (skillId === "smoke" && distance(agent.region, best.a) > 2) return [best.b, best.a];
+  return [best.a, best.b];
+}
+
+function completeAiSkill(game: GameState, agent: Agent, definition: SkillDefinition, fromRegion: number, targetRegion: number) {
+  showSkillFx(game, agent, definition.id, definition.name, fromRegion, targetRegion);
+  agent.extraActions = Math.max(0, agent.extraActions - 1);
+  agent.skills[definition.id] = Math.max(0, (agent.skills[definition.id] ?? 0) - 1);
+  game.analytics[agent.team].skillsUsed += 1;
+  addAnalyticsEvent(game, agent.team, "skill", `${agent.name} · ${definition.name}`);
+  addLog(game, `${agent.team === "attack" ? "공격" : "수비"} AI · ${agent.name} 스킬 — ${definition.name} 사용.`);
+  checkWinner(game);
+}
+
+function tryUseAiSkill(game: GameState, side: Side): boolean {
+  const intel = aiEnemyIntel(game, side);
+  const observed = observedRegions(game, side);
+  const enemyDeployables = game.deployables.filter((item) => item.owner !== side && observed.has(item.region));
+
+  for (const agent of game.teams[side].agents.filter((item) => item.alive && item.extraActions > 0)) {
+    const camera = agent.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === side && item.ownerAgentId === agent.id) : null;
+    const cameraTarget = camera ? game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && !enemy.detected && [camera.region, ...(GRAPH.get(camera.region) ?? [])].includes(enemy.region)) : null;
+    if (cameraTarget) {
+      if (!applyActionStartFire(game, agent)) return true;
+      cameraTarget.detected = true;
+      agent.extraActions = Math.max(0, agent.extraActions - 1);
+      addAnalyticsEvent(game, side, "skill", `${agent.name} · 스파이캠 탐지`);
+      addLog(game, `${side === "attack" ? "공격" : "수비"} AI · 스파이캠으로 ${cameraTarget.name} 탐지.`);
+      return true;
+    }
+
+    const definitions = AGENTS[agent.name].skills.filter((definition) => (agent.skills[definition.id] ?? 0) > 0);
+    for (const definition of definitions) {
+      const from = agent.region;
+      const begin = () => applyActionStartFire(game, agent);
+      const finish = (target = agent.region) => completeAiSkill(game, agent, definition, from, target);
+      const currentAndAdjacent = [agent.region, ...(GRAPH.get(agent.region) ?? [])];
+      const exactIntel = intel.filter((item) => item.exact);
+      const objective = aiObjectiveRegion(game, side, agent.region, intel);
+
+      if (definition.id === "tailwind") {
+        if (agent.status.evadeReady || !intel.some((item) => distance(agent.region, item.region) <= 2)) continue;
+        if (!begin()) return true;
+        agent.status.evadeReady = true;
+        finish();
+        return true;
+      }
+
+      if (definition.id === "updraft" || definition.id === "gear") {
+        if (game.actionsUsed >= 3 || agent.status.moveRangeBonus > 0 || distance(agent.region, objective) < 1) continue;
+        if (!begin()) return true;
+        agent.status.moveBonus += 1;
+        agent.status.moveRangeBonus += 1;
+        if (definition.id === "updraft") agent.status.ignoreGround = true;
+        if (definition.id === "gear") agent.status.highGear = true;
+        finish();
+        return true;
+      }
+
+      if (definition.id === "paint") {
+        const target = [...currentAndAdjacent].map((region) => ({
+          region,
+          score: intel.filter((item) => item.region === region).length * 4 + enemyDeployables.filter((item) => item.region === region).length * 2,
+        })).sort((a, b) => b.score - a.score)[0];
+        if (!target?.score) continue;
+        if (!begin()) return true;
+        game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
+          clearWait(enemy);
+          applyDamage(game, agent, enemy, 1, "페인트탄");
+        });
+        game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side);
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "blast") {
+        const targetIntel = exactIntel.find((item) => item.agent.detected && currentAndAdjacent.includes(item.region));
+        if (targetIntel) {
+          const destination = [...(GRAPH.get(targetIntel.agent.region) ?? [])].sort((a, b) => distance(b, objective) - distance(a, objective))[0];
+          if (destination === undefined) continue;
+          if (!begin()) return true;
+          moveAgent(game, targetIntel.agent, destination, "forced");
+          finish(destination);
+          return true;
+        }
+        const destination = REGIONS
+          .filter((region) => distance(agent.region, region.id) === 1)
+          .sort((a, b) => distance(a.id, objective) - distance(b.id, objective))[0]?.id;
+        if (destination === undefined || distance(destination, objective) >= distance(agent.region, objective)) continue;
+        if (!begin()) return true;
+        agent.status.moveBonus += 1;
+        moveAgent(game, agent, destination, "forced");
+        finish(destination);
+        return true;
+      }
+
+      if (definition.id === "curve") {
+        const target = currentAndAdjacent.map((region) => ({
+          region,
+          targets: exactIntel.filter((item) => item.region === region || item.agent.waitDirs.includes(region)),
+        })).sort((a, b) => b.targets.length - a.targets.length)[0];
+        if (!target?.targets.length) continue;
+        if (!begin()) return true;
+        target.targets.forEach(({ agent: enemy }) => game.statusEffects.push({ id: `ai-curve-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, aimPenalty: 3, consumeOnAttack: true }));
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "hot") {
+        const enemyRegion = currentAndAdjacent
+          .map((region) => ({ region, count: intel.filter((item) => item.region === region).length }))
+          .sort((a, b) => b.count - a.count)[0];
+        const target = agent.hp < 2 ? agent.region : enemyRegion?.count ? enemyRegion.region : null;
+        if (target === null || game.fires.some((fire) => fire.owner === side && fire.region === target)) continue;
+        if (!begin()) return true;
+        game.fires.push({ id: `ai-hot-${game.turnSerial}-${target}`, owner: side, ownerAgentId: agent.id, region: target, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
+        finish(target);
+        return true;
+      }
+
+      if (definition.id === "relay" || definition.id === "flash" || definition.id === "aftershock") {
+        const candidates = aiSkillRegions(agent, "adjacent").map((region) => ({
+          region,
+          targets: exactIntel.filter((item) => item.region === region),
+        })).sort((a, b) => b.targets.length - a.targets.length);
+        const target = candidates[0];
+        if (!target?.targets.length) continue;
+        if (!begin()) return true;
+        if (definition.id === "relay") {
+          target.targets.forEach(({ agent: enemy }) => {
+            if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) game.statusEffects.push({ id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, priorityPenalty: 1 });
+          });
+        } else if (definition.id === "flash") {
+          target.targets.forEach(({ agent: enemy }) => game.statusEffects.push({ id: `ai-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, aimPenalty: 3, consumeOnAttack: true }));
+        } else {
+          game.aftershocks.push({ id: `ai-aftershock-${game.turnSerial}-${target.region}`, owner: side, ownerAgentId: agent.id, region: target.region, targetIds: target.targets.map((item) => item.agent.id), readyOnTurn: game.teamTurns[otherSide(side)] + 1 });
+          target.targets.forEach(({ agent: enemy }) => cancelProgress(game, enemy));
+        }
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "trip" || definition.id === "turret") {
+        const direction = aiWatchDirection(game, agent, intel, definition.id);
+        if (direction === undefined) continue;
+        if (!begin()) return true;
+        game.deployables.push({ id: `ai-${definition.id}-${game.turnSerial}-${agent.id}`, kind: definition.id, owner: side, ownerAgentId: agent.id, region: agent.region, to: direction });
+        finish(direction);
+        return true;
+      }
+
+      if (definition.id === "camera" || definition.id === "alarm") {
+        const kind = definition.id;
+        const duplicate = game.deployables.some((item) => item.kind === kind && item.owner === side && (kind === "camera" ? item.ownerAgentId === agent.id : item.region === agent.region));
+        if (duplicate) continue;
+        if (!begin()) return true;
+        game.deployables.push({ id: `ai-${kind}-${game.turnSerial}-${agent.id}`, kind, owner: side, ownerAgentId: agent.id, region: agent.region });
+        finish();
+        return true;
+      }
+
+      if (definition.id === "recon") {
+        const target = aiSkillRegions(agent, "range2").map((region) => {
+          const scanned = new Set([region, ...(GRAPH.get(region) ?? [])]);
+          const score = intel.filter((item) => scanned.has(item.region)).length * 8 + Math.max(0, 4 - distance(region, objective));
+          return { region, score };
+        }).sort((a, b) => b.score - a.score)[0];
+        if (!target) continue;
+        if (!begin()) return true;
+        const waitingEnemy = game.teams[otherSide(side)].agents
+          .filter((enemy) => enemy.alive && enemy.waitDirs.includes(target.region))
+          .sort((a, b) => (a.waitOrders[target.region] ?? a.waitStamp) - (b.waitOrders[target.region] ?? b.waitStamp))[0];
+        if (waitingEnemy) {
+          addTrade(game, { enemyId: waitingEnemy.id, team: side, sourceId: agent.id });
+          rememberEnemy(game, side, waitingEnemy);
+          addLog(game, `${waitingEnemy.name}이 AI 정찰 화살을 파괴했습니다. 총기 ${WEAPONS[waitingEnemy.weapon].name} 확인.`);
+        } else {
+          const scanned = new Set([target.region, ...(GRAPH.get(target.region) ?? [])]);
+          game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && scanned.has(enemy.region)).forEach((enemy) => { enemy.detected = true; });
+        }
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "shock") {
+        const targetIntel = intel
+          .filter((item) => distance(agent.region, item.region) <= 2)
+          .sort((a, b) => (a.agent.hp + a.agent.armor) - (b.agent.hp + b.agent.armor))[0];
+        const targetDevice = enemyDeployables.filter((item) => distance(agent.region, item.region) <= 2)[0];
+        if (!targetIntel && !targetDevice) continue;
+        const targetRegion = targetIntel?.region ?? targetDevice!.region;
+        if (!begin()) return true;
+        const actualTarget = targetIntel?.agent.region === targetRegion ? targetIntel.agent : game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && enemy.region === targetRegion);
+        if (actualTarget) applyDamage(game, agent, actualTarget, 1, "충격 화살");
+        else if (targetDevice) game.deployables = game.deployables.filter((item) => item.id !== targetDevice.id);
+        finish(targetRegion);
+        return true;
+      }
+
+      if (definition.id === "smoke" || definition.id === "dark") {
+        const edge = aiSmokeEdge(game, agent, definition.id, intel);
+        if (!edge) continue;
+        if (!begin()) return true;
+        if (definition.id === "dark") game.smokes = game.smokes.filter((smoke) => !(smoke.sourceAgentId === agent.id && smoke.sourceSkill === "dark"));
+        game.smokes.push({ key: edgeKey(edge[0], edge[1]), owner: side, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: definition.id });
+        finish(edge[1]);
+        return true;
+      }
+
+      if (definition.id === "stim") {
+        const alliesHere = game.teams[side].agents.filter((ally) => ally.alive && ally.region === agent.region).length;
+        if (game.stims.some((stim) => stim.owner === side && stim.region === agent.region) || (alliesHere < 2 && !intel.some((item) => distance(agent.region, item.region) <= 1))) continue;
+        if (!begin()) return true;
+        game.stims.push({ id: `ai-stim-${game.turnSerial}-${agent.region}`, owner: side, region: agent.region, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
+        finish();
+        return true;
+      }
+
+      if (definition.id === "shadow") {
+        const destination = aiSkillRegions(agent, "range2")
+          .filter((region) => region !== agent.region)
+          .sort((a, b) => {
+            const enemyA = exactIntel.some((item) => item.region === a) ? -4 : 0;
+            const enemyB = exactIntel.some((item) => item.region === b) ? -4 : 0;
+            return distance(a, objective) + enemyA - (distance(b, objective) + enemyB);
+          })[0];
+        if (destination === undefined || (distance(destination, objective) >= distance(agent.region, objective) && !exactIntel.some((item) => item.region === destination))) continue;
+        if (!begin()) return true;
+        clearWait(agent);
+        cancelProgress(game, agent);
+        agent.region = destination;
+        triggerHazards(game, agent, destination, destination);
+        if (agent.alive) queueCurrentEncounter(game, agent, 4, true, 0, true, "movement");
+        finish(destination);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function regionName(id: number) {
   return REGIONS.find((region) => region.id === id)?.name ?? `${id}번 구역`;
 }
@@ -1596,6 +1902,7 @@ function remainingSkillBuyCost(agent: Agent): number {
 
 function autoBuyTeamLoadout(game: GameState, side: Side) {
   const team = game.teams[side];
+  const skillReserve = Math.min(team.funds, game.matchRound === 1 ? 10 : game.matchRound === 2 ? 14 : 18);
   const preferred: WeaponId[] = game.matchRound === 1
     ? ["sheriff"]
     : game.matchRound === 2
@@ -1605,26 +1912,32 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
         : ["vandal", "phantom", "judge", "outlaw", "bulldog", "spectre"];
   for (const agent of team.agents) {
     if (agent.weapon !== "classic") continue;
-    const weapon = preferred.map((id) => WEAPONS[id]).find((item) => item.unlock <= game.matchRound && item.price <= team.funds);
+    const weapon = preferred.map((id) => WEAPONS[id]).find((item) => item.unlock <= game.matchRound && item.price <= team.funds - skillReserve);
     if (!weapon) continue;
     agent.weapon = weapon.id;
     team.funds -= weapon.price;
+  }
+
+  const skillRounds = [
+    team.agents.flatMap((agent) => AGENTS[agent.name].skills.slice(0, 1).map((definition) => ({ agent, definition }))),
+    team.agents.flatMap((agent) => AGENTS[agent.name].skills.slice(1).map((definition) => ({ agent, definition }))),
+    team.agents.flatMap((agent) => AGENTS[agent.name].skills.filter((definition) => definition.price.includes("2회")).map((definition) => ({ agent, definition }))),
+  ];
+  for (const purchases of skillRounds) {
+    for (const { agent, definition } of purchases) {
+      const max = definition.price.includes("2회") ? 2 : 1;
+      const price = max === 2 ? 1 : 2;
+      if ((agent.skills[definition.id] ?? 0) < max && team.funds >= price) {
+        agent.skills[definition.id] = (agent.skills[definition.id] ?? 0) + 1;
+        team.funds -= price;
+      }
+    }
   }
   for (const agent of team.agents) {
     if (agent.armorType === "none" && team.funds >= 2) {
       agent.armorType = "light";
       agent.armor = 1;
       team.funds -= 2;
-    }
-  }
-  for (const agent of team.agents) {
-    for (const definition of AGENTS[agent.name].skills) {
-      const max = definition.price.includes("2회") ? 2 : 1;
-      const price = max === 2 ? 1 : 2;
-      while ((agent.skills[definition.id] ?? 0) < max && team.funds >= price) {
-        agent.skills[definition.id] = (agent.skills[definition.id] ?? 0) + 1;
-        team.funds -= price;
-      }
     }
   }
   team.buyLocked = true;
@@ -2997,6 +3310,7 @@ export default function Home() {
         return;
       }
     }
+    if (tryUseAiSkill(draft, side)) return;
     if (draft.turnSide === "attack" && draft.cycle <= 2 && !draft.teams.attack.rushUsed) {
       const groups = new Map<number, Agent[]>();
       draft.teams.attack.agents.filter((agent) => agent.alive).forEach((agent) => groups.set(agent.region, [...(groups.get(agent.region) ?? []), agent]));

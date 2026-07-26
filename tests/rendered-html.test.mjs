@@ -153,6 +153,21 @@ test("AI versus AI spectator mode auto-prepares both teams and records tactical 
   assert.match(css, /\.spectator-victory/);
 });
 
+test("AI spends extra actions on agent skills and records every autonomous use", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function tryUseAiSkill\(game: GameState, side: Side\)/);
+  assert.match(page, /if \(tryUseAiSkill\(draft, side\)\) return/);
+  assert.match(page, /function aiEnemyIntel/);
+  assert.match(page, /function aiSmokeEdge/);
+  assert.match(page, /game\.analytics\[agent\.team\]\.skillsUsed \+= 1/);
+  assert.match(page, /스파이캠으로 \$\{cameraTarget\.name\} 탐지/);
+  assert.match(page, /const skillReserve = Math\.min/);
+  assert.match(page, /const skillRounds =/);
+  for (const skillId of ["tailwind", "updraft", "gear", "paint", "blast", "curve", "hot", "relay", "flash", "aftershock", "trip", "turret", "camera", "alarm", "recon", "shock", "smoke", "dark", "stim", "shadow"]) {
+    assert.match(page, new RegExp(`definition\\.id === "${skillId}"`), `${skillId} needs an AI decision branch`);
+  }
+});
+
 test("sniper waits target exact range-two regions and respect every smoke edge", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function waitTargetsFor\(agent: Agent\)/);
