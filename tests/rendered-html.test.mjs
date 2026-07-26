@@ -196,6 +196,33 @@ test("trade bonuses can be created and consumed by either side of a continuing e
   assert.match(css, /\.trade-ribbon/);
 });
 
+test("attack AI rotates through direct, mid, fake, and adaptive split plans before committing", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  for (const plan of ["direct-a", "direct-b", "mid-a", "mid-b", "fake-a-b", "fake-b-a", "split-read"]) {
+    assert.match(page, new RegExp(`kind: "${plan}"`), `${plan} needs an attack plan template`);
+  }
+  assert.match(page, /function createAttackPlan/);
+  assert.match(page, /function attackPlanWaypoints/);
+  assert.match(page, /function attackPlanRushDestination/);
+  assert.match(page, /rushLane === null \|\| game\.cycle !== 1/);
+  assert.match(page, /function adaptAttackPlan/);
+  assert.match(page, /!intel\.length && game\.cycle < plan\.commitCycle - 1/);
+  assert.match(page, /aPresence < bPresence \? "A" : "B"/);
+  assert.match(page, /function aiAttackDestination/);
+  assert.match(page, /return !REGIONS\.find\(\(item\) => item\.id === region\)\?\.site/);
+  assert.match(page, /routeDistance\(destination\) > routeDistance\(agent\.region\)/);
+  assert.match(page, /game\.cycle >= 12 \|\| game\.cycle >= game\.attackPlan\.commitCycle/);
+  assert.match(page, /const attackWaypoints = agent\.team === "attack" \? attackPlanWaypoints/);
+  assert.match(page, /attackExecuting[\s\S]{0,220}\{ entry: 0, peek: 1/);
+  assert.match(page, /공격 AI 작전 브리핑/);
+  assert.match(page, /작전 선택 · \$\{game\.attackPlan\.label\}/);
+  assert.match(page, /className="analysis-plan"/);
+  assert.match(css, /\.analysis-plan/);
+});
+
 test("sniper waits target exact range-two regions and respect every smoke edge", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function waitTargetsFor\(agent: Agent\)/);
