@@ -22,7 +22,7 @@ test("server renders the finished tactical game entry screen", async () => {
   assert.match(html, /PROTOCOL:/);
   assert.match(html, /15장의 역할 덱/);
   assert.match(html, /모바일 반응형 UI/);
-  assert.match(html, /공격팀 AI 상대/);
+  assert.match(html, /AI vs AI 분석/);
   assert.doesNotMatch(html, /Your site is taking shape|Codex is working|react-loading-skeleton/);
 });
 
@@ -115,8 +115,8 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /interface VisibilityContext/);
-  assert.match(page, /const viewerSide = aiSide \? otherSide\(aiSide\) : actorSide/);
-  assert.match(page, /const allowLastKnown = !aiSide \|\| actorSide === viewerSide/);
+  assert.match(page, /const viewerSide = spectatorMode \? actorSide : aiSide \? otherSide\(aiSide\) : actorSide/);
+  assert.match(page, /const allowLastKnown = spectatorMode \? false : !aiSide \|\| actorSide === viewerSide/);
   assert.match(page, /function observedRegions\(game: GameState, observer: Side\)/);
   assert.match(page, /if \(!context\.allowLastKnown\) return visible/);
   assert.match(page, /const viewerTeam = game\.teams\[viewerSide\]/);
@@ -128,6 +128,29 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
   assert.match(css, /combat-modal > \.combat-map-overview \{ order: 8/);
   assert.match(page, /combatTurnRef\.current/);
   assert.match(page, /target\?\.scrollIntoView/);
+});
+
+test("AI versus AI spectator mode auto-prepares both teams and records tactical analysis", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /type PlayMode = "hotseat" \| "vs-ai" \| "ai-vs-ai"/);
+  assert.match(page, /AI vs AI 관전/);
+  assert.match(page, /function prepareAiVsAiRound/);
+  assert.match(page, /sides=\{controlledAiSides\}/);
+  assert.match(page, /paused=\{spectatorMode && spectatorPaused\}/);
+  assert.match(page, /한 단계/);
+  assert.match(page, /if \(props\.game\.winner && !scene\) return/);
+  assert.match(page, /!scene\.canMoverAttack[\s\S]{0,220}props\.onCombatRetreat/);
+  assert.match(page, /interface GameAnalytics/);
+  assert.match(page, /function recordShot/);
+  assert.match(page, /실시간 전술 분석/);
+  assert.match(page, /실제 교전·행동 데이터 기준/);
+  assert.match(page, /스파이크 최종 해체 완료/);
+  assert.match(css, /\.spectator-controls/);
+  assert.match(css, /\.match-analysis/);
+  assert.match(css, /\.spectator-victory/);
 });
 
 test("sniper waits target exact range-two regions and respect every smoke edge", async () => {
