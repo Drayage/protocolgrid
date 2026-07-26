@@ -100,13 +100,26 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
 });
 
 test("distance-one sight is optional while same-region and waiting contacts stay mandatory", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
   assert.match(page, /const sameRegionEnemies =/);
   assert.match(page, /mandatoryEnemy\.region === agent\.region && mandatoryEnemy\.waitDirs\.length > 0/);
   assert.match(page, /const optionalEnemies =/);
   assert.match(page, /path\.length !== 2/);
   assert.match(page, /game\.pendingContact =/);
   assert.match(page, /카드 소모 없이 교전 여부를 선택하세요/);
+  assert.match(page, /const offAngle = range === 1 && !waiting && revealedWaitDirs\.length > 0/);
+  assert.match(page, /const surprisePriority = offAngle \? 1 : 0/);
+  assert.match(page, /moverTradePriority - surprisePriority/);
+  assert.match(page, /\(waiting \? 1 : 3\)/);
+  assert.match(page, /기습 우선도/);
+  assert.match(page, /양쪽 보너스 없음/);
+  assert.match(page, /다른 방향 대기 · 일반 대응/);
+  assert.match(page, /같은 구역에서는 대기 방향과 무관하게 대기 우선도 1/);
+  assert.match(css, /\.combat-location \.off-angle-tag/);
+  assert.match(css, /\.ambush-ribbon/);
 });
 
 test("AI turns keep the human viewer perspective and hide stale enemy intel", async () => {

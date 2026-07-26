@@ -279,6 +279,7 @@ interface CombatScene {
   holder: CombatFighterView;
   range: number;
   waiting: boolean;
+  offAngle: boolean;
   simultaneous: boolean;
   actorId: string;
   firstActorId: string;
@@ -1184,6 +1185,7 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const observedEnemy = mover.team === game.turnSide ? enemy : mover;
   rememberEnemy(game, game.turnSide, observedEnemy);
   const revealedWaitDirs = [...enemy.waitDirs];
+  const offAngle = range === 1 && !waiting && revealedWaitDirs.length > 0;
   const moverBefore = { hp: mover.hp, armor: mover.armor };
   const enemyBefore = { hp: enemy.hp, armor: enemy.armor };
 
@@ -1208,11 +1210,15 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
 
   const moverStats = finalStats(game, mover);
   const enemyStats = finalStats(game, enemy);
-  const moverPrio = Math.max(1, moverPriority + moverStats.priorityPenalty - moverStats.priorityBoost - moverTradePriority);
+  const surprisePriority = offAngle ? 1 : 0;
+  const moverPrio = Math.max(1, moverPriority + moverStats.priorityPenalty - moverStats.priorityBoost - moverTradePriority - surprisePriority);
   const enemyPrio = Math.max(1, (waiting ? 1 : 3) + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority);
   const simultaneous = moverPrio === enemyPrio;
   const firstActorId = moverPrio <= enemyPrio ? mover.id : enemy.id;
   const secondActorId = firstActorId === mover.id ? enemy.id : mover.id;
+  if (offAngle) {
+    addLog(game, `${mover.name}이 ${enemy.name}의 대기 반대 방향을 기습했습니다. ${mover.name}은 우선도 1단계 향상, ${enemy.name}은 대기 보너스 없이 일반 대응합니다.`);
+  }
   addLog(game, `지속 교전 시작: ${mover.name}(우선 ${moverPrio}) ↔ ${enemy.name}(우선 ${enemyPrio}).`);
   game.combatQueue.push({
     id: `combat-${Date.now()}-${game.combatQueue.length}`,
@@ -1221,6 +1227,7 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     holder: { id: enemy.id, name: enemy.name, kind: "agent", team: enemy.team, role: enemy.role, weapon: enemy.weapon, region: enemy.region, priority: enemyPrio, hpBefore: enemyBefore.hp, hpAfter: enemy.hp, armorBefore: enemyBefore.armor, armorAfter: enemy.armor, shot: null },
     range,
     waiting,
+    offAngle,
     simultaneous,
     actorId: firstActorId,
     firstActorId,
@@ -1258,6 +1265,7 @@ function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable)
     holder: { id: turretId, name: `${owner?.name ?? "킬조이"} 포탑`, kind: "turret", team: turret.owner, role: "sentinel", weapon: "classic", region: turret.region, priority: 2, hpBefore: 1, hpAfter: 1, armorBefore: 0, armorAfter: 0, shot: null },
     range: distance(turret.region, mover.region),
     waiting: true,
+    offAngle: false,
     simultaneous: false,
     actorId: turretId,
     firstActorId: turretId,
@@ -4031,7 +4039,7 @@ export default function Home() {
             </div>}
             {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
               <header><span>VISUAL CONTACT // 거리 1</span><strong>{pendingContactAgent.name}이 적을 발견했습니다</strong><p>보이는 것만으로는 교전하지 않습니다. 카드 소모 없이 지금 교전을 시작할 수 있습니다.</p></header>
-              <div>{pendingContactEnemies.map((enemy) => <button key={enemy.id} className="contact-engage" onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{regionName(enemy.region)} · 기본 우선도 3</small></span></button>)}</div>
+              <div>{pendingContactEnemies.map((enemy) => { const offAngle = enemy.waitDirs.length > 0; return <button key={enemy.id} className={`contact-engage ${offAngle ? "off-angle-contact" : ""}`} onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{offAngle ? `기습 우선도 ${Math.max(1, (game.pendingContact?.priority ?? 3) - 1)} · 적 대응 우선도 3` : `${regionName(enemy.region)} · 양쪽 보너스 없음`}</small>{offAngle && <em>다른 방향 대기 중: {enemy.waitDirs.map((region) => `${region}번`).join(" · ")} · 대기 미발동</em>}</span></button>; })}</div>
               <button className="contact-skip" onClick={skipOptionalContact}><b>교전하지 않기</b><small>{game.pendingContact.source === "turn-start" ? "턴을 그대로 시작합니다" : "남은 이동·행동을 계속합니다"}</small></button>
             </section>}
           </div>
@@ -4111,10 +4119,10 @@ export default function Home() {
           <div className="combat-actor-turn"><span>{combatScene.phase === "encounter" ? combatScene.kind === "turret" ? "포탑 감지" : "적 접촉" : combatScene.phase === "tailwind" ? "반응 선택" : combatScene.phase === "choice" ? "지금 행동" : combatScene.resolved ? "교전 결과" : "다음 행동"}</span><strong>{combatScene.phase === "encounter" ? `${combatScene.mover.name} ↔ ${combatScene.holder.name}` : combatFocusAgent ? `${SIDE_LABEL[combatFocusAgent.team]} · ${combatFocusAgent.name}` : combatScene.kind === "turret" ? "포탑 사격 결과" : "결과 확인"}</strong><small>{combatScene.phase === "encounter" ? combatScene.kind === "turret" ? "포탑이 우선도 2로 자동 사격합니다" : "지도와 대기 구역을 확인한 뒤 교전을 시작하세요" : combatScene.phase === "choice" ? "공격·이탈 중 선택하세요" : combatScene.phase === "tailwind" ? "순풍 이동지를 선택하세요" : combatScene.resolved ? "아래 버튼으로 교전을 정리하세요" : `${nextCombatActor?.name ?? "다음 요원"} 차례가 이어집니다`}</small></div>
           {combatScene.kind === "turret" ? <em className={combatScene.holder.team === game.turnSide ? "team-action" : "reaction-action"}>자동 방어 장치</em> : combatFocusAgent && <em className={combatFocusAgent.team === game.turnSide ? "team-action" : "reaction-action"}>{combatFocusAgent.team === game.turnSide ? "현재 팀 행동" : "상대 반응 차례"}</em>}
         </div>
-        <div className="combat-location"><span>교전 위치</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i><strong>{regionName(combatScene.holder.region)}</strong>{combatScene.waiting && <b>대기 공격 발동</b>}</div>
+        <div className="combat-location"><span>교전 위치</span><strong>{regionName(combatScene.mover.region)}</strong><i>거리 {combatScene.range}</i><strong>{regionName(combatScene.holder.region)}</strong>{combatScene.waiting && <b>대기 공격 발동</b>}{combatScene.offAngle && <b className="off-angle-tag">기습 · 공격 우선도 +1</b>}</div>
         {combatScene.phase === "encounter" && <section className="encounter-intro">
           <div className={`encounter-portrait ${agentArtClass(combatScene.mover.name)}`}><span>{combatScene.mover.name}</span></div>
-          <div><span>{combatScene.kind === "turret" ? "AUTOMATED DEFENSE" : "ENEMY CONTACT"}</span><strong>{combatScene.kind === "turret" ? "포탑 감시선 진입" : "시야에 적 포착"}</strong><small>우선도 {combatScene.mover.priority} : {combatScene.holder.priority}{combatScene.kind === "turret" ? " · 포탑 선제 사격" : combatScene.waiting ? " · 대기 반응" : " · 범위 교전"}</small></div>
+          <div><span>{combatScene.kind === "turret" ? "AUTOMATED DEFENSE" : combatScene.offAngle ? "OFF-ANGLE CONTACT" : "ENEMY CONTACT"}</span><strong>{combatScene.kind === "turret" ? "포탑 감시선 진입" : combatScene.offAngle ? "다른 방향 대기 · 일반 대응" : "시야에 적 포착"}</strong><small>우선도 {combatScene.mover.priority} : {combatScene.holder.priority}{combatScene.kind === "turret" ? " · 포탑 선제 사격" : combatScene.waiting ? " · 대기 반응" : combatScene.offAngle ? " · 측면 공격" : " · 범위 교전"}</small></div>
           <div className={`encounter-portrait hostile ${combatScene.holder.kind === "turret" ? `turret-portrait ${skillArtClass("turret")}` : agentArtClass(combatScene.holder.name)}`}><span>{combatScene.holder.name}</span></div>
         </section>}
         <section className="combat-map-overview">
@@ -4156,7 +4164,8 @@ export default function Home() {
             return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} team-${fighter.team} ${fighter.kind === "turret" ? "turret-fighter" : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${opponentShot?.hit ? "landed" : ""}`}>
               {acting && <div className="acting-ribbon">지금 행동</div>}
               {tradeBonus > 0 && <div className="trade-ribbon">TRADE · AIM +1 · 우선도 향상</div>}
-              <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? "진입" : combatScene.waiting ? "대기 반응" : "범위 내 반응"}</div>
+              {isMover && combatScene.offAngle && <div className="ambush-ribbon">AMBUSH · 우선도 +1 · 대기 무효</div>}
+              <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? combatScene.offAngle ? "측면 공격" : "진입" : combatScene.waiting ? "대기 반응" : combatScene.offAngle ? "일반 대응 · 대기 보너스 없음" : "범위 내 반응"}</div>
               <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span></div>
               <h3>{fighter.name}</h3><p>{fighter.kind === "turret" ? "설치물 · 에임 5 · 피해 1" : `${ROLE_LABEL[fighter.role]} · ${WEAPONS[fighter.weapon].name}`}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
@@ -4175,7 +4184,7 @@ export default function Home() {
             <div><span>진행</span><b>매치 R{game.matchRound} · 전술 {game.cycle}/16</b></div>
             <div><span>현재 행동</span><b>{activeCombatAction}</b></div>
             <div><span>스파이크</span><b>{SPIKE_STATUS_LABEL[game.spike.status]}{game.spike.region ? ` · ${game.spike.region}번` : ""}</b></div>
-            <div><span>교전 규칙</span><b>{combatScene.kind === "turret" ? "포탑 우선도 2 · 자동 1회 공격" : combatScene.simultaneous ? "동일 우선도 · 동시 처리" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
+            <div><span>교전 규칙</span><b>{combatScene.kind === "turret" ? "포탑 우선도 2 · 자동 1회 공격" : combatScene.offAngle ? `기습 · 공격 ${combatScene.mover.priority} / 대응 ${combatScene.holder.priority} · 대기 보너스 없음` : combatScene.simultaneous ? "동일 우선도 · 동시 처리" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
           </div>
           <div className="combat-intel-grid">
             {(["defense", "attack"] as Side[]).map((side) => <article key={side} className={`combat-team-intel ${side}`}>
@@ -4220,7 +4229,7 @@ export default function Home() {
         <div className="modal-head"><div><span className="eyebrow">FIELD MANUAL // V0.1</span><h2>핵심 규칙</h2></div><button onClick={() => setShowHelp(false)}>닫기</button></div>
         <div className="rules-grid">
           <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 후 수비가 먼저 행동합니다. 손패 5장 중 카드 3장을 사용합니다.</p></article>
-          <article><b>02</b><h3>지속 교전</h3><p>낮은 우선도 숫자부터 행동합니다. 각 교전 차례에 공격 또는 이탈을 선택하며, 제거되거나 이탈할 때까지 1대1이 계속됩니다.</p></article>
+          <article><b>02</b><h3>지속 교전</h3><p>거리 1에서 다른 방향을 대기 중인 적을 선택 공격하면 기습으로 공격 우선도가 1단계 향상되고 적 대기는 발동하지 않습니다. 적이 대기 중이 아니면 양쪽 모두 보너스가 없습니다. 같은 구역에서는 대기 방향과 무관하게 대기 우선도 1입니다.</p></article>
           <article><b>03</b><h3>추가행동</h3><p>카드 한 장마다 해당 요원이 추가행동 1회를 얻습니다. 스킬, 설치·해체, 총기·스파이크 줍기에 사용합니다.</p></article>
           <article><b>04</b><h3>시야</h3><p>아군이 있는 구역과 인접 구역만 확인합니다. 연막은 시야와 대기를 끊지만 이동은 막지 않습니다.</p></article>
           <article><b>05</b><h3>트레이드</h3><p>아군 사망·이탈·정찰 장치 파괴 시 적에게 표식. 같은 턴 다음 아군의 첫 교전에 에임 +1, 우선도 1단계 향상.</p></article>
