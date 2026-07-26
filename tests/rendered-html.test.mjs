@@ -168,6 +168,19 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   }
 });
 
+test("defense AI holds the site perimeter, spreads cards, and retreats when heavily outnumbered", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const DEFENSE_OPERATING_REGIONS = new Set/);
+  assert.match(page, /function aiDefenseDestination/);
+  assert.match(page, /safeTargets = targets\.filter\(\(region\) => DEFENSE_OPERATING_REGIONS\.has\(region\)\)/);
+  assert.match(page, /const cardsUsedByAgent = \(agent: Agent\)/);
+  assert.match(page, /\.sort\(\(a, b\) => cardsUsedByAgent\(a\) - cardsUsedByAgent\(b\)\)/);
+  assert.match(page, /function shouldAiRetreat/);
+  assert.match(page, /nearbyEnemies >= nearbyAllies \+ 2/);
+  assert.match(page, /defenseOverextended \|\| heavilyOutnumbered/);
+  assert.match(page, /function aiRetreatDestination/);
+});
+
 test("sniper waits target exact range-two regions and respect every smoke edge", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function waitTargetsFor\(agent: Agent\)/);

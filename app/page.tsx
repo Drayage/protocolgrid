@@ -415,6 +415,9 @@ for (const [a, b] of EDGES) {
   GRAPH.get(b)?.push(a);
 }
 
+const DEFENSE_OPERATING_REGIONS = new Set([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+const DEFENSE_ANCHORS = [[9, 10, 12], [13, 14, 17]];
+
 const WEAPONS: Record<WeaponId, Weapon> = {
   classic: { id: "classic", name: "클래식", type: "normal", body: 1, head: 2, price: 0, aim: 0, move: 0, unlock: 1 },
   sheriff: { id: "sheriff", name: "셰리프", type: "normal", body: 2, head: 3, price: 6, aim: 0, move: 0, unlock: 1 },
@@ -1451,6 +1454,55 @@ function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiE
   return [...objectives].sort((a, b) => distance(from, a) - distance(from, b))[0];
 }
 
+function aiStrategicWaitDirections(game: GameState, agent: Agent, count: number) {
+  const intel = aiEnemyIntel(game, agent.team);
+  const options = count === 1 ? waitTargetsFor(agent) : GRAPH.get(agent.region) ?? [];
+  return [...options].sort((a, b) => {
+    if (intel.length) {
+      const distanceA = Math.min(...intel.map((item) => distance(a, item.region)));
+      const distanceB = Math.min(...intel.map((item) => distance(b, item.region)));
+      if (distanceA !== distanceB) return distanceA - distanceB;
+    }
+    if (agent.team === "defense") return distance(a, 1) - distance(b, 1);
+    return Math.min(distance(a, 9), distance(a, 14)) - Math.min(distance(b, 9), distance(b, 14));
+  }).slice(0, count);
+}
+
+function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) {
+  const safeTargets = targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
+  if (!safeTargets.length) return null;
+  const intel = aiEnemyIntel(game, "defense");
+  const agentIndex = Math.max(0, game.teams.defense.agents.findIndex((item) => item.id === agent.id));
+  const anchors = DEFENSE_ANCHORS[agentIndex % DEFENSE_ANCHORS.length];
+  return [...safeTargets].sort((a, b) => {
+    const threatA = intel.length ? Math.min(...intel.map((item) => distance(a, item.region))) : Math.min(...anchors.map((region) => distance(a, region)));
+    const threatB = intel.length ? Math.min(...intel.map((item) => distance(b, item.region))) : Math.min(...anchors.map((region) => distance(b, region)));
+    const occupiedA = game.teams.defense.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
+    const occupiedB = game.teams.defense.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
+    return threatA + occupiedA * 2 - (threatB + occupiedB * 2);
+  })[0] ?? null;
+}
+
+function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) {
+  const enemies = game.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive);
+  return [...options].sort((a, b) => {
+    const safetyA = Math.min(...enemies.map((enemy) => distance(a, enemy.region)), 9);
+    const safetyB = Math.min(...enemies.map((enemy) => distance(b, enemy.region)), 9);
+    const territoryA = agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, 1);
+    const territoryB = agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, 1);
+    return safetyB * 3 + territoryB - (safetyA * 3 + territoryA);
+  })[0];
+}
+
+function shouldAiRetreat(game: GameState, agent: Agent) {
+  const nearbyEnemies = game.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && distance(agent.region, enemy.region) <= 1).length;
+  const nearbyAllies = game.teams[agent.team].agents.filter((ally) => ally.alive && distance(agent.region, ally.region) <= 1).length;
+  const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+  const defenseOverextended = agent.team === "defense" && !spikeActive && !DEFENSE_OPERATING_REGIONS.has(agent.region);
+  const heavilyOutnumbered = nearbyEnemies >= nearbyAllies + 2;
+  return defenseOverextended || heavilyOutnumbered || (agent.hp === 1 && nearbyEnemies > nearbyAllies);
+}
+
 function aiSkillRegions(agent: Agent, target: SkillTarget) {
   return REGIONS
     .filter((region) => {
@@ -2069,8 +2121,7 @@ function AiController(props: AiControllerProps) {
         const actor = getAgent(props.game, scene.tailwindActorId);
         if (actor && props.sides.includes(actor.team)) {
           const options = GRAPH.get(actor.region) ?? [];
-          const enemies = props.game.teams[otherSide(actor.team)].agents.filter((enemy) => enemy.alive);
-          const choice = [...options].sort((a, b) => Math.min(...enemies.map((enemy) => distance(b, enemy.region)), 99) - Math.min(...enemies.map((enemy) => distance(a, enemy.region)), 99))[0];
+          const choice = aiRetreatDestination(props.game, actor, options);
           if (choice) action = () => props.onTailwind(choice);
         }
       } else if (scene.phase === "choice") {
@@ -2078,12 +2129,13 @@ function AiController(props: AiControllerProps) {
         if (actor && props.sides.includes(actor.team)) {
           const canAdvance = actor.id === scene.mover.id && props.game.pendingMovement?.agentId === actor.id && props.game.pendingMovement.nextIndex < props.game.pendingMovement.path.length;
           const retreatOptions = GRAPH.get(actor.region) ?? [];
+          const retreatTarget = aiRetreatDestination(props.game, actor, retreatOptions);
           if (actor.id === scene.mover.id && !scene.canMoverAttack) {
             if (canAdvance) action = props.onCombatAdvance;
-            else if (retreatOptions.length) action = () => props.onCombatRetreat(retreatOptions[0]);
+            else if (retreatTarget !== undefined) action = () => props.onCombatRetreat(retreatTarget);
           } else {
-            const shouldRetreat = actor.hp === 1 && retreatOptions.length > 0 && Math.random() < .35;
-            action = shouldRetreat ? () => props.onCombatRetreat(retreatOptions[0]) : props.onCombatAttack;
+            const shouldRetreat = retreatTarget !== undefined && shouldAiRetreat(props.game, actor);
+            action = shouldRetreat ? () => props.onCombatRetreat(retreatTarget) : props.onCombatAttack;
           }
         }
       } else {
@@ -3256,8 +3308,8 @@ export default function Home() {
     if (draft.pendingWait) {
       const agent = getAgent(draft, draft.pendingWait);
       if (agent?.alive) {
-        const enemies = draft.teams[otherSide(side)].agents.filter((enemy) => enemy.alive);
-        const target = waitTargetsFor(agent).sort((a, b) => Math.min(...enemies.map((enemy) => distance(a, enemy.region)), 99) - Math.min(...enemies.map((enemy) => distance(b, enemy.region)), 99))[0];
+        const preferred = aiStrategicWaitDirections(draft, agent, 1)[0];
+        const target = preferred !== undefined && waitTargetsFor(agent).includes(preferred) ? preferred : waitTargetsFor(agent)[0];
         if (target !== undefined) setWait(draft, agent, [target]);
       }
       draft.pendingWait = null;
@@ -3329,15 +3381,20 @@ export default function Home() {
     }
     if (draft.actionsUsed >= 3) return;
     const team = draft.teams[side];
-    const priority: Record<CardKind, number> = { entry: 0, peek: 1, follow: 2, basic: 3, control: 4 };
+    const priority: Record<CardKind, number> = side === "attack"
+      ? { entry: 0, peek: 1, follow: 2, basic: 3, control: 4 }
+      : { control: 0, basic: 1, follow: 2, peek: 3, entry: 4 };
     const cards = team.hand.filter((card) => !card.used).sort((a, b) => priority[a.kind] - priority[b.kind]);
     for (const card of cards) {
-      const candidates = team.agents.filter((agent) => agent.alive && canUseCard(card, agent));
+      const cardsUsedByAgent = (agent: Agent) => team.hand.filter((item) => item.used && item.committedAgentId === agent.id).length;
+      const candidates = team.agents
+        .filter((agent) => agent.alive && canUseCard(card, agent))
+        .sort((a, b) => cardsUsedByAgent(a) - cardsUsedByAgent(b));
       for (const agent of candidates) {
         if (card.kind === "control") {
-          const directions = GRAPH.get(agent.region) ?? [];
+          const directions = aiStrategicWaitDirections(draft, agent, 2);
           if (directions.length < 2) continue;
-          setWait(draft, agent, directions.slice(0, 2));
+          setWait(draft, agent, directions);
           draft.selectedAgentId = agent.id;
           playCard(draft, card, agent);
           return;
@@ -3349,11 +3406,13 @@ export default function Home() {
           ? Math.min(distance(a, 9), distance(a, 14)) - Math.min(distance(b, 9), distance(b, 14))
           : objectiveRegion !== null
             ? distance(a, objectiveRegion) - distance(b, objectiveRegion)
-            : distance(a, 1) - distance(b, 1))[0];
+            : 0)[0];
+        const tacticalDestination = side === "defense" && objectiveRegion === null ? aiDefenseDestination(draft, agent, targets) : destination;
+        if (tacticalDestination === null || tacticalDestination === undefined) continue;
         draft.selectedAgentId = agent.id;
         playCard(draft, card, agent);
         if (!applyActionStartFire(draft, agent)) return;
-        moveAgent(draft, agent, destination, card.kind);
+        moveAgent(draft, agent, tacticalDestination, card.kind);
         if (card.kind === "basic" && agent.alive) draft.pendingWait = agent.id;
         return;
       }
