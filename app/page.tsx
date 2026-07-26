@@ -8,6 +8,7 @@ type CardKind = "basic" | "peek" | "entry" | "follow" | "control";
 type PlayMode = "hotseat" | "vs-ai" | "ai-vs-ai";
 type AttackPlanKind = "direct-a" | "direct-b" | "mid-a" | "mid-b" | "fake-a-b" | "fake-b-a" | "split-read";
 type AttackPlanPhase = "spread" | "pressure" | "rotate" | "execute" | "postplant";
+type AttackTempo = "fast" | "standard" | "slow";
 type WeaponId =
   | "classic"
   | "sheriff"
@@ -326,8 +327,11 @@ interface AttackPlan {
   kind: AttackPlanKind;
   label: string;
   targetSite: "A" | "B";
+  initialTargetSite: "A" | "B";
   commitCycle: number;
+  tempo: AttackTempo;
   adapted: boolean;
+  readout: string;
 }
 
 interface GameState {
@@ -524,7 +528,7 @@ const roleCards = (role: Role): CardKind[] => {
   return ["basic", "basic", "follow"];
 };
 
-const ATTACK_PLAN_TEMPLATES: Omit<AttackPlan, "adapted">[] = [
+const ATTACK_PLAN_TEMPLATES: Pick<AttackPlan, "kind" | "label" | "targetSite" | "commitCycle">[] = [
   { kind: "direct-a", label: "A 외곽 압박", targetSite: "A", commitCycle: 4 },
   { kind: "mid-b", label: "미드 장악 → B", targetSite: "B", commitCycle: 7 },
   { kind: "fake-a-b", label: "A 페이크 → B 전환", targetSite: "B", commitCycle: 8 },
@@ -539,7 +543,19 @@ function createAttackPlan(matchRound: number, names: string[], strategySeed: num
   const index = Math.abs(lineupHash + strategySeed + matchRound * 37) % ATTACK_PLAN_TEMPLATES.length;
   const template = ATTACK_PLAN_TEMPLATES[index];
   const splitTarget = (lineupHash + strategySeed + matchRound) % 2 === 0 ? "A" : "B";
-  return { ...template, targetSite: template.kind === "split-read" ? splitTarget : template.targetSite, adapted: false };
+  const targetSite = template.kind === "split-read" ? splitTarget : template.targetSite;
+  const timingRoll = Math.abs(lineupHash * 3 + strategySeed + matchRound * 19) % 3;
+  const timingOffset = timingRoll - 1;
+  const tempo: AttackTempo = timingOffset < 0 ? "fast" : timingOffset > 0 ? "slow" : "standard";
+  return {
+    ...template,
+    targetSite,
+    initialTargetSite: targetSite,
+    commitCycle: Math.max(3, Math.min(10, template.commitCycle + timingOffset)),
+    tempo,
+    adapted: false,
+    readout: "초반 러쉬로 시야 확보 중",
+  };
 }
 
 function seededShuffle<T>(items: T[], seed: number): T[] {
@@ -808,7 +824,8 @@ const distance = (a: number, b: number) => {
 function attackPlanPhase(game: GameState): AttackPlanPhase {
   if (["planting", "planted", "half", "defusing"].includes(game.spike.status)) return "postplant";
   if (game.cycle >= 12 || game.cycle >= game.attackPlan.commitCycle) return "execute";
-  if (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a") return game.cycle <= 2 ? "pressure" : "rotate";
+  if (game.attackPlan.adapted && game.attackPlan.targetSite !== game.attackPlan.initialTargetSite) return "rotate";
+  if (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a") return game.cycle < game.attackPlan.commitCycle - 2 ? "pressure" : "rotate";
   if (game.attackPlan.kind === "mid-a" || game.attackPlan.kind === "mid-b") return game.cycle <= 2 ? "spread" : "pressure";
   if (game.attackPlan.kind === "split-read") return game.cycle <= 2 ? "spread" : "pressure";
   return "pressure";
@@ -825,17 +842,23 @@ function attackPlanPhaseLabel(game: GameState) {
   return labels[attackPlanPhase(game)];
 }
 
+function attackTempoLabel(tempo: AttackTempo) {
+  if (tempo === "fast") return "빠른 템포";
+  if (tempo === "slow") return "느린 템포";
+  return "표준 템포";
+}
+
 function attackPlanWaypoints(game: GameState, agent?: Agent): number[] {
   const phase = attackPlanPhase(game);
   const targetSite = game.attackPlan.targetSite;
   if (phase === "execute" || phase === "postplant") return targetSite === "A" ? [9, 10] : [14, 15];
   switch (game.attackPlan.kind) {
-    case "direct-a": return [2, 12];
-    case "direct-b": return [4, 17];
-    case "mid-a": return game.cycle <= 2 ? [5, 6] : [6, 8];
-    case "mid-b": return game.cycle <= 2 ? [5, 6] : [6, 13];
-    case "fake-a-b": return game.cycle <= 2 ? [2, 12] : [5, 17];
-    case "fake-b-a": return game.cycle <= 2 ? [4, 17] : [5, 12];
+    case "direct-a": return game.attackPlan.adapted && targetSite === "B" ? [5, 17] : [2, 12];
+    case "direct-b": return game.attackPlan.adapted && targetSite === "A" ? [5, 12] : [4, 17];
+    case "mid-a": return game.cycle <= 2 ? [5, 6] : targetSite === "A" ? [6, 8] : [6, 13];
+    case "mid-b": return game.cycle <= 2 ? [5, 6] : targetSite === "B" ? [6, 13] : [6, 8];
+    case "fake-a-b": return game.cycle < game.attackPlan.commitCycle - 2 ? [2, 12] : targetSite === "B" ? [5, 17] : [2, 12];
+    case "fake-b-a": return game.cycle < game.attackPlan.commitCycle - 2 ? [4, 17] : targetSite === "A" ? [5, 12] : [4, 17];
     case "split-read": {
       if (game.cycle <= 2) {
         const spread = [2, 4, 5, 2, 4];
@@ -853,8 +876,8 @@ function attackPlanRushDestination(game: GameState, origin: number) {
     ? 2
     : game.attackPlan.kind === "direct-b" || game.attackPlan.kind === "fake-b-a"
       ? 4
-      : null;
-  if (rushLane === null || game.cycle !== 1) return null;
+      : 5;
+  if (game.cycle !== 1) return null;
   return [...(GRAPH.get(origin) ?? [])].sort((a, b) => distance(a, rushLane) - distance(b, rushLane))[0] ?? null;
 }
 
@@ -1588,16 +1611,21 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
 
 function adaptAttackPlan(game: GameState) {
   const plan = game.attackPlan;
-  if (plan.kind !== "split-read" || plan.adapted || game.cycle < 3) return;
+  if (plan.adapted || attackPlanPhase(game) === "execute" || attackPlanPhase(game) === "postplant") return;
+  const readCycle = Math.max(3, plan.commitCycle - 2);
+  if (game.cycle < readCycle) return;
   const intel = aiEnemyIntel(game, "attack");
   if (!intel.length && game.cycle < plan.commitCycle - 1) return;
   const aRegions = new Set([8, 9, 10, 11, 12]);
   const bRegions = new Set([13, 14, 15, 16, 17]);
   const aPresence = intel.filter((item) => aRegions.has(item.region)).length;
   const bPresence = intel.filter((item) => bRegions.has(item.region)).length;
+  const priorTarget = plan.targetSite;
   if (aPresence !== bPresence) plan.targetSite = aPresence < bPresence ? "A" : "B";
   plan.adapted = true;
-  addAnalyticsEvent(game, "attack", "objective", `분산 정보전 판독 · ${plan.targetSite} 사이트 전환`);
+  const decision = plan.targetSite === priorTarget ? `${plan.targetSite} 목표 유지` : `${priorTarget} 목표에서 ${plan.targetSite}로 전환`;
+  plan.readout = `관측 수비 A ${aPresence} · B ${bPresence} · ${decision}`;
+  addAnalyticsEvent(game, "attack", "objective", `수비 배치 판독 · ${plan.readout}`);
 }
 
 function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
@@ -1981,7 +2009,7 @@ function analysisInsights(game: GameState) {
       ? `${rateGap > 0 ? "공격팀" : "수비팀"} 명중률이 ${Math.abs(rateGap)}%p 앞섭니다. 낮은 쪽은 정면 재교전보다 이탈·트레이드가 유리합니다.`
       : "양 팀 명중률 차이가 작습니다. 피해 집중과 생존 총기 보존이 더 중요한 구간입니다.";
   const third = game.spike.status === "carried"
-    ? `공격 작전은 ‘${game.attackPlan.label}’이며 현재 ${attackPlanPhaseLabel(game)} 단계입니다. 수비팀은 ${game.teams.defense.agents.filter((agent) => agent.alive && [9, 10, 11, 14, 15, 16].includes(agent.region)).length}명으로 사이트 권역을 지키고 있습니다.`
+    ? `공격 작전은 ‘${game.attackPlan.label}’·${attackTempoLabel(game.attackPlan.tempo)}이며 현재 ${attackPlanPhaseLabel(game)} 단계입니다. ${game.attackPlan.readout}.`
     : ["planting", "planted", "half", "defusing"].includes(game.spike.status)
       ? `스파이크 ${SPIKE_STATUS_LABEL[game.spike.status]} 단계입니다. 수비 재진입과 해체 진행이 최우선입니다.`
       : `현재 승리 조건: ${game.winReason ?? SPIKE_STATUS_LABEL[game.spike.status]}.`;
@@ -1992,7 +2020,7 @@ function MatchAnalysisPanel({ game, compact = false }: { game: GameState; compac
   const insights = analysisInsights(game);
   return <section className={`match-analysis ${compact ? "compact" : ""}`} aria-label="AI 경기 분석">
     <header><div><span>TACTICAL ANALYSIS</span><strong>{game.winner ? "라운드 분석" : "실시간 전술 분석"}</strong></div><small>실제 교전·행동 데이터 기준</small></header>
-    <div className="analysis-plan"><span>ATK PLAN</span><b>{game.attackPlan.label}</b><small>{attackPlanPhaseLabel(game)} · 목표 {game.attackPlan.targetSite} · 최종 진입 전술 {game.attackPlan.commitCycle}</small></div>
+    <div className="analysis-plan"><span>ATK PLAN</span><b>{game.attackPlan.label} · {attackTempoLabel(game.attackPlan.tempo)}</b><small>{attackPlanPhaseLabel(game)} · 목표 {game.attackPlan.targetSite} · 최종 진입 전술 {game.attackPlan.commitCycle}<br />{game.attackPlan.readout}</small></div>
     <div className="analysis-teams">
       {(["defense", "attack"] as Side[]).map((side) => {
         const stats = game.analytics[side];
@@ -2150,7 +2178,7 @@ function prepareAiVsAiRound(game: GameState) {
   game.teams.defense.buyLocked = true;
   game.selectedAgentId = game.teams.defense.agents.find((agent) => agent.alive)?.id ?? null;
   addLog(game, "AI 대 AI 관전 시작 · 양 팀 자동 구매와 수비 배치를 완료했습니다.");
-  addLog(game, `공격 AI 작전 브리핑 · ${game.attackPlan.label} · 전술 ${game.attackPlan.commitCycle}부터 최종 진입.`);
+  addLog(game, `공격 AI 작전 브리핑 · ${game.attackPlan.label} · ${attackTempoLabel(game.attackPlan.tempo)} · 전술 ${game.attackPlan.commitCycle}부터 최종 진입.`);
   addAnalyticsEvent(game, "defense", "objective", "AI 자동 수비 배치 완료");
   addAnalyticsEvent(game, "attack", "objective", `작전 선택 · ${game.attackPlan.label}`);
   game.turnStartContactQueue = game.teams.defense.agents.filter((agent) => agent.alive).map((agent) => agent.id);

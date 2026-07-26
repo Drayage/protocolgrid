@@ -205,12 +205,23 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
     assert.match(page, new RegExp(`kind: "${plan}"`), `${plan} needs an attack plan template`);
   }
   assert.match(page, /function createAttackPlan/);
+  assert.match(page, /timingOffset = timingRoll - 1/);
+  assert.match(page, /type AttackTempo = "fast" \| "standard" \| "slow"/);
+  assert.match(page, /function attackTempoLabel/);
   assert.match(page, /function attackPlanWaypoints/);
+  assert.match(page, /game\.cycle < game\.attackPlan\.commitCycle - 2 \? "pressure" : "rotate"/);
+  assert.match(page, /game\.attackPlan\.adapted && targetSite === "B" \? \[5, 17\] : \[2, 12\]/);
+  assert.match(page, /game\.attackPlan\.adapted && targetSite === "A" \? \[5, 12\] : \[4, 17\]/);
+  assert.match(page, /targetSite === "B" \? \[5, 17\] : \[2, 12\]/);
+  assert.match(page, /targetSite === "A" \? \[5, 12\] : \[4, 17\]/);
   assert.match(page, /function attackPlanRushDestination/);
-  assert.match(page, /rushLane === null \|\| game\.cycle !== 1/);
+  assert.match(page, /game\.attackPlan\.kind === "direct-b" \|\| game\.attackPlan\.kind === "fake-b-a"[\s\S]{0,80}\? 4[\s\S]{0,40}: 5/);
+  assert.match(page, /if \(game\.cycle !== 1\) return null/);
   assert.match(page, /function adaptAttackPlan/);
+  assert.match(page, /const readCycle = Math\.max\(3, plan\.commitCycle - 2\)/);
   assert.match(page, /!intel\.length && game\.cycle < plan\.commitCycle - 1/);
   assert.match(page, /aPresence < bPresence \? "A" : "B"/);
+  assert.match(page, /관측 수비 A \$\{aPresence\} · B \$\{bPresence\}/);
   assert.match(page, /function aiAttackDestination/);
   assert.match(page, /return !REGIONS\.find\(\(item\) => item\.id === region\)\?\.site/);
   assert.match(page, /routeDistance\(destination\) > routeDistance\(agent\.region\)/);
