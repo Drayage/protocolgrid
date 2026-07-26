@@ -159,6 +159,14 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   assert.match(page, /if \(tryUseAiSkill\(draft, side\)\) return/);
   assert.match(page, /function aiEnemyIntel/);
   assert.match(page, /function aiSmokeEdge/);
+  assert.match(page, /function aiSkillPriority/);
+  assert.match(page, /const attackBreach =/);
+  assert.match(page, /const attackPostplant =/);
+  assert.match(page, /const defenseHold =/);
+  assert.match(page, /const defenseRetake =/);
+  assert.match(page, /side === "attack" && \["planting", "planted", "half", "defusing"\]\.includes\(game\.spike\.status\)/);
+  assert.match(page, /definition\.id === "turret" && attackPlanPhase\(game\) !== "execute"/);
+  assert.match(page, /definition\.id === "alarm" && attackPlanPhase\(game\) !== "execute"/);
   assert.match(page, /game\.analytics\[agent\.team\]\.skillsUsed \+= 1/);
   assert.match(page, /스파이캠으로 \$\{cameraTarget\.name\} 탐지/);
   assert.match(page, /const skillReserve = Math\.min/);
@@ -172,13 +180,34 @@ test("defense AI holds the site perimeter, spreads cards, and retreats when heav
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /const DEFENSE_OPERATING_REGIONS = new Set/);
   assert.match(page, /function aiDefenseDestination/);
-  assert.match(page, /safeTargets = targets\.filter\(\(region\) => DEFENSE_OPERATING_REGIONS\.has\(region\)\)/);
+  assert.match(page, /safeTargets = flanking \? targets : targets\.filter\(\(region\) => DEFENSE_OPERATING_REGIONS\.has\(region\)\)/);
   assert.match(page, /const cardsUsedByAgent = \(agent: Agent\)/);
-  assert.match(page, /\.sort\(\(a, b\) => cardsUsedByAgent\(a\) - cardsUsedByAgent\(b\)\)/);
+  assert.match(page, /cardsUsedByAgent\(a\) \* 20 \+ rotationRank\(a\)/);
   assert.match(page, /function shouldAiRetreat/);
   assert.match(page, /nearbyEnemies >= nearbyAllies \+ 2/);
   assert.match(page, /defenseOverextended \|\| heavilyOutnumbered/);
   assert.match(page, /function aiRetreatDestination/);
+});
+
+test("defense AI deploys stack, balanced, mid-control, and weighted formations with role-based responses", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  for (const plan of ["stack-a", "stack-b", "balanced-212", "mid-131", "heavy-a-401", "heavy-b-401", "heavy-a-311", "heavy-b-311"]) {
+    assert.match(page, new RegExp(`kind: "${plan}"`), `${plan} needs a defense plan`);
+  }
+  assert.match(page, /function createDefensePlan/);
+  assert.match(page, /function defenseAssignedLane/);
+  assert.match(page, /function defenseThreatSite/);
+  assert.match(page, /function defenseShouldFlank/);
+  assert.match(page, /function defensePlanWaypoints/);
+  assert.match(page, /function updateDefensePlanReadout/);
+  assert.match(page, /스택 유지 · 설치 후 집단 재진입/);
+  assert.match(page, /Math\.floor\(laneAgents\.length \/ 2\)/);
+  assert.match(page, /\.\.\.Array\(game\.defensePlan\.distribution\.A\)\.fill\(10\)/);
+  assert.match(page, /className="analysis-plan defense-plan"/);
+  assert.match(css, /\.analysis-plan\.defense-plan/);
 });
 
 test("trade bonuses can be created and consumed by either side of a continuing encounter", async () => {
@@ -208,6 +237,16 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /timingOffset = timingRoll - 1/);
   assert.match(page, /type AttackTempo = "fast" \| "standard" \| "slow"/);
   assert.match(page, /function attackTempoLabel/);
+  assert.match(page, /type AttackFormation = "five" \| "four-one"/);
+  assert.match(page, /mainMidCount: formation === "five" \? 0 : 4 - mainSiteCount/);
+  assert.match(page, /function attackFormationLabel/);
+  assert.match(page, /function updateAttackLurkerPlan/);
+  assert.match(page, /function attackLurkerWaypoints/);
+  assert.match(page, /lurkerMode = "rotate-call"/);
+  assert.match(page, /lurkerMode = "deep-flank"/);
+  assert.match(page, /본대 전환 콜/);
+  assert.match(page, /수비 후방 깊은 우회/);
+  assert.match(page, /strategicBias/);
   assert.match(page, /function attackPlanWaypoints/);
   assert.match(page, /game\.cycle < game\.attackPlan\.commitCycle - 2 \? "pressure" : "rotate"/);
   assert.match(page, /game\.attackPlan\.adapted && targetSite === "B" \? \[5, 17\] : \[2, 12\]/);

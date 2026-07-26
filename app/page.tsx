@@ -9,6 +9,10 @@ type PlayMode = "hotseat" | "vs-ai" | "ai-vs-ai";
 type AttackPlanKind = "direct-a" | "direct-b" | "mid-a" | "mid-b" | "fake-a-b" | "fake-b-a" | "split-read";
 type AttackPlanPhase = "spread" | "pressure" | "rotate" | "execute" | "postplant";
 type AttackTempo = "fast" | "standard" | "slow";
+type AttackFormation = "five" | "four-one";
+type LurkerMode = "probe" | "rotate-call" | "deep-flank" | "regroup";
+type TacticalLane = "A" | "MID" | "B";
+type DefensePlanKind = "stack-a" | "stack-b" | "balanced-212" | "mid-131" | "heavy-a-401" | "heavy-b-401" | "heavy-a-311" | "heavy-b-311";
 type WeaponId =
   | "classic"
   | "sheriff"
@@ -332,12 +336,27 @@ interface AttackPlan {
   tempo: AttackTempo;
   adapted: boolean;
   readout: string;
+  formation: AttackFormation;
+  mainSiteCount: number;
+  mainMidCount: number;
+  lurkerName: string | null;
+  lurkerProbeSite: "A" | "B";
+  lurkerMode: LurkerMode;
+}
+
+interface DefensePlan {
+  kind: DefensePlanKind;
+  label: string;
+  distribution: Record<TacticalLane, number>;
+  strongSite: "A" | "B" | null;
+  readout: string;
 }
 
 interface GameState {
   matchRound: number;
   strategySeed: number;
   attackPlan: AttackPlan;
+  defensePlan: DefensePlan;
   cycle: number;
   turnSerial: number;
   teamTurns: Record<Side, number>;
@@ -433,7 +452,8 @@ for (const [a, b] of EDGES) {
 }
 
 const DEFENSE_OPERATING_REGIONS = new Set([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
-const DEFENSE_ANCHORS = [[9, 10, 12], [13, 14, 17]];
+const A_TACTICAL_REGIONS = new Set([8, 9, 10, 11, 12]);
+const B_TACTICAL_REGIONS = new Set([13, 14, 15, 16, 17]);
 
 const WEAPONS: Record<WeaponId, Weapon> = {
   classic: { id: "classic", name: "클래식", type: "normal", body: 1, head: 2, price: 0, aim: 0, move: 0, unlock: 1 },
@@ -538,6 +558,17 @@ const ATTACK_PLAN_TEMPLATES: Pick<AttackPlan, "kind" | "label" | "targetSite" | 
   { kind: "fake-b-a", label: "B 페이크 → A 전환", targetSite: "A", commitCycle: 8 },
 ];
 
+const DEFENSE_PLAN_TEMPLATES: DefensePlan[] = [
+  { kind: "stack-a", label: "A 5인 스택", distribution: { A: 5, MID: 0, B: 0 }, strongSite: "A", readout: "A 러쉬 즉시 대응 · B 설치 시 전원 재진입" },
+  { kind: "balanced-212", label: "2-1-2 균형 수비", distribution: { A: 2, MID: 1, B: 2 }, strongSite: null, readout: "미드 정보로 양 사이트를 빠르게 보강" },
+  { kind: "heavy-a-401", label: "A 편중 4-0-1", distribution: { A: 4, MID: 0, B: 1 }, strongSite: "A", readout: "A에서 시간 지연 · B 단독 요원은 후퇴 또는 우회" },
+  { kind: "mid-131", label: "1-3-1 미드 장악", distribution: { A: 1, MID: 3, B: 1 }, strongSite: null, readout: "미드 시야 확보 후 약한 사이트를 집단 보강" },
+  { kind: "stack-b", label: "B 5인 스택", distribution: { A: 0, MID: 0, B: 5 }, strongSite: "B", readout: "B 러쉬 즉시 대응 · A 설치 시 전원 재진입" },
+  { kind: "heavy-b-401", label: "B 편중 1-0-4", distribution: { A: 1, MID: 0, B: 4 }, strongSite: "B", readout: "B에서 시간 지연 · A 단독 요원은 후퇴 또는 우회" },
+  { kind: "heavy-a-311", label: "A 편중 3-1-1", distribution: { A: 3, MID: 1, B: 1 }, strongSite: "A", readout: "A 교전 유지 · 미드 보강 · B 단독 판단" },
+  { kind: "heavy-b-311", label: "B 편중 1-1-3", distribution: { A: 1, MID: 1, B: 3 }, strongSite: "B", readout: "B 교전 유지 · 미드 보강 · A 단독 판단" },
+];
+
 function createAttackPlan(matchRound: number, names: string[], strategySeed: number): AttackPlan {
   const lineupHash = names.join("").split("").reduce((total, letter) => total + letter.charCodeAt(0), 0);
   const index = Math.abs(lineupHash + strategySeed + matchRound * 37) % ATTACK_PLAN_TEMPLATES.length;
@@ -547,6 +578,9 @@ function createAttackPlan(matchRound: number, names: string[], strategySeed: num
   const timingRoll = Math.abs(lineupHash * 3 + strategySeed + matchRound * 19) % 3;
   const timingOffset = timingRoll - 1;
   const tempo: AttackTempo = timingOffset < 0 ? "fast" : timingOffset > 0 ? "slow" : "standard";
+  const formationRoll = Math.abs(lineupHash + strategySeed * 5 + matchRound * 23) % 4;
+  const formation: AttackFormation = formationRoll === 0 ? "five" : "four-one";
+  const mainSiteCount = Math.abs(lineupHash + strategySeed + matchRound * 13) % 5;
   return {
     ...template,
     targetSite,
@@ -555,7 +589,20 @@ function createAttackPlan(matchRound: number, names: string[], strategySeed: num
     tempo,
     adapted: false,
     readout: "초반 러쉬로 시야 확보 중",
+    formation,
+    mainSiteCount: formation === "five" ? 5 : mainSiteCount,
+    mainMidCount: formation === "five" ? 0 : 4 - mainSiteCount,
+    lurkerName: formation === "four-one" ? names[names.length - 1] ?? null : null,
+    lurkerProbeSite: targetSite === "A" ? "B" : "A",
+    lurkerMode: formation === "four-one" ? "probe" : "regroup",
   };
+}
+
+function createDefensePlan(matchRound: number, names: string[], strategySeed: number): DefensePlan {
+  const lineupHash = names.join("").split("").reduce((total, letter) => total + letter.charCodeAt(0), 0);
+  const index = Math.abs(lineupHash + strategySeed * 7 + matchRound * 31) % DEFENSE_PLAN_TEMPLATES.length;
+  const template = DEFENSE_PLAN_TEMPLATES[index];
+  return { ...template, distribution: { ...template.distribution } };
 }
 
 function seededShuffle<T>(items: T[], seed: number): T[] {
@@ -634,6 +681,7 @@ function createInitialGame(
     matchRound: 1,
     strategySeed,
     attackPlan: createAttackPlan(1, attackNames, strategySeed),
+    defensePlan: createDefensePlan(1, defenseNames, strategySeed),
     cycle: 1,
     turnSerial: 1,
     teamTurns: { attack: 0, defense: 1 },
@@ -755,6 +803,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   resetTeamForRound(game.teams.attack, "attack", game.matchRound, swapSides);
   resetTeamForRound(game.teams.defense, "defense", game.matchRound, swapSides);
   game.attackPlan = createAttackPlan(game.matchRound, game.teams.attack.agents.map((agent) => agent.name), game.strategySeed + game.teams.attack.score * 11 + game.teams.defense.score * 17);
+  game.defensePlan = createDefensePlan(game.matchRound, game.teams.defense.agents.map((agent) => agent.name), game.strategySeed + game.teams.defense.score * 13 + game.teams.attack.score * 19);
   game.cycle = 1;
   game.turnSerial = 1;
   game.teamTurns = { attack: 0, defense: 1 };
@@ -848,7 +897,20 @@ function attackTempoLabel(tempo: AttackTempo) {
   return "표준 템포";
 }
 
-function attackPlanWaypoints(game: GameState, agent?: Agent): number[] {
+function attackFormationLabel(plan: AttackPlan) {
+  if (plan.formation === "five") return "5인 본대";
+  return `4+1 러커 · 본대 사이트 ${plan.mainSiteCount} / 미드 ${plan.mainMidCount}`;
+}
+
+function isAttackLurker(game: GameState, agent?: Agent) {
+  return !!agent && game.attackPlan.formation === "four-one" && game.attackPlan.lurkerName === agent.name;
+}
+
+function attackMainAgents(game: GameState) {
+  return game.teams.attack.agents.filter((agent) => agent.name !== game.attackPlan.lurkerName);
+}
+
+function attackCoreWaypoints(game: GameState): number[] {
   const phase = attackPlanPhase(game);
   const targetSite = game.attackPlan.targetSite;
   if (phase === "execute" || phase === "postplant") return targetSite === "A" ? [9, 10] : [14, 15];
@@ -861,14 +923,50 @@ function attackPlanWaypoints(game: GameState, agent?: Agent): number[] {
     case "fake-b-a": return game.cycle < game.attackPlan.commitCycle - 2 ? [4, 17] : targetSite === "A" ? [5, 12] : [4, 17];
     case "split-read": {
       if (game.cycle <= 2) {
-        const spread = [2, 4, 5, 2, 4];
-        const index = agent ? Math.max(0, game.teams.attack.agents.findIndex((item) => item.id === agent.id)) : 2;
-        return [spread[index % spread.length]];
+        return [2, 4, 5];
       }
       return targetSite === "A" ? [2, 12, 8] : [4, 17, 13];
     }
   }
   return [5];
+}
+
+function attackMidWaypoints(game: GameState) {
+  const phase = attackPlanPhase(game);
+  if (game.cycle <= 2 || (phase === "pressure" && (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a"))) return [5, 6];
+  return game.attackPlan.targetSite === "A" ? [6, 8] : [6, 13];
+}
+
+function nextRouteWaypoint(current: number, route: number[]) {
+  const routeIndex = route.indexOf(current);
+  if (routeIndex >= 0) return route[Math.min(route.length - 1, routeIndex + 1)];
+  return [...route].sort((a, b) => distance(current, a) - distance(current, b))[0];
+}
+
+function attackLurkerWaypoints(game: GameState, agent: Agent) {
+  const plan = game.attackPlan;
+  if (attackPlanPhase(game) === "postplant") {
+    if (game.spike.region !== null) return [game.spike.region];
+    return plan.targetSite === "A" ? [9, 10] : [14, 15];
+  }
+  if (plan.lurkerMode === "deep-flank") {
+    const route = plan.lurkerProbeSite === "A"
+      ? [2, 12, 11, 10, 7, 13, 14]
+      : [4, 17, 14, 13, 7, 10, 9];
+    return [nextRouteWaypoint(agent.region, route)];
+  }
+  if (plan.lurkerMode === "rotate-call" || plan.lurkerMode === "regroup") {
+    return plan.targetSite === "A" ? [9, 10] : [14, 15];
+  }
+  return plan.lurkerProbeSite === "A" ? [2, 12] : [4, 17];
+}
+
+function attackPlanWaypoints(game: GameState, agent?: Agent): number[] {
+  if (agent && isAttackLurker(game, agent)) return attackLurkerWaypoints(game, agent);
+  if (!agent || game.attackPlan.formation === "five" || attackPlanPhase(game) === "execute" || attackPlanPhase(game) === "postplant") return attackCoreWaypoints(game);
+  const mainAgents = attackMainAgents(game);
+  const mainIndex = Math.max(0, mainAgents.findIndex((item) => item.id === agent.id));
+  return mainIndex < game.attackPlan.mainSiteCount ? attackCoreWaypoints(game) : attackMidWaypoints(game);
 }
 
 function attackPlanRushDestination(game: GameState, origin: number) {
@@ -1570,7 +1668,10 @@ function aiEnemyIntel(game: GameState, side: Side): AiEnemyIntel[] {
 }
 
 function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiEnemyIntel[]) {
-  if (side === "defense" && game.spike.region !== null && ["planted", "half", "defusing"].includes(game.spike.status)) return game.spike.region;
+  if (game.spike.region !== null && (
+    side === "defense" && ["planted", "half", "defusing"].includes(game.spike.status)
+    || side === "attack" && ["planting", "planted", "half", "defusing"].includes(game.spike.status)
+  )) return game.spike.region;
   if (intel.length) return [...intel].sort((a, b) => distance(from, a.region) - distance(from, b.region))[0].region;
   if (side === "attack") return [...attackPlanWaypoints(game)].sort((a, b) => distance(from, a) - distance(from, b))[0];
   const objectives = [9, 14];
@@ -1594,19 +1695,146 @@ function aiStrategicWaitDirections(game: GameState, agent: Agent, count: number)
   }).slice(0, count);
 }
 
-function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) {
-  const safeTargets = targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
-  if (!safeTargets.length) return null;
+function defenseAssignedLane(game: GameState, agent: Agent): TacticalLane {
+  const index = Math.max(0, game.teams.defense.agents.findIndex((item) => item.id === agent.id));
+  if (index < game.defensePlan.distribution.A) return "A";
+  if (index < game.defensePlan.distribution.A + game.defensePlan.distribution.MID) return "MID";
+  return "B";
+}
+
+function defenseLaneAgents(game: GameState, lane: TacticalLane) {
+  return game.teams.defense.agents.filter((agent) => agent.alive && defenseAssignedLane(game, agent) === lane);
+}
+
+function defenseThreatSite(game: GameState): "A" | "B" | null {
   const intel = aiEnemyIntel(game, "defense");
-  const agentIndex = Math.max(0, game.teams.defense.agents.findIndex((item) => item.id === agent.id));
-  const anchors = DEFENSE_ANCHORS[agentIndex % DEFENSE_ANCHORS.length];
-  return [...safeTargets].sort((a, b) => {
-    const threatA = intel.length ? Math.min(...intel.map((item) => distance(a, item.region))) : Math.min(...anchors.map((region) => distance(a, region)));
-    const threatB = intel.length ? Math.min(...intel.map((item) => distance(b, item.region))) : Math.min(...anchors.map((region) => distance(b, region)));
+  const aPresence = intel.filter((item) => A_TACTICAL_REGIONS.has(item.region)).length;
+  const bPresence = intel.filter((item) => B_TACTICAL_REGIONS.has(item.region)).length;
+  if (!aPresence && !bPresence) return null;
+  if (aPresence === bPresence) {
+    const closest = intel.map((item) => {
+      const aDistance = Math.min(distance(item.region, 9), distance(item.region, 10));
+      const bDistance = Math.min(distance(item.region, 14), distance(item.region, 15));
+      return { site: aDistance <= bDistance ? "A" as const : "B" as const, distance: Math.min(aDistance, bDistance) };
+    }).sort((a, b) => a.distance - b.distance)[0];
+    return closest?.site ?? null;
+  }
+  return aPresence > bPresence ? "A" : "B";
+}
+
+function defenseLaneAnchors(lane: TacticalLane) {
+  if (lane === "A") return [10, 9, 11, 12, 8];
+  if (lane === "B") return [13, 14, 15, 16, 17];
+  return [7, 6, 8, 13];
+}
+
+function defenseFlankWaypoint(game: GameState, agent: Agent, threat: "A" | "B") {
+  const route = threat === "A" ? [13, 17, 5, 2, 12] : [10, 12, 2, 5, 17];
+  return nextRouteWaypoint(agent.region, route);
+}
+
+function defenseShouldFlank(game: GameState, agent: Agent, threat: "A" | "B" | null) {
+  if (!threat || game.defensePlan.kind === "stack-a" || game.defensePlan.kind === "stack-b") return false;
+  const lane = defenseAssignedLane(game, agent);
+  if (lane === "MID" || lane === threat) return false;
+  const laneAgents = defenseLaneAgents(game, lane);
+  const laneIndex = laneAgents.findIndex((item) => item.id === agent.id);
+  if (laneAgents.length <= 1) return true;
+  return laneIndex === laneAgents.length - 1;
+}
+
+function updateDefensePlanReadout(game: GameState) {
+  const threat = defenseThreatSite(game);
+  if (!threat) return;
+  const plan = game.defensePlan;
+  if (plan.kind === "stack-a" || plan.kind === "stack-b") {
+    plan.readout = plan.strongSite === threat
+      ? `${threat} 압박 확인 · 5인 스택으로 즉시 교전`
+      : `${threat} 반대 압박 확인 · 스택 유지 · 설치 후 집단 재진입`;
+    return;
+  }
+  const midCount = plan.distribution.MID;
+  const opposite = threat === "A" ? "B" : "A";
+  plan.readout = `${threat} 압박 확인 · 미드 ${midCount}명 보강 · ${opposite} 잔류 요원은 홀드/후방 우회`;
+}
+
+function defensePlanWaypoints(game: GameState, agent: Agent) {
+  const lane = defenseAssignedLane(game, agent);
+  const threat = defenseThreatSite(game);
+  if (!threat) return defenseLaneAnchors(lane);
+  const stackPlan = game.defensePlan.kind === "stack-a" || game.defensePlan.kind === "stack-b";
+  if (stackPlan) return defenseLaneAnchors(lane);
+  if (lane === threat) return defenseLaneAnchors(lane);
+  if (lane === "MID") return threat === "A" ? [8, 10, 9] : [13, 14, 15];
+  if (defenseShouldFlank(game, agent, threat)) return [defenseFlankWaypoint(game, agent, threat)];
+
+  const strongSiteHitElsewhere = game.defensePlan.strongSite === lane && game.defensePlan.strongSite !== threat;
+  if (strongSiteHitElsewhere) {
+    const laneAgents = defenseLaneAgents(game, lane);
+    const laneIndex = laneAgents.findIndex((item) => item.id === agent.id);
+    const rotationCount = Math.max(1, Math.floor(laneAgents.length / 2));
+    if (laneIndex < rotationCount) return threat === "A" ? [8, 10] : [13, 14];
+  }
+  return defenseLaneAnchors(lane);
+}
+
+function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) {
+  const threat = defenseThreatSite(game);
+  const flanking = defenseShouldFlank(game, agent, threat);
+  const safeTargets = flanking ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
+  if (!safeTargets.length) return null;
+  const waypoints = defensePlanWaypoints(game, agent);
+  const routeDistance = (region: number) => Math.min(...waypoints.map((waypoint) => distance(region, waypoint)));
+  const destination = [...safeTargets].sort((a, b) => {
     const occupiedA = game.teams.defense.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
     const occupiedB = game.teams.defense.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
-    return threatA + occupiedA * 2 - (threatB + occupiedB * 2);
+    return routeDistance(a) * 4 + occupiedA * 2 - (routeDistance(b) * 4 + occupiedB * 2);
   })[0] ?? null;
+  if (destination === null) return null;
+  if (!flanking && routeDistance(destination) > routeDistance(agent.region)) return null;
+  return destination;
+}
+
+function attackMainBodyEngaged(game: GameState) {
+  const exactIntel = aiEnemyIntel(game, "attack").filter((item) => item.exact);
+  return attackMainAgents(game).some((ally) => ally.alive && exactIntel.some((enemy) => distance(ally.region, enemy.region) <= 1));
+}
+
+function updateAttackLurkerPlan(game: GameState) {
+  const plan = game.attackPlan;
+  if (plan.formation !== "four-one" || !plan.lurkerName) return;
+  const lurker = game.teams.attack.agents.find((agent) => agent.alive && agent.name === plan.lurkerName);
+  if (!lurker) return;
+  if (["planting", "planted", "half", "defusing"].includes(game.spike.status)) {
+    plan.lurkerMode = "regroup";
+    return;
+  }
+  const mainEngaged = attackMainBodyEngaged(game);
+  if (mainEngaged && plan.lurkerMode === "probe") {
+    plan.lurkerMode = "deep-flank";
+    plan.readout = `${lurker.name} 러커 · 본대 교전 확인 · 수비 후방 깊은 우회`;
+    addAnalyticsEvent(game, "attack", "objective", plan.readout);
+    return;
+  }
+  if (plan.lurkerMode !== "probe") return;
+  const stagingRegion = plan.lurkerProbeSite === "A" ? 12 : 17;
+  if (lurker.region !== stagingRegion) return;
+  const observed = observedRegions(game, "attack");
+  const probeRegions = plan.lurkerProbeSite === "A" ? A_TACTICAL_REGIONS : B_TACTICAL_REGIONS;
+  const visibleFront = [...probeRegions].filter((region) => observed.has(region));
+  const defenders = aiEnemyIntel(game, "attack").filter((item) => item.exact && probeRegions.has(item.region));
+  if (defenders.length && game.cycle >= plan.commitCycle - 1) {
+    plan.lurkerMode = "deep-flank";
+    plan.readout = `${lurker.name} 러커 · ${plan.lurkerProbeSite} 수비 확인 · 적 베이스를 거쳐 후방 급습`;
+    addAnalyticsEvent(game, "attack", "objective", plan.readout);
+    return;
+  }
+  if (visibleFront.length < 2 || defenders.length) return;
+  plan.targetSite = plan.lurkerProbeSite;
+  plan.adapted = true;
+  plan.lurkerMode = "rotate-call";
+  plan.readout = `${lurker.name} 러커 · ${plan.lurkerProbeSite} 전방 비어 있음 · 본대 전환 콜`;
+  addAnalyticsEvent(game, "attack", "objective", plan.readout);
 }
 
 function adaptAttackPlan(game: GameState) {
@@ -1616,10 +1844,8 @@ function adaptAttackPlan(game: GameState) {
   if (game.cycle < readCycle) return;
   const intel = aiEnemyIntel(game, "attack");
   if (!intel.length && game.cycle < plan.commitCycle - 1) return;
-  const aRegions = new Set([8, 9, 10, 11, 12]);
-  const bRegions = new Set([13, 14, 15, 16, 17]);
-  const aPresence = intel.filter((item) => aRegions.has(item.region)).length;
-  const bPresence = intel.filter((item) => bRegions.has(item.region)).length;
+  const aPresence = intel.filter((item) => A_TACTICAL_REGIONS.has(item.region)).length;
+  const bPresence = intel.filter((item) => B_TACTICAL_REGIONS.has(item.region)).length;
   const priorTarget = plan.targetSite;
   if (aPresence !== bPresence) plan.targetSite = aPresence < bPresence ? "A" : "B";
   plan.adapted = true;
@@ -1630,8 +1856,9 @@ function adaptAttackPlan(game: GameState) {
 
 function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
   const phase = attackPlanPhase(game);
+  const deepFlanking = isAttackLurker(game, agent) && game.attackPlan.lurkerMode === "deep-flank";
   const allowedTargets = targets.filter((region) => {
-    if (phase === "execute" || phase === "postplant" || game.cycle >= 12) return true;
+    if (phase === "execute" || phase === "postplant" || game.cycle >= 12 || deepFlanking) return true;
     return !REGIONS.find((item) => item.id === region)?.site;
   });
   if (!allowedTargets.length) return null;
@@ -1650,10 +1877,10 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
 }
 
 function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) {
-  const enemies = game.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive);
+  const enemyRegions = aiEnemyIntel(game, agent.team).map((enemy) => enemy.region);
   return [...options].sort((a, b) => {
-    const safetyA = Math.min(...enemies.map((enemy) => distance(a, enemy.region)), 9);
-    const safetyB = Math.min(...enemies.map((enemy) => distance(b, enemy.region)), 9);
+    const safetyA = Math.min(...enemyRegions.map((region) => distance(a, region)), 9);
+    const safetyB = Math.min(...enemyRegions.map((region) => distance(b, region)), 9);
     const territoryA = agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, 1);
     const territoryB = agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, 1);
     return safetyB * 3 + territoryB - (safetyA * 3 + territoryA);
@@ -1661,7 +1888,7 @@ function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) 
 }
 
 function shouldAiRetreat(game: GameState, agent: Agent) {
-  const nearbyEnemies = game.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && distance(agent.region, enemy.region) <= 1).length;
+  const nearbyEnemies = aiEnemyIntel(game, agent.team).filter((enemy) => distance(agent.region, enemy.region) <= 1).length;
   const nearbyAllies = game.teams[agent.team].agents.filter((ally) => ally.alive && distance(agent.region, ally.region) <= 1).length;
   const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
   const defenseOverextended = agent.team === "defense" && !spikeActive && !DEFENSE_OPERATING_REGIONS.has(agent.region);
@@ -1679,6 +1906,19 @@ function aiSkillRegions(agent: Agent, target: SkillTarget) {
       return range <= 2;
     })
     .map((region) => region.id);
+}
+
+function aiSkillPriority(game: GameState, side: Side, skillId: string) {
+  const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+  const attackBreach = ["recon", "smoke", "dark", "curve", "flash", "aftershock", "paint", "shock", "relay", "tailwind", "updraft", "gear", "blast", "stim", "trip", "camera", "turret", "alarm", "hot", "shadow"];
+  const attackPostplant = ["trip", "turret", "alarm", "camera", "hot", "smoke", "dark", "stim", "recon", "shock", "flash", "aftershock", "paint", "relay", "tailwind", "shadow", "blast", "updraft", "gear", "curve"];
+  const defenseHold = ["trip", "turret", "alarm", "camera", "smoke", "dark", "stim", "hot", "recon", "flash", "aftershock", "paint", "relay", "shock", "tailwind", "shadow", "blast", "updraft", "gear", "curve"];
+  const defenseRetake = ["recon", "smoke", "dark", "flash", "aftershock", "paint", "shock", "relay", "tailwind", "shadow", "blast", "stim", "trip", "turret", "alarm", "camera", "hot", "updraft", "gear", "curve"];
+  const order = side === "attack"
+    ? spikeActive ? attackPostplant : attackBreach
+    : spikeActive ? defenseRetake : defenseHold;
+  const index = order.indexOf(skillId);
+  return index < 0 ? order.length : index;
 }
 
 function aiWatchDirection(game: GameState, agent: Agent, intel: AiEnemyIntel[], kind: "trip" | "turret") {
@@ -1742,7 +1982,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       return true;
     }
 
-    const definitions = AGENTS[agent.name].skills.filter((definition) => (agent.skills[definition.id] ?? 0) > 0);
+    const definitions = [...AGENTS[agent.name].skills]
+      .filter((definition) => (agent.skills[definition.id] ?? 0) > 0)
+      .sort((a, b) => aiSkillPriority(game, side, a.id) - aiSkillPriority(game, side, b.id));
     for (const definition of definitions) {
       const from = agent.region;
       const begin = () => applyActionStartFire(game, agent);
@@ -1854,6 +2096,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "trip" || definition.id === "turret") {
+        if (side === "attack" && definition.id === "turret" && attackPlanPhase(game) !== "execute" && attackPlanPhase(game) !== "postplant" && distance(agent.region, objective) > 1) continue;
         const direction = aiWatchDirection(game, agent, intel, definition.id);
         if (direction === undefined) continue;
         if (!begin()) return true;
@@ -1863,6 +2106,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "camera" || definition.id === "alarm") {
+        if (side === "attack" && definition.id === "alarm" && attackPlanPhase(game) !== "execute" && attackPlanPhase(game) !== "postplant") continue;
         const kind = definition.id;
         const duplicate = game.deployables.some((item) => item.kind === kind && item.owner === side && (kind === "camera" ? item.ownerAgentId === agent.id : item.region === agent.region));
         if (duplicate) continue;
@@ -2009,7 +2253,7 @@ function analysisInsights(game: GameState) {
       ? `${rateGap > 0 ? "공격팀" : "수비팀"} 명중률이 ${Math.abs(rateGap)}%p 앞섭니다. 낮은 쪽은 정면 재교전보다 이탈·트레이드가 유리합니다.`
       : "양 팀 명중률 차이가 작습니다. 피해 집중과 생존 총기 보존이 더 중요한 구간입니다.";
   const third = game.spike.status === "carried"
-    ? `공격 작전은 ‘${game.attackPlan.label}’·${attackTempoLabel(game.attackPlan.tempo)}이며 현재 ${attackPlanPhaseLabel(game)} 단계입니다. ${game.attackPlan.readout}.`
+    ? `공격은 ‘${game.attackPlan.label}’·${attackFormationLabel(game.attackPlan)}, 수비는 ‘${game.defensePlan.label}’입니다. 공격은 현재 ${attackPlanPhaseLabel(game)} 단계이며 ${game.attackPlan.readout}.`
     : ["planting", "planted", "half", "defusing"].includes(game.spike.status)
       ? `스파이크 ${SPIKE_STATUS_LABEL[game.spike.status]} 단계입니다. 수비 재진입과 해체 진행이 최우선입니다.`
       : `현재 승리 조건: ${game.winReason ?? SPIKE_STATUS_LABEL[game.spike.status]}.`;
@@ -2020,7 +2264,8 @@ function MatchAnalysisPanel({ game, compact = false }: { game: GameState; compac
   const insights = analysisInsights(game);
   return <section className={`match-analysis ${compact ? "compact" : ""}`} aria-label="AI 경기 분석">
     <header><div><span>TACTICAL ANALYSIS</span><strong>{game.winner ? "라운드 분석" : "실시간 전술 분석"}</strong></div><small>실제 교전·행동 데이터 기준</small></header>
-    <div className="analysis-plan"><span>ATK PLAN</span><b>{game.attackPlan.label} · {attackTempoLabel(game.attackPlan.tempo)}</b><small>{attackPlanPhaseLabel(game)} · 목표 {game.attackPlan.targetSite} · 최종 진입 전술 {game.attackPlan.commitCycle}<br />{game.attackPlan.readout}</small></div>
+    <div className="analysis-plan"><span>ATK PLAN</span><b>{game.attackPlan.label} · {attackTempoLabel(game.attackPlan.tempo)}</b><small>{attackFormationLabel(game.attackPlan)} · {attackPlanPhaseLabel(game)} · 목표 {game.attackPlan.targetSite} · 최종 진입 전술 {game.attackPlan.commitCycle}<br />{game.attackPlan.readout}</small></div>
+    <div className="analysis-plan defense-plan"><span>DEF PLAN</span><b>{game.defensePlan.label}</b><small>A {game.defensePlan.distribution.A} · MID {game.defensePlan.distribution.MID} · B {game.defensePlan.distribution.B}<br />{game.defensePlan.readout}</small></div>
     <div className="analysis-teams">
       {(["defense", "attack"] as Side[]).map((side) => {
         const stats = game.analytics[side];
@@ -2163,9 +2408,13 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
 }
 
 function autoDeployDefense(game: GameState) {
-  const positions = [10, 13, 7, 10, 13];
+  const positions = [
+    ...Array(game.defensePlan.distribution.A).fill(10),
+    ...Array(game.defensePlan.distribution.MID).fill(7),
+    ...Array(game.defensePlan.distribution.B).fill(13),
+  ];
   game.teams.defense.agents.forEach((agent, index) => {
-    agent.region = positions[index % positions.length];
+    agent.region = positions[index] ?? 7;
   });
 }
 
@@ -2179,8 +2428,9 @@ function prepareAiVsAiRound(game: GameState) {
   game.selectedAgentId = game.teams.defense.agents.find((agent) => agent.alive)?.id ?? null;
   addLog(game, "AI 대 AI 관전 시작 · 양 팀 자동 구매와 수비 배치를 완료했습니다.");
   addLog(game, `공격 AI 작전 브리핑 · ${game.attackPlan.label} · ${attackTempoLabel(game.attackPlan.tempo)} · 전술 ${game.attackPlan.commitCycle}부터 최종 진입.`);
-  addAnalyticsEvent(game, "defense", "objective", "AI 자동 수비 배치 완료");
-  addAnalyticsEvent(game, "attack", "objective", `작전 선택 · ${game.attackPlan.label}`);
+  addLog(game, `수비 AI 작전 브리핑 · ${game.defensePlan.label} · ${game.defensePlan.readout}.`);
+  addAnalyticsEvent(game, "defense", "objective", `수비 진형 · ${game.defensePlan.label}`);
+  addAnalyticsEvent(game, "attack", "objective", `작전 선택 · ${game.attackPlan.label} · ${attackFormationLabel(game.attackPlan)}`);
   game.turnStartContactQueue = game.teams.defense.agents.filter((agent) => agent.alive).map((agent) => agent.id);
   queueNextTurnStartContact(game);
 }
@@ -3463,7 +3713,10 @@ export default function Home() {
       continueGroupMovement(draft);
       return;
     }
-    if (side === "attack") adaptAttackPlan(draft);
+    if (side === "attack") {
+      updateAttackLurkerPlan(draft);
+      adaptAttackPlan(draft);
+    } else updateDefensePlanReadout(draft);
     const pendingShock = draft.aftershocks
       .filter((effect) => effect.owner !== side && draft.teamTurns[side] >= effect.readyOnTurn)
       .flatMap((effect) => effect.targetIds.map((agentId) => ({ effect, agent: getAgent(draft, agentId) })))
@@ -3560,9 +3813,14 @@ export default function Home() {
     const cards = team.hand.filter((card) => !card.used).sort((a, b) => priority[a.kind] - priority[b.kind]);
     for (const card of cards) {
       const cardsUsedByAgent = (agent: Agent) => team.hand.filter((item) => item.used && item.committedAgentId === agent.id).length;
+      const rotationRank = (agent: Agent) => {
+        const index = Math.max(0, team.agents.findIndex((item) => item.id === agent.id));
+        return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
+      };
+      const strategicBias = (agent: Agent) => side === "attack" && isAttackLurker(draft, agent) && draft.attackPlan.lurkerMode === "probe" ? -6 : 0;
       const candidates = team.agents
         .filter((agent) => agent.alive && canUseCard(card, agent))
-        .sort((a, b) => cardsUsedByAgent(a) - cardsUsedByAgent(b));
+        .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
       for (const agent of candidates) {
         if (card.kind === "control") {
           const directions = aiStrategicWaitDirections(draft, agent, 2);
