@@ -283,6 +283,7 @@ interface CombatScene {
   choices: Record<string, CombatChoice>;
   canMoverAttack: boolean;
   moverAimBonus: number;
+  holderAimBonus: number;
   moverMoveBonus: number;
   moverPriorityBase: number;
   moverRetreated: boolean;
@@ -945,7 +946,7 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
     addLog(game, `스파이크가 ${REGIONS.find((region) => region.id === defender.region)?.name}에 떨어졌습니다.`);
   }
   addLog(game, `${defender.name} 제거.`);
-  if (attacker && defender.team === game.turnSide) {
+  if (attacker) {
     addTrade(game, { enemyId: attacker.id, team: defender.team, sourceId: defender.id });
     addLog(game, `${attacker.name}에게 트레이드 표식이 생겼습니다.`);
   }
@@ -978,20 +979,29 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const moverBefore = { hp: mover.hp, armor: mover.armor };
   const enemyBefore = { hp: enemy.hp, armor: enemy.armor };
 
-  let tradeAim = 0;
-  let tradePriority = 0;
-  const tradeIndex = game.trade.findIndex((trade) => trade.enemyId === enemy.id && trade.team === mover.team && trade.sourceId !== mover.id);
-  if (tradeIndex >= 0) {
-    tradeAim = 1;
-    tradePriority = 1;
-    game.trade.splice(tradeIndex, 1);
+  let moverTradeAim = 0;
+  let moverTradePriority = 0;
+  const moverTradeIndex = game.trade.findIndex((trade) => trade.enemyId === enemy.id && trade.team === mover.team && trade.sourceId !== mover.id);
+  if (moverTradeIndex >= 0) {
+    moverTradeAim = 1;
+    moverTradePriority = 1;
+    game.trade.splice(moverTradeIndex, 1);
     addLog(game, `${mover.name}이 ${enemy.name}의 트레이드 표식을 소비합니다. 에임 +1 / 우선도 -1.`);
+  }
+  let holderTradeAim = 0;
+  let holderTradePriority = 0;
+  const holderTradeIndex = game.trade.findIndex((trade) => trade.enemyId === mover.id && trade.team === enemy.team && trade.sourceId !== enemy.id);
+  if (holderTradeIndex >= 0) {
+    holderTradeAim = 1;
+    holderTradePriority = 1;
+    game.trade.splice(holderTradeIndex, 1);
+    addLog(game, `${enemy.name}이 ${mover.name}의 트레이드 표식을 소비합니다. 에임 +1 / 우선도 -1.`);
   }
 
   const moverStats = finalStats(game, mover);
   const enemyStats = finalStats(game, enemy);
-  const moverPrio = Math.max(1, moverPriority + moverStats.priorityPenalty - moverStats.priorityBoost - tradePriority);
-  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + enemyStats.priorityPenalty - enemyStats.priorityBoost);
+  const moverPrio = Math.max(1, moverPriority + moverStats.priorityPenalty - moverStats.priorityBoost - moverTradePriority);
+  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority);
   const simultaneous = moverPrio === enemyPrio;
   const firstActorId = moverPrio <= enemyPrio ? mover.id : enemy.id;
   const secondActorId = firstActorId === mover.id ? enemy.id : mover.id;
@@ -1013,7 +1023,8 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     resolved: false,
     choices: {},
     canMoverAttack: canAttack,
-    moverAimBonus: tradeAim,
+    moverAimBonus: moverTradeAim,
+    holderAimBonus: holderTradeAim,
     moverMoveBonus,
     moverPriorityBase: moverPriority,
     moverRetreated: false,
@@ -1050,6 +1061,7 @@ function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable)
     choices: {},
     canMoverAttack: profile.canAttack,
     moverAimBonus: 0,
+    holderAimBonus: 0,
     moverMoveBonus: profile.moveBonus,
     moverPriorityBase: profile.priority,
     moverRetreated: false,
@@ -2979,9 +2991,10 @@ export default function Home() {
     scene.evaded = false;
     const shooterIsMover = shooter.id === scene.mover.id;
     const targetMoveBonus = target.id === scene.mover.id ? scene.moverMoveBonus : 0;
-    const shot = makeShot(draft, shooter, target, scene.range, !shooterIsMover && scene.waiting, shooterIsMover ? scene.moverAimBonus : 0, targetMoveBonus);
+    const shot = makeShot(draft, shooter, target, scene.range, !shooterIsMover && scene.waiting, shooterIsMover ? scene.moverAimBonus : scene.holderAimBonus, targetMoveBonus);
     recordShot(draft, shooter.team, shot, `${shooter.name} → ${target.name}`);
     if (shooterIsMover) scene.moverAimBonus = 0;
+    else scene.holderAimBonus = 0;
     if (shot.hit) applyDamage(draft, shooter, target, shot.damage, `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"}`);
     else addLog(draft, `${shooter.name} → ${target.name} 빗나감 [${shot.aimRoll}/${shot.aimSize} - ${shot.moveRoll}/${shot.moveSize}]`);
     refreshCombatView(scene, shooter, shot, shooterBefore);
@@ -3039,7 +3052,7 @@ export default function Home() {
     if (agent.id === scene.mover.id) scene.moverRetreated = true;
     const opponentId = agent.id === scene.mover.id ? scene.holder.id : scene.mover.id;
     const opponent = getAgent(draft, opponentId);
-    if (agent.team === draft.turnSide) addTrade(draft, { enemyId: opponentId, team: agent.team, sourceId: agent.id });
+    addTrade(draft, { enemyId: opponentId, team: agent.team, sourceId: agent.id });
     triggerHazards(draft, agent, from, region);
     const enemyToRemember = agent.team === draft.turnSide ? opponent : agent;
     if (enemyToRemember) rememberEnemy(draft, draft.turnSide, enemyToRemember);
@@ -3083,11 +3096,12 @@ export default function Home() {
     }
     if (holderChoice.type === "attack") {
       if (mover.status.evadeReady) { mover.status.evadeReady = false; scene.evaded = true; lines.push(`${mover.name} 회피`); }
-      else holderShot = makeShot(draft, holder, mover, scene.range, scene.waiting, 0, scene.moverMoveBonus);
+      else holderShot = makeShot(draft, holder, mover, scene.range, scene.waiting, scene.holderAimBonus, scene.moverMoveBonus);
     }
     if (moverShot) recordShot(draft, mover.team, moverShot, `${mover.name} → ${holder.name}`);
     if (holderShot) recordShot(draft, holder.team, holderShot, `${holder.name} → ${mover.name}`);
     scene.moverAimBonus = 0;
+    scene.holderAimBonus = 0;
     if (moverShot?.hit) applyDamage(draft, mover, holder, moverShot.damage, `${mover.name} ${moverShot.head ? "헤드샷" : "몸통 명중"}`);
     if (holderShot?.hit) applyDamage(draft, holder, mover, holderShot.damage, `${holder.name} ${holderShot.head ? "헤드샷" : "몸통 명중"}`);
     if (moverChoice.type === "attack" && moverShot) lines.push(moverShot.hit ? `${mover.name} 피해 ${moverShot.damage}` : `${mover.name} 빗나감`);
@@ -3098,7 +3112,7 @@ export default function Home() {
     if (holder.alive && holderChoice.type === "retreat" && holderChoice.retreatRegion) executeCombatRetreat(draft, scene, holder, holderChoice.retreatRegion);
     if (moverChoice.type === "advance" && mover.alive) {
       scene.moverAdvanced = true;
-      if (mover.team === draft.turnSide) addTrade(draft, { enemyId: holder.id, team: mover.team, sourceId: mover.id });
+      addTrade(draft, { enemyId: holder.id, team: mover.team, sourceId: mover.id });
       lines.push(`${mover.name} 계속 이동`);
     }
     const exited = moverChoice.type === "retreat" || holderChoice.type === "retreat" || moverChoice.type === "advance";
@@ -3196,7 +3210,7 @@ export default function Home() {
     scene.resolved = true;
     scene.phase = "result";
     scene.pendingNextActorId = null;
-    if (mover.team === draft.turnSide) addTrade(draft, { enemyId: holder.id, team: mover.team, sourceId: mover.id });
+    addTrade(draft, { enemyId: holder.id, team: mover.team, sourceId: mover.id });
     scene.result = `${mover.name}이 공격하지 않고 남은 이동을 계속합니다.`;
   });
 
@@ -3717,8 +3731,10 @@ export default function Home() {
             const acting = combatScene.phase === "choice" && fighter.id === combatScene.actorId;
             const liveAgent = getAgent(game, fighter.id);
             const liveStats = liveAgent ? finalStats(game, liveAgent) : null;
+            const tradeBonus = isMover ? combatScene.moverAimBonus : combatScene.holderAimBonus;
             return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} team-${fighter.team} ${fighter.kind === "turret" ? "turret-fighter" : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${opponentShot?.hit ? "landed" : ""}`}>
               {acting && <div className="acting-ribbon">지금 행동</div>}
+              {tradeBonus > 0 && <div className="trade-ribbon">TRADE · AIM +1 · 우선도 향상</div>}
               <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? "진입" : combatScene.waiting ? "대기 반응" : "범위 내 반응"}</div>
               <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span></div>
               <h3>{fighter.name}</h3><p>{fighter.kind === "turret" ? "설치물 · 에임 5 · 피해 1" : `${ROLE_LABEL[fighter.role]} · ${WEAPONS[fighter.weapon].name}`}</p>

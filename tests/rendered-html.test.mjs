@@ -181,6 +181,21 @@ test("defense AI holds the site perimeter, spreads cards, and retreats when heav
   assert.match(page, /function aiRetreatDestination/);
 });
 
+test("trade bonuses can be created and consumed by either side of a continuing encounter", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /holderAimBonus: number/);
+  assert.match(page, /trade\.enemyId === mover\.id && trade\.team === enemy\.team/);
+  assert.match(page, /holderTradePriority/);
+  assert.match(page, /scene\.holderAimBonus/);
+  assert.match(page, /if \(attacker\) \{\s*addTrade\(game, \{ enemyId: attacker\.id, team: defender\.team/);
+  assert.doesNotMatch(page, /defender\.team === game\.turnSide/);
+  assert.match(page, /TRADE · AIM \+1 · 우선도 향상/);
+  assert.match(css, /\.trade-ribbon/);
+});
+
 test("sniper waits target exact range-two regions and respect every smoke edge", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function waitTargetsFor\(agent: Agent\)/);
