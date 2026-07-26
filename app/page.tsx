@@ -1258,18 +1258,18 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const moverTradeIndex = game.trade.findIndex((trade) => trade.enemyId === enemy.id && trade.team === mover.team && trade.sourceId !== mover.id);
   if (moverTradeIndex >= 0) {
     moverTradeAim = 1;
-    moverTradePriority = 1;
+    moverTradePriority = 2;
     game.trade.splice(moverTradeIndex, 1);
-    addLog(game, `${mover.name}이 ${enemy.name}의 트레이드 표식을 소비합니다. 에임 +1 / 우선도 -1.`);
+    addLog(game, `${mover.name}이 ${enemy.name}의 트레이드 표식을 소비합니다. 에임 +1 / 우선도 2단계 향상.`);
   }
   let holderTradeAim = 0;
   let holderTradePriority = 0;
   const holderTradeIndex = game.trade.findIndex((trade) => trade.enemyId === mover.id && trade.team === enemy.team && trade.sourceId !== enemy.id);
   if (holderTradeIndex >= 0) {
     holderTradeAim = 1;
-    holderTradePriority = 1;
+    holderTradePriority = 2;
     game.trade.splice(holderTradeIndex, 1);
-    addLog(game, `${enemy.name}이 ${mover.name}의 트레이드 표식을 소비합니다. 에임 +1 / 우선도 -1.`);
+    addLog(game, `${enemy.name}이 ${mover.name}의 트레이드 표식을 소비합니다. 에임 +1 / 우선도 2단계 향상.`);
   }
 
   const moverStats = finalStats(game, mover);
@@ -4505,7 +4505,7 @@ export default function Home() {
             const tradeBonus = isMover ? combatScene.moverAimBonus : combatScene.holderAimBonus;
             return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} team-${fighter.team} ${fighter.kind === "turret" ? "turret-fighter" : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${opponentShot?.hit ? "landed" : ""}`}>
               {acting && <div className="acting-ribbon">지금 행동</div>}
-              {tradeBonus > 0 && <div className="trade-ribbon">TRADE · AIM +1 · 우선도 향상</div>}
+              {tradeBonus > 0 && <div className="trade-ribbon">TRADE · AIM +1 · 우선도 +2단계</div>}
               {isMover && combatScene.offAngle && <div className="ambush-ribbon">AMBUSH · 우선도 +1 · 대기 무효</div>}
               <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? combatScene.offAngle ? "측면 공격" : "진입" : combatScene.waiting ? "대기 반응" : combatScene.offAngle ? "일반 대응 · 대기 보너스 없음" : "범위 내 반응"}</div>
               <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span></div>
@@ -4574,7 +4574,7 @@ export default function Home() {
           <article><b>02</b><h3>지속 교전</h3><p>거리 1에서 다른 방향을 대기 중인 적을 선택 공격하면 기습으로 공격 우선도가 1단계 향상됩니다. 같은 구역에서는 대기 방향과 무관하게 대기 우선도 1입니다. 점유 구역에 대기를 시도하면 먼저 일반 교전하며 시도자는 후퇴할 수 없습니다. 동일 우선도에서 후퇴하면 그 동시 공격에 무빙 +2를 받습니다.</p></article>
           <article><b>03</b><h3>추가행동</h3><p>카드 한 장마다 해당 요원이 추가행동 1회를 얻습니다. 스킬, 설치·해체, 총기·스파이크 줍기에 사용합니다.</p></article>
           <article><b>04</b><h3>시야</h3><p>아군이 있는 구역과 인접 구역만 확인합니다. 연막은 시야와 대기를 끊지만 이동은 막지 않습니다.</p></article>
-          <article><b>05</b><h3>트레이드</h3><p>아군 사망·이탈·정찰 장치 파괴 시 적에게 표식. 같은 턴 다음 아군의 첫 교전에 에임 +1, 우선도 1단계 향상.</p></article>
+          <article><b>05</b><h3>트레이드</h3><p>아군 사망·이탈·정찰 장치 파괴 시 적에게 표식. 같은 턴 다음 아군의 첫 교전에 에임 +1, 우선도 2단계 향상. 기본 진입 우선도 3은 대기 우선도 1과 동률이 되어 동시 사격합니다.</p></article>
           <article><b>06</b><h3>스파이크</h3><p>설치는 다음 공격 턴 시작, 최종 해체는 다음 수비 턴 시작에 완료됩니다. 같은 시점이면 해체가 먼저입니다.</p></article>
         </div>
         <p className="prototype-note">PC와 모바일에서 2인 핫시트 또는 공격팀 AI 모드로 플레이할 수 있습니다. 지속 교전, 라운드 경제, 장비 보존과 역할 스킬을 지원합니다.</p>

@@ -233,10 +233,12 @@ test("trade bonuses can be created and consumed by either side of a continuing e
   assert.match(page, /holderAimBonus: number/);
   assert.match(page, /trade\.enemyId === mover\.id && trade\.team === enemy\.team/);
   assert.match(page, /holderTradePriority/);
+  assert.match(page, /moverTradePriority = 2/);
+  assert.match(page, /holderTradePriority = 2/);
   assert.match(page, /scene\.holderAimBonus/);
   assert.match(page, /if \(attacker\) \{\s*addTrade\(game, \{ enemyId: attacker\.id, team: defender\.team/);
   assert.doesNotMatch(page, /defender\.team === game\.turnSide/);
-  assert.match(page, /TRADE · AIM \+1 · 우선도 향상/);
+  assert.match(page, /TRADE · AIM \+1 · 우선도 \+2단계/);
   assert.match(css, /\.trade-ribbon/);
 });
 
