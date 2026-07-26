@@ -217,8 +217,11 @@ test("defense AI deploys stack, balanced, mid-control, and weighted formations w
   assert.match(page, /function defenseThreatSite/);
   assert.match(page, /function defenseShouldFlank/);
   assert.match(page, /function defensePlanWaypoints/);
+  assert.match(page, /function defenseThreatStrength/);
   assert.match(page, /function updateDefensePlanReadout/);
-  assert.match(page, /스택 유지 · 설치 후 집단 재진입/);
+  assert.match(page, /1명 앵커 유지 · 본대 보강과 1명 후방 우회/);
+  assert.match(page, /game\.cycle >= 3/);
+  assert.match(page, /laneIndex === laneAgents\.length - 1/);
   assert.match(page, /Math\.floor\(laneAgents\.length \/ 2\)/);
   assert.match(page, /\.\.\.Array\(game\.defensePlan\.distribution\.A\)\.fill\(10\)/);
   assert.match(page, /className="analysis-plan defense-plan"/);
@@ -276,10 +279,13 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /function adaptAttackPlan/);
   assert.match(page, /const readCycle = Math\.max\(3, plan\.commitCycle - 2\)/);
   assert.match(page, /!intel\.length && game\.cycle < plan\.commitCycle - 1/);
-  assert.match(page, /aPresence < bPresence \? "A" : "B"/);
-  assert.match(page, /관측 수비 A \$\{aPresence\} · B \$\{bPresence\}/);
+  assert.match(page, /function attackSiteSituation/);
+  assert.match(page, /const occupiedSite =/);
+  assert.match(page, /alternativeDanger \+ 5 < currentDanger/);
+  assert.match(page, /현장 재판독 A \$\{aPresence\}\/위험/);
   assert.match(page, /function aiAttackDestination/);
-  assert.match(page, /return !REGIONS\.find\(\(item\) => item\.id === region\)\?\.site/);
+  assert.match(page, /return site === game\.attackPlan\.targetSite && game\.cycle >= 2 && attackEntryIsOpen\(game, site\)/);
+  assert.match(page, /knownThreatScoreAtRegion\(game, "attack", a\)/);
   assert.match(page, /routeDistance\(destination\) > routeDistance\(agent\.region\)/);
   assert.match(page, /game\.cycle >= 12 \|\| game\.cycle >= game\.attackPlan\.commitCycle/);
   assert.match(page, /const attackWaypoints = agent\.team === "attack" \? attackPlanWaypoints/);
@@ -288,6 +294,24 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /작전 선택 · \$\{game\.attackPlan\.label\}/);
   assert.match(page, /className="analysis-plan"/);
   assert.match(css, /\.analysis-plan/);
+});
+
+test("mid-round AI replans, plants secured sites, and uses utility for entry and retake lanes", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const SITE_REGIONS:/);
+  assert.match(page, /const ATTACK_ENTRY_EDGES:/);
+  assert.match(page, /const DEFENDER_BACK_EDGES:/);
+  assert.match(page, /function aiPlantAssessment/);
+  assert.match(page, /plantAssessment\?\.shouldPlant/);
+  assert.match(page, /사이트 안전 확인 · 주변 아군/);
+  assert.match(page, /function aiEntryUtilityRegion/);
+  assert.match(page, /entryRegion = aiEntryUtilityRegion\(game, agent, currentAndAdjacent\)/);
+  assert.match(page, /definition\.id === "flash" \? aiEntryUtilityRegion/);
+  assert.match(page, /edgeMatches\(edge, DEFENDER_BACK_EDGES\[targetSite\]\)/);
+  assert.match(page, /edgeMatches\(edge, ATTACK_ENTRY_EDGES\[targetSite\]\)/);
+  assert.match(page, /mainBodyDistance > 2 && !knownHold/);
+  assert.match(page, /side === "defense" && !spikeActive && !defenseThreatSite\(game\)/);
+  assert.match(page, /attackSiteSituation\(draft, draft\.attackPlan\.targetSite\)\.alliesOnSite\.length > 0/);
 });
 
 test("AI protects spike transport, recovers drops, and converts defense to spike denial", async () => {
