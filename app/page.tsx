@@ -1192,35 +1192,61 @@ interface ShotResult {
   hit: boolean;
   head: boolean;
   damage: number;
+  bodyDamage: number;
+  headDamage: number;
   aimRoll: number;
   moveRoll: number;
   aimSize: number;
   moveSize: number;
 }
 
-function makeShot(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number): ShotResult {
+function appliedAimSize(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number) {
   const weapon = WEAPONS[attacker.weapon];
-  const stats = finalStats(game, attacker);
-  let aim = stats.aim + aimBonus + (defender.detected ? 1 : 0);
+  let aim = finalStats(game, attacker).aim + aimBonus + (defender.detected ? 1 : 0);
   if (weapon.type === "normal" && range === 0) aim += 1;
   if (weapon.type === "shotgun") aim += range === 0 ? 2 : -2;
   if (weapon.type === "sniper" && waiting) aim += 1;
   if (weapon.type === "sniper" && range === 0) aim -= 1;
   if (weapon.type !== "sniper" && range >= 2) aim -= 1;
-  aim = Math.max(1, aim);
-  const move = Math.max(1, finalStats(game, defender).move + defenderMoveBonus);
+  return Math.max(1, aim);
+}
+
+function appliedMoveSize(game: GameState, defender: Agent, defenderMoveBonus: number) {
+  return Math.max(1, finalStats(game, defender).move + defenderMoveBonus);
+}
+
+function appliedDamageProfile(attacker: Agent, defender: Agent, range: number) {
+  const weapon = WEAPONS[attacker.weapon];
+  const rangeBonus = weapon.type === "shotgun" && range === 0 ? 1 : 0;
+  const vulnerableBonus = defender.status.vulnerable ? 1 : 0;
+  return {
+    body: weapon.body + rangeBonus + vulnerableBonus,
+    head: weapon.head + rangeBonus + vulnerableBonus,
+  };
+}
+
+function makeShot(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number): ShotResult {
+  const aim = appliedAimSize(game, attacker, defender, range, waiting, aimBonus);
+  const move = appliedMoveSize(game, defender, defenderMoveBonus);
+  const damageProfile = appliedDamageProfile(attacker, defender, range);
   const aimRoll = roll(aim);
   const moveRoll = roll(move);
   const value = aimRoll - moveRoll;
   const head = value >= 5;
-  let damage = value <= 0 ? 0 : head ? weapon.head : weapon.body;
-  if (weapon.type === "shotgun" && range === 0 && damage > 0) damage += 1;
-  if (defender.status.vulnerable && damage > 0) {
-    damage += 1;
-    defender.status.vulnerable = false;
-  }
+  const damage = value <= 0 ? 0 : head ? damageProfile.head : damageProfile.body;
+  if (defender.status.vulnerable && damage > 0) defender.status.vulnerable = false;
   game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === attacker.id && effect.consumeOnAttack));
-  return { hit: value > 0, head, damage, aimRoll, moveRoll, aimSize: aim, moveSize: move };
+  return {
+    hit: value > 0,
+    head,
+    damage,
+    bodyDamage: damageProfile.body,
+    headDamage: damageProfile.head,
+    aimRoll,
+    moveRoll,
+    aimSize: aim,
+    moveSize: move,
+  };
 }
 
 function cancelProgress(game: GameState, agent: Agent) {
@@ -3040,6 +3066,47 @@ function MatchAnalysisPanel({ game, compact = false }: { game: GameState; compac
   </section>;
 }
 
+function CombatVitalSlots({ fighter }: { fighter: CombatFighterView }) {
+  const slots = (kind: "hp" | "armor", before: number, after: number) => (
+    <span className={`combat-vital-slots ${kind}`} aria-label={`${kind === "hp" ? "체력" : "방어구"} ${after}/2`}>
+      {[0, 1].map((index) => {
+        const state = index < after ? "filled" : index < before ? "lost" : "empty";
+        return <i key={`${kind}-${index}`} className={state} aria-hidden="true">{kind === "hp" ? "♥" : "◆"}</i>;
+      })}
+    </span>
+  );
+  return <div className="combat-vital-display">
+    <span><small>HP</small>{slots("hp", fighter.hpBefore, fighter.hpAfter)}</span>
+    <span><small>ARMOR</small>{slots("armor", fighter.armorBefore, fighter.armorAfter)}</span>
+  </div>;
+}
+
+function combatAppliedStats(game: GameState, scene: CombatScene, fighter: CombatFighterView, incomingShot: ShotResult | null) {
+  const agent = getAgent(game, fighter.id);
+  const opponentView = fighter.id === scene.mover.id ? scene.holder : scene.mover;
+  const opponent = getAgent(game, opponentView.id);
+  if (!agent || !opponent) return null;
+  const isMover = fighter.id === scene.mover.id;
+  const aimBonus = isMover ? scene.moverAimBonus : scene.holderAimBonus;
+  const previewAim = appliedAimSize(game, agent, opponent, scene.range, !isMover && scene.waiting, aimBonus);
+  const previewMove = appliedMoveSize(game, agent, isMover ? scene.moverMoveBonus : 0);
+  const previewDamage = appliedDamageProfile(agent, opponent, scene.range);
+  const aim = fighter.shot?.aimSize ?? previewAim;
+  const move = incomingShot?.moveSize ?? previewMove;
+  const bodyDamage = fighter.shot?.bodyDamage ?? previewDamage.body;
+  const headDamage = fighter.shot?.headDamage ?? previewDamage.head;
+  return {
+    aim,
+    move,
+    bodyDamage,
+    headDamage,
+    aimDelta: aim - ROLE_STATS[agent.role].aim,
+    moveDelta: move - ROLE_STATS[agent.role].move,
+    bodyDamageDelta: bodyDamage - WEAPONS[agent.weapon].body,
+    headDamageDelta: headDamage - WEAPONS[agent.weapon].head,
+  };
+}
+
 interface SelectionScreenProps {
   attackPick: string[];
   defensePick: string[];
@@ -4355,14 +4422,15 @@ export default function Home() {
     const moveSize = Math.max(1, finalStats(draft, target).move + scene.moverMoveBonus);
     const moveRoll = roll(moveSize);
     const hit = aimRoll - moveRoll > 0;
-    const vulnerableBonus = hit && target.status.vulnerable ? 1 : 0;
-    const damage = hit ? 1 + vulnerableBonus : 0;
-    const shot: ShotResult = { hit, head: false, damage, aimRoll, moveRoll, aimSize: 5, moveSize };
+    const vulnerableBonus = target.status.vulnerable ? 1 : 0;
+    const damagePower = 1 + vulnerableBonus;
+    const damage = hit ? damagePower : 0;
+    const shot: ShotResult = { hit, head: false, damage, bodyDamage: damagePower, headDamage: damagePower, aimRoll, moveRoll, aimSize: 5, moveSize };
     recordShot(draft, turret.owner, shot, `${scene.holder.name} → ${target.name}`);
     scene.mover.shot = null;
     scene.holder.shot = shot;
     if (hit) {
-      if (vulnerableBonus) target.status.vulnerable = false;
+      if (vulnerableBonus > 0) target.status.vulnerable = false;
       applyDamage(draft, getAgent(draft, turret.ownerAgentId), target, damage, "포탑 명중");
       draft.deployables = draft.deployables.filter((item) => item.id !== turret.id);
       scene.result = `${scene.holder.name} 명중 · 피해 ${damage}. 포탑은 공격 후 소멸합니다.`;
@@ -5182,9 +5250,13 @@ export default function Home() {
             const survived = fighter.hpAfter > 0;
             const acting = combatScene.phase === "choice" && fighter.id === combatScene.actorId;
             const liveAgent = getAgent(game, fighter.id);
-            const liveStats = liveAgent ? finalStats(game, liveAgent) : null;
+            const appliedStats = fighter.kind === "agent" ? combatAppliedStats(game, combatScene, fighter, opponentShot) : null;
             const tradeBonus = isMover ? combatScene.moverAimBonus : combatScene.holderAimBonus;
-            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} team-${fighter.team} ${fighter.kind === "turret" ? "turret-fighter" : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${opponentShot?.hit ? "landed" : ""}`}>
+            const statClass = (delta: number) => delta > 0 ? "buff" : delta < 0 ? "nerf" : "neutral";
+            const deltaLabel = (delta: number) => delta === 0 ? null : `(${delta > 0 ? "+" : ""}${delta})`;
+            const turretTarget = fighter.kind === "turret" ? getAgent(game, combatScene.mover.id) : null;
+            const turretDamage = shot?.bodyDamage ?? 1 + (turretTarget?.status.vulnerable ? 1 : 0);
+            return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} team-${fighter.team} ${fighter.kind === "turret" ? "turret-fighter" : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${shot && !shot.hit ? "missed-shot" : ""} ${opponentShot?.hit ? "landed incoming-hit" : ""} ${opponentShot?.head ? "incoming-headshot" : ""} ${opponentShot && !opponentShot.hit ? "incoming-miss" : ""}`}>
               {acting && <div className="acting-ribbon">지금 행동</div>}
               {tradeBonus > 0 && <div className="trade-ribbon">TRADE · AIM +1 · 우선도 +2단계</div>}
               {isMover && combatScene.offAngle && <div className="ambush-ribbon">AMBUSH · 우선도 +1 · 대기 무효</div>}
@@ -5192,10 +5264,15 @@ export default function Home() {
               <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span></div>
               <h3>{fighter.name}</h3><p>{fighter.kind === "turret" ? "설치물 · 에임 5 · 피해 1" : `${ROLE_LABEL[fighter.role]} · ${WEAPONS[fighter.weapon].name}`}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
-              <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div>
-              {fighter.kind === "turret" ? <div className="combat-live-stats"><span>MODE <b>AUTO</b></span><span>DMG <b>1</b></span><span>AIM <b>5</b></span><span>PRIO <b>2</b></span></div> : liveAgent && <div className="combat-live-stats"><span>HP <b>{liveAgent.hp}</b></span><span>ARMOR <b>{liveAgent.armor}</b></span><span>AIM <b>{liveStats?.aim}</b></span><span>MOVE <b>{liveStats?.move}</b></span></div>}
+              {fighter.kind === "turret" ? <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div> : <CombatVitalSlots fighter={fighter} />}
+              {fighter.kind === "turret" ? <div className="combat-live-stats"><span>MODE <b>AUTO</b></span><span className={turretDamage > 1 ? "buff" : "neutral"}>DMG <b>{turretDamage}</b><small>{turretDamage > 1 ? "(+1)" : null}</small></span><span>AIM <b>5</b><small>D5</small></span><span>PRIO <b>2</b></span></div> : liveAgent && appliedStats && <div className="combat-live-stats applied">
+                <span className={statClass(appliedStats.aimDelta)}>AIM <b>{appliedStats.aim}</b><small>D{appliedStats.aim} {deltaLabel(appliedStats.aimDelta)}</small></span>
+                <span className={statClass(appliedStats.moveDelta)}>MOVE <b>{appliedStats.move}</b><small>D{appliedStats.move} {deltaLabel(appliedStats.moveDelta)}</small></span>
+                <span className={statClass(appliedStats.bodyDamageDelta)} title={`현재 거리 ${combatScene.range}`}>BODY <b>{appliedStats.bodyDamage}</b><small>거리 {combatScene.range} {deltaLabel(appliedStats.bodyDamageDelta)}</small></span>
+                <span className={statClass(appliedStats.headDamageDelta)} title={`현재 거리 ${combatScene.range}`}>HEAD <b>{appliedStats.headDamage}</b><small>거리 {combatScene.range} {deltaLabel(appliedStats.headDamageDelta)}</small></span>
+              </div>}
               <div className={`combat-roll ${!shot ? "no-shot" : shot.hit ? shot.head ? "headshot" : "hit" : "miss"}`}>
-                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : fighter.kind === "turret" ? "TURRET HIT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? `피해 ${shot.damage}` : "피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : fighter.kind === "turret" ? "TARGET LOCK" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : fighter.kind === "turret" ? "포탑 자동 사격 대기" : "상대 행동 대기"}</small></div>}
+                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : fighter.kind === "turret" ? "TURRET HIT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? shot.head ? `헤드샷 피해 ${shot.damage}` : `몸통 피해 ${shot.damage}` : "빗나감 · 피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : fighter.kind === "turret" ? "TARGET LOCK" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : fighter.kind === "turret" ? "포탑 자동 사격 대기" : "상대 행동 대기"}</small></div>}
               </div>
             </article>;
           })}

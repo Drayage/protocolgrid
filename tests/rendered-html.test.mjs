@@ -490,3 +490,34 @@ test("turret attacks use the combat scene and weapon cards explain every modifie
   assert.match(css, /\.turret-avatar, \.turret-portrait/);
   assert.match(css, /\.weapon-rule-copy/);
 });
+
+test("combat UI shows applied dice, distance damage, vital slots, and distinct shot feedback", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /function appliedAimSize/);
+  assert.match(page, /function appliedMoveSize/);
+  assert.match(page, /function appliedDamageProfile/);
+  assert.match(page, /bodyDamage: damageProfile\.body/);
+  assert.match(page, /headDamage: damageProfile\.head/);
+  assert.match(page, /function combatAppliedStats/);
+  assert.match(page, /fighter\.shot\?\.aimSize \?\? previewAim/);
+  assert.match(page, /incomingShot\?\.moveSize \?\? previewMove/);
+  assert.match(page, /function CombatVitalSlots/);
+  assert.match(page, /\{\[0, 1\]\.map/);
+  assert.match(page, /className=\{statClass\(appliedStats\.aimDelta\)\}/);
+  assert.match(page, /BODY <b>\{appliedStats\.bodyDamage\}/);
+  assert.match(page, /HEAD <b>\{appliedStats\.headDamage\}/);
+  assert.match(page, /거리 \{combatScene\.range\}/);
+  assert.match(page, /incoming-headshot/);
+  assert.match(page, /missed-shot/);
+  assert.match(page, /빗나감 · 피해 없음/);
+  assert.match(page, /헤드샷 피해/);
+  assert.match(css, /\.combat-vital-slots\.hp i\.filled/);
+  assert.match(css, /\.combat-live-stats span\.buff/);
+  assert.match(css, /\.combat-live-stats span\.nerf/);
+  assert.match(css, /\.combat-roll\.miss/);
+  assert.match(css, /\.combat-fighter\.incoming-headshot/);
+  assert.match(css, /@keyframes headshotImpact/);
+});
