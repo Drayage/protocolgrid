@@ -454,3 +454,175 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .turret-avatar, .turret-portrait { background-color: #071216 !important; background-repeat: no-repeat !important; border-color: var(--amber) !important; box-shadow: 0 0 26px rgba(243,183,91,.28) !important; }
 .combat-fighter.turret-fighter { border-color: rgba(243,183,91,.38); background: linear-gradient(215deg, rgba(243,183,91,.1), rgba(255,255,255,.015)); }
 .combat-fighter.turret-fighter .combat-priority strong { color: var(--amber); }
+
+/* Live agent condition markers stay attached to every portrait and map token. */
+.agent-portrait-frame, .large-portrait-frame { position: relative; display: block; flex: 0 0 auto; }
+.agent-portrait-frame { width: 42px; height: 42px; }
+.large-portrait-frame { width: 54px; height: 54px; }
+.agent-status-badges, .combat-avatar > .agent-status-badges {
+  position: absolute !important;
+  z-index: 24;
+  top: auto !important;
+  right: -7px !important;
+  bottom: -6px !important;
+  left: auto !important;
+  display: flex;
+  max-width: calc(100% + 14px);
+  flex-wrap: wrap-reverse;
+  justify-content: flex-end;
+  gap: 2px;
+  width: auto;
+  height: auto;
+  color: inherit;
+  background: none;
+  border: 0;
+  transform: none;
+  pointer-events: none;
+}
+.agent-status-badges i {
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  color: #efffff;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: #071216;
+  box-shadow: 0 2px 7px #000, 0 0 8px color-mix(in srgb, currentColor, transparent 35%);
+  font: 900 8px var(--font-geist-mono), monospace;
+  font-style: normal;
+  line-height: 1;
+}
+.agent-status-badges.compact i { min-width: 13px; height: 13px; padding: 0 2px; font-size: 6px; }
+.agent-status-badges .status-blind { color: #fff2a3; background: #342b09; }
+.agent-status-badges .status-concussed { color: #bd9cff; background: #21123a; }
+.agent-status-badges .status-detected { color: var(--cyan); background: #062d2c; }
+.agent-status-badges .status-vulnerable { color: #ff6680; background: #390912; }
+.agent-status-badges .status-aftershock { color: #ff9b52; background: #371707; }
+.agent-status-badges .status-aim-down, .agent-status-badges .status-move-down { color: #ff8798; background: #301017; border-radius: 3px; }
+.unit-token > .agent-status-badges { right: -7px !important; bottom: -7px !important; max-width: 42px; }
+.combat-avatar > .agent-status-badges { right: -9px !important; bottom: -8px !important; max-width: 92px; }
+.fight-action em { margin-top: 4px; color: rgba(24,4,8,.72); font: 700 6px var(--font-geist-mono), monospace; font-style: normal; letter-spacing: .02em; }
+.fight-action:disabled em { color: #607276; }
+
+/* Code-native weapon silhouettes: the same readable outline is used in shops and on the map. */
+.weapon-art {
+  --gun: #c7dcda;
+  --gun-dark: #526b70;
+  --gun-accent: var(--cyan);
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 74px;
+  height: 28px;
+  margin: 1px 0 5px;
+  color: var(--gun);
+  filter: drop-shadow(0 2px 2px #000) drop-shadow(0 0 5px color-mix(in srgb, var(--gun-accent), transparent 65%));
+}
+.weapon-art::before, .weapon-art::after, .weapon-art > i, .weapon-art > i::before, .weapon-art > i::after,
+.weapon-art > b, .weapon-art > b::before, .weapon-art > b::after {
+  content: "";
+  position: absolute;
+  display: block;
+  box-sizing: border-box;
+}
+.weapon-art::before { left: 24px; top: 8px; width: 28px; height: 9px; border: 1px solid var(--gun); background: var(--gun-dark); clip-path: polygon(0 18%,88% 0,100% 35%,94% 100%,8% 100%); }
+.weapon-art::after { left: 39px; top: 15px; width: 9px; height: 12px; border: 1px solid var(--gun); background: var(--gun-dark); transform: skew(-12deg); clip-path: polygon(0 0,100% 0,82% 100%,18% 100%); }
+.weapon-art > i { left: 49px; top: 10px; width: 23px; height: 4px; border: 0; border-top: 2px solid var(--gun); border-bottom: 1px solid var(--gun-dark); }
+.weapon-art > i::before { right: -2px; top: -3px; width: 4px; height: 6px; border: 1px solid var(--gun); background: var(--gun-dark); }
+.weapon-art > i::after { left: -13px; top: 5px; width: 21px; height: 3px; background: var(--gun-dark); }
+.weapon-art > b { left: 6px; top: 9px; width: 20px; height: 9px; border: 1px solid var(--gun); background: var(--gun-dark); clip-path: polygon(0 45%,28% 0,100% 9%,100% 100%,28% 88%); }
+.weapon-art > b::before { left: 27px; top: 7px; width: 8px; height: 11px; border: 1px solid var(--gun); background: var(--gun-dark); transform: skew(-9deg); }
+.weapon-art > b::after { left: 26px; top: -7px; width: 16px; height: 5px; border: 1px solid var(--gun-accent); border-radius: 5px 5px 2px 2px; }
+.purchase-weapons .weapon-art > b, .weapon-grid .weapon-art > b, .weapon-art > b { margin: 0; color: inherit; font-size: 0; }
+.effect-stack .weapon-art > i, .weapon-art > i { background: transparent; font-size: 0; font-style: normal; }
+
+.weapon-art-classic { width: 55px; }
+.weapon-art-classic::before { left: 13px; top: 8px; width: 24px; height: 8px; clip-path: polygon(0 0,100% 0,92% 100%,7% 100%); }
+.weapon-art-classic::after { left: 23px; top: 14px; width: 9px; height: 13px; }
+.weapon-art-classic > i { left: 36px; top: 10px; width: 16px; }
+.weapon-art-classic > i::after { display: none; }
+.weapon-art-classic > b { left: 7px; top: 9px; width: 8px; height: 6px; clip-path: none; }
+.weapon-art-classic > b::before, .weapon-art-classic > b::after { display: none; }
+
+.weapon-art-sheriff { width: 58px; --gun-accent: var(--amber); }
+.weapon-art-sheriff::before { left: 16px; top: 8px; width: 22px; height: 9px; border-radius: 45%; clip-path: none; }
+.weapon-art-sheriff::after { left: 24px; top: 15px; width: 9px; height: 13px; }
+.weapon-art-sheriff > i { left: 35px; top: 10px; width: 21px; border-top-width: 3px; }
+.weapon-art-sheriff > i::after { left: -17px; top: 4px; width: 11px; height: 4px; border-radius: 50%; background: var(--gun-accent); }
+.weapon-art-sheriff > b { left: 8px; top: 10px; width: 10px; height: 7px; clip-path: none; border-radius: 50%; }
+.weapon-art-sheriff > b::before, .weapon-art-sheriff > b::after { display: none; }
+
+.weapon-art-bucky { --gun-accent: #f6a857; }
+.weapon-art-bucky::before { left: 22px; width: 31px; }
+.weapon-art-bucky > i { left: 50px; width: 23px; border-top-width: 3px; }
+.weapon-art-bucky > i::after { left: -18px; top: 5px; width: 29px; height: 4px; border: 1px solid var(--gun-accent); background: transparent; }
+.weapon-art-bucky > b::after { display: none; }
+
+.weapon-art-spectre { width: 66px; --gun-accent: #67d8ff; }
+.weapon-art-spectre::before { left: 17px; top: 7px; width: 30px; height: 11px; }
+.weapon-art-spectre::after { left: 31px; top: 16px; height: 10px; }
+.weapon-art-spectre > i { left: 45px; width: 19px; }
+.weapon-art-spectre > b { left: 4px; top: 10px; width: 15px; height: 7px; }
+.weapon-art-spectre > b::before { left: 30px; top: 8px; height: 9px; }
+.weapon-art-spectre > b::after { left: 17px; top: -5px; width: 10px; height: 3px; }
+
+.weapon-art-bulldog { --gun-accent: #77e1c5; }
+.weapon-art-bulldog::before { left: 20px; top: 7px; width: 34px; height: 11px; clip-path: polygon(0 30%,18% 0,100% 0,92% 100%,8% 100%); }
+.weapon-art-bulldog > b { left: 3px; width: 19px; clip-path: polygon(0 50%,45% 0,100% 20%,100% 100%,35% 85%); }
+.weapon-art-bulldog > b::before { left: 29px; top: 8px; height: 12px; }
+.weapon-art-bulldog > b::after { left: 27px; top: -6px; width: 12px; }
+
+.weapon-art-outlaw { --gun-accent: #d59cff; }
+.weapon-art-outlaw::before { left: 22px; top: 9px; width: 30px; height: 7px; }
+.weapon-art-outlaw > i { left: 50px; top: 10px; width: 24px; border-top-width: 2px; }
+.weapon-art-outlaw > b { left: 1px; top: 10px; width: 23px; height: 8px; }
+.weapon-art-outlaw > b::before { left: 34px; top: 6px; height: 10px; }
+.weapon-art-outlaw > b::after { left: 25px; top: -8px; width: 21px; height: 6px; border-width: 2px; }
+
+.weapon-art-judge { width: 68px; --gun-accent: #ff8971; }
+.weapon-art-judge::before { left: 16px; top: 6px; width: 36px; height: 13px; clip-path: polygon(0 22%,15% 0,100% 12%,92% 100%,8% 100%); }
+.weapon-art-judge::after { left: 31px; top: 17px; height: 9px; }
+.weapon-art-judge > i { left: 49px; top: 9px; width: 17px; border-top-width: 4px; }
+.weapon-art-judge > i::after { left: -20px; top: 6px; width: 27px; height: 4px; background: var(--gun-accent); }
+.weapon-art-judge > b { left: 4px; top: 10px; width: 14px; height: 8px; }
+.weapon-art-judge > b::before { left: 28px; top: 9px; width: 12px; height: 9px; border-radius: 0 0 50% 50%; }
+.weapon-art-judge > b::after { display: none; }
+
+.weapon-art-phantom { --gun-accent: #65f0dd; }
+.weapon-art-phantom::before { left: 20px; top: 7px; width: 34px; height: 10px; }
+.weapon-art-phantom > i { left: 51px; top: 9px; width: 23px; border-top-width: 3px; }
+.weapon-art-phantom > i::before { width: 7px; right: -1px; border-radius: 1px; background: var(--gun-accent); }
+.weapon-art-phantom > b::after { left: 27px; width: 15px; height: 4px; }
+
+.weapon-art-vandal { --gun-accent: #ffbd63; }
+.weapon-art-vandal::before { left: 21px; top: 6px; width: 34px; height: 12px; clip-path: polygon(0 18%,22% 0,100% 17%,88% 100%,7% 83%); }
+.weapon-art-vandal > i { left: 52px; top: 9px; width: 22px; border-top-width: 3px; }
+.weapon-art-vandal > b { left: 2px; top: 8px; width: 21px; height: 11px; clip-path: polygon(0 50%,34% 0,100% 12%,100% 100%,30% 82%); }
+.weapon-art-vandal > b::before { left: 31px; top: 8px; height: 13px; transform: skew(-15deg); }
+.weapon-art-vandal > b::after { left: 29px; top: -5px; width: 12px; height: 4px; }
+
+.weapon-art-operator { --gun-accent: #efdf8c; }
+.weapon-art-operator::before { left: 20px; top: 8px; width: 37px; height: 10px; border-width: 2px; }
+.weapon-art-operator > i { left: 54px; top: 10px; width: 20px; border-top-width: 4px; }
+.weapon-art-operator > i::before { right: -2px; top: -4px; width: 6px; height: 8px; }
+.weapon-art-operator > b { left: 0; top: 9px; width: 23px; height: 10px; }
+.weapon-art-operator > b::before { left: 39px; top: 8px; width: 9px; height: 12px; }
+.weapon-art-operator > b::after { left: 27px; top: -9px; width: 25px; height: 7px; border-width: 2px; }
+
+.weapon-art.compact { margin: -8px -20px; transform: scale(.42); transform-origin: 50% 50%; }
+.effect-stack i.weapon-drop { width: 34px; height: 18px; overflow: visible; background: rgba(7,18,22,.93); }
+.effect-stack i.weapon-drop .weapon-art { pointer-events: none; }
+
+@media (max-height: 760px) {
+  .agent-portrait-frame { width: 34px; height: 34px; }
+  .large-portrait-frame { width: 44px; height: 44px; }
+}
+
+@media (max-width: 800px) {
+  .agent-portrait-frame { width: 32px; height: 32px; }
+  .fight-action em { font-size: 7px; }
+  .weapon-art { transform: scale(.9); transform-origin: left center; margin-right: -7px; }
+  .weapon-art.compact { transform: scale(.42); margin: -8px -20px; }
+}

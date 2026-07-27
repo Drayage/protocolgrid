@@ -521,3 +521,39 @@ test("combat UI shows applied dice, distance damage, vital slots, and distinct s
   assert.match(css, /\.combat-fighter\.incoming-headshot/);
   assert.match(css, /@keyframes headshotImpact/);
 });
+
+test("death selection, objective intel, and dropped weapons obey the active viewer", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /if \(game\.selectedAgentId === defender\.id\)/);
+  assert.match(page, /game\.teams\[defender\.team\]\.agents\.find\(\(agent\) => agent\.alive\)\?\.id \?\? null/);
+  assert.match(page, /selectedAgent\?\.team === viewerSide && selectedAgent\.alive/);
+  assert.match(page, /if \(!selectedAgent\?\.alive/);
+  assert.match(page, /function spikeVisibleTo\(game: GameState, viewerSide: Side, omniscient = false\)/);
+  assert.match(page, /const observed = observedRegions\(game, viewerSide\)/);
+  assert.match(page, /const knownWeapons = game\.droppedWeapons\.filter\(\(item\) => item\.region === region\.id && observedNow\)/);
+  assert.match(page, /const hasSpike = spikeVisible &&/);
+  assert.match(page, /!spikeVisible \? "정보 없음"/);
+});
+
+test("combat odds, aftershock damage, condition badges, and weapon silhouettes stay wired", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /function calculateShotOdds/);
+  assert.match(page, /for \(let aimRoll = 1; aimRoll <= aim; aimRoll \+= 1\)/);
+  assert.match(page, /combatAttackPreview\.hitChance/);
+  assert.match(page, /combatAttackPreview\.expectedDamage/);
+  assert.match(page, /applyDamage\(draft, getAgent\(draft, effect\.ownerAgentId\), agent, 2, "여진 폭발"\)/);
+  assert.match(page, /function AgentStatusBadges/);
+  assert.match(page, /effect\.kind === "blind"/);
+  assert.match(page, /effect\.kind === "concussed"/);
+  assert.match(page, /function WeaponSilhouette/);
+  assert.match(page, /<WeaponSilhouette weapon=\{item\.weapon\} compact \/>/);
+  for (const weapon of ["classic", "sheriff", "bucky", "spectre", "bulldog", "outlaw", "judge", "phantom", "vandal", "operator"]) {
+    assert.match(css, new RegExp(`\\.weapon-art-${weapon}`));
+  }
+  assert.match(css, /\.agent-status-badges \.status-blind/);
+  assert.match(css, /\.agent-status-badges \.status-aftershock/);
+  assert.match(css, /\.fight-action em/);
+});
