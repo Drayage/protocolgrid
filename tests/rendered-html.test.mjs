@@ -347,7 +347,9 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /function rememberObservedDroppedWeapons/);
   assert.match(page, /function aiClassicCanDelayObjectiveForWeapon/);
   assert.match(page, /const maxDetourDistance = aliveCount <= 2 \? 2 : 1/);
-  assert.match(page, /const attackTurnsRemaining = Math\.max\(0, 17 - game\.cycle\)/);
+  assert.match(page, /const PRE_PLANT_CYCLE_LIMIT = 12/);
+  assert.match(page, /const SPIKE_EXPLOSION_ROUNDS = 6/);
+  assert.match(page, /const attackTurnsRemaining = Math\.max\(0, PRE_PLANT_CYCLE_LIMIT \+ 1 - game\.cycle\)/);
   assert.match(page, /game\.spike\.status === "planted" \? 5 : game\.spike\.status === "half" \? 4 : 3/);
   assert.match(page, /function aiWeaponPickupClaimScore/);
   assert.match(page, /function aiWeaponPickupObjective/);

@@ -406,6 +406,8 @@ interface GameState {
 }
 
 const SIDE_LABEL: Record<Side, string> = { attack: "공격팀", defense: "수비팀" };
+const PRE_PLANT_CYCLE_LIMIT = 12;
+const SPIKE_EXPLOSION_ROUNDS = 6;
 const ROLE_LABEL: Record<Role, string> = {
   duelist: "타격대",
   initiator: "척후대",
@@ -727,7 +729,7 @@ function createInitialGame(
     pendingWait: null,
     targeting: null,
     teams: { attack, defense },
-    spike: { status: "carried", carrierId: selectSpikeCarrierId(attack.agents, attackPlan), region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: 8 },
+    spike: { status: "carried", carrierId: selectSpikeCarrierId(attack.agents, attackPlan), region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: SPIKE_EXPLOSION_ROUNDS },
     spikeKnownByDefense: false,
     droppedWeapons: [],
     deployables: [],
@@ -860,7 +862,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.selectedCardId = null;
   game.pendingWait = null;
   game.targeting = null;
-  game.spike = { status: "carried", carrierId: selectSpikeCarrierId(game.teams.attack.agents, game.attackPlan), region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: 8 };
+  game.spike = { status: "carried", carrierId: selectSpikeCarrierId(game.teams.attack.agents, game.attackPlan), region: null, actorId: null, startCycle: null, installedCycle: null, halfCycle: null, explosion: SPIKE_EXPLOSION_ROUNDS };
   game.spikeKnownByDefense = false;
   game.droppedWeapons = [];
   game.deployables = [];
@@ -1958,7 +1960,7 @@ function aiClassicCanDelayObjectiveForWeapon(game: GameState, agent: Agent, item
   const maxDetourDistance = aliveCount <= 2 ? 2 : 1;
   if (pickupDistance > maxDetourDistance) return false;
   if (game.spike.status === "dropped") {
-    const attackTurnsRemaining = Math.max(0, 17 - game.cycle);
+    const attackTurnsRemaining = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
     return attackTurnsRemaining >= pickupDistance + (aliveCount <= 2 ? 2 : 3);
   }
   if (agent.team === "defense") {
@@ -4031,9 +4033,9 @@ export default function Home() {
       if (endingSide === "defense") {
         draft.turnSide = "attack";
       } else {
-        if (draft.cycle >= 16 && !["planting", "planted", "half", "defusing"].includes(draft.spike.status)) {
+        if (draft.cycle >= PRE_PLANT_CYCLE_LIMIT && !["planting", "planted", "half", "defusing"].includes(draft.spike.status)) {
           draft.winner = "defense";
-          draft.winReason = "설치 전 16라운드 시간 종료";
+          draft.winReason = `설치 전 ${PRE_PLANT_CYCLE_LIMIT}라운드 시간 종료`;
           return;
         }
         draft.cycle += 1;
@@ -4044,9 +4046,9 @@ export default function Home() {
       const newSide = draft.turnSide;
       draft.turnSerial += 1;
       draft.teamTurns[newSide] += 1;
-      if (newSide === "attack" && draft.cycle > 16 && !["planting", "planted", "half", "defusing"].includes(draft.spike.status)) {
+      if (newSide === "attack" && draft.cycle > PRE_PLANT_CYCLE_LIMIT && !["planting", "planted", "half", "defusing"].includes(draft.spike.status)) {
         draft.winner = "defense";
-        draft.winReason = "설치 전 16라운드 시간 종료";
+        draft.winReason = `설치 전 ${PRE_PLANT_CYCLE_LIMIT}라운드 시간 종료`;
         return;
       }
       const startingTeam = draft.teams[newSide];
@@ -4062,7 +4064,7 @@ export default function Home() {
           draft.spike.carrierId = null;
           draft.teams.defense.cover = true;
           draft.teams.attack.plantsThisRound += 1;
-          addLog(draft, `스파이크 설치 완료. 폭발까지 8라운드 · 수비팀 커버 카드 생성.`);
+          addLog(draft, `스파이크 설치 완료. 폭발까지 ${SPIKE_EXPLOSION_ROUNDS}라운드 · 수비팀 커버 카드 생성.`);
           addAnalyticsEvent(draft, "attack", "objective", "스파이크 설치 완료");
         }
       }
@@ -4733,7 +4735,7 @@ export default function Home() {
         <div className="round-display">
           <span className="side-name defense-name">DEF <b>{game.teams.defense.score}</b></span>
           <div className="round-core">
-            <span>매치 R{game.matchRound} · 전술 {game.cycle}/16</span>
+            <span>매치 R{game.matchRound} · 전술 {game.cycle}/{PRE_PLANT_CYCLE_LIMIT}</span>
             <strong>{spectatorMode ? `AI 시뮬레이션 · ${SIDE_LABEL[game.turnSide]}` : `${SIDE_LABEL[game.turnSide]} ${isAiControlledTurn ? "AI 작전 중" : "행동"}`}</strong>
           </div>
           <span className="side-name attack-name"><b>{game.teams.attack.score}</b> ATK</span>
@@ -5015,7 +5017,7 @@ export default function Home() {
         <section className="combat-situation">
           <header><div><span>SITUATION BOARD</span><strong>현재 전장 현황</strong></div><small>이번 팀 턴에 확인된 정보가 계속 표시됩니다</small></header>
           <div className="combat-context-grid">
-            <div><span>진행</span><b>매치 R{game.matchRound} · 전술 {game.cycle}/16</b></div>
+            <div><span>진행</span><b>매치 R{game.matchRound} · 전술 {game.cycle}/{PRE_PLANT_CYCLE_LIMIT}</b></div>
             <div><span>현재 행동</span><b>{activeCombatAction}</b></div>
             <div><span>스파이크</span><b>{SPIKE_STATUS_LABEL[game.spike.status]}{game.spike.region ? ` · ${game.spike.region}번` : ""}</b></div>
             <div><span>교전 규칙</span><b>{combatScene.kind === "turret" ? "포탑 우선도 2 · 자동 1회 공격" : combatScene.waitClaim ? `일반 교전 · ${combatScene.mover.name} 후퇴 불가` : combatScene.offAngle ? `기습 · 공격 ${combatScene.mover.priority} / 대응 ${combatScene.holder.priority} · 대기 보너스 없음` : combatScene.simultaneous ? "동일 우선도 · 후퇴자는 무빙 +2" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
