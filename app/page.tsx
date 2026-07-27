@@ -2003,9 +2003,72 @@ function aiWeaponPickupObjective(game: GameState, agent: Agent): DroppedWeapon |
     .sort((a, b) => b.score - a.score)[0]?.item ?? null;
 }
 
+function aiRecoveryBlockers(game: GameState, side: Side, objectiveRegion: number) {
+  return aiEnemyIntel(game, side).filter((enemy) => {
+    if (enemy.region === objectiveRegion) return true;
+    const path = shortestPath(enemy.region, objectiveRegion);
+    const waitRange = WEAPONS[enemy.agent.weapon].type === "sniper" ? 2 : 1;
+    return path.length >= 2
+      && path.length - 1 <= waitRange
+      && enemy.agent.waitDirs.includes(objectiveRegion)
+      && !isWaitPathSmokeBlocked(game, enemy.region, objectiveRegion);
+  });
+}
+
+function aiGuardedRecoveryObjectives(game: GameState, side: Side) {
+  const regions = new Set<number>();
+  if (side === "attack" && game.spike.status === "dropped" && game.spike.region !== null) regions.add(game.spike.region);
+  game.teams[side].agents
+    .filter((agent) => agent.alive && !isChanneling(game, agent))
+    .forEach((agent) => {
+      const item = aiWeaponPickupObjective(game, agent);
+      if (item) regions.add(item.region);
+    });
+  return [...regions].map((region) => ({ region, blockers: aiRecoveryBlockers(game, side, region) }))
+    .filter((objective) => objective.blockers.length > 0);
+}
+
+function shortestRecoveryFlankPath(start: number, end: number, objectiveRegion: number, blockedRegions: Set<number>) {
+  if (start === end) return [start];
+  const queue: number[][] = [[start]];
+  const visited = new Set([start]);
+  while (queue.length) {
+    const path = queue.shift()!;
+    const last = path[path.length - 1];
+    for (const next of GRAPH.get(last) ?? []) {
+      if (visited.has(next)) continue;
+      if (next !== end && (next === objectiveRegion || blockedRegions.has(next))) continue;
+      const nextPath = [...path, next];
+      if (next === end) return nextPath;
+      visited.add(next);
+      queue.push(nextPath);
+    }
+  }
+  return [];
+}
+
+function aiRecoveryFlankDestination(game: GameState, agent: Agent, objectiveRegion: number, targets: number[]) {
+  const blockers = aiRecoveryBlockers(game, agent.team, objectiveRegion);
+  if (!blockers.length) return null;
+  const watchedRegions = new Set(blockers.flatMap((blocker) => blocker.agent.waitDirs));
+  const plans = blockers.flatMap((blocker) => {
+    const blocked = new Set(watchedRegions);
+    blocked.delete(blocker.region);
+    const path = shortestRecoveryFlankPath(agent.region, blocker.region, objectiveRegion, blocked);
+    if (path.length < 2) return [];
+    return path.slice(1).flatMap((region, index) => targets.includes(region)
+      ? [{ region, remaining: path.length - index - 2, threat: knownThreatScoreAtRegion(game, agent.team, region) }]
+      : []);
+  }).sort((a, b) => a.remaining * 20 + a.threat - (b.remaining * 20 + b.threat));
+  return plans[0]?.region ?? null;
+}
+
 function aiWeaponDestination(game: GameState, agent: Agent, targets: number[]) {
   const objective = aiWeaponPickupObjective(game, agent);
   if (!objective) return null;
+  if (aiRecoveryBlockers(game, agent.team, objective.region).length) {
+    return aiRecoveryFlankDestination(game, agent, objective.region, targets);
+  }
   const destination = [...targets].sort((a, b) => distance(a, objective.region) - distance(b, objective.region))[0];
   if (destination === undefined || distance(destination, objective.region) >= distance(agent.region, objective.region)) return null;
   return destination;
@@ -2397,6 +2460,9 @@ function adaptAttackPlan(game: GameState) {
 
 function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
   if (game.spike.status === "dropped" && game.spike.region !== null) {
+    if (aiRecoveryBlockers(game, agent.team, game.spike.region).length) {
+      return aiRecoveryFlankDestination(game, agent, game.spike.region, targets);
+    }
     const destination = [...targets].sort((a, b) => {
       const distanceA = distance(a, game.spike.region!);
       const distanceB = distance(b, game.spike.region!);
@@ -2504,6 +2570,18 @@ function edgeMatches(edge: [number, number], candidates: [number, number][]) {
 }
 
 function aiSmokeEdge(game: GameState, agent: Agent, skillId: "smoke" | "dark", intel: AiEnemyIntel[]): [number, number] | null {
+  const guardedRecovery = aiGuardedRecoveryObjectives(game, agent.team)[0];
+  if (guardedRecovery) {
+    for (const blocker of guardedRecovery.blockers) {
+      const waitPath = shortestPath(blocker.region, guardedRecovery.region);
+      const recoveryEdge = waitPath.slice(0, -1)
+        .map((region, index) => [region, waitPath[index + 1]] as [number, number])
+        .find(([a, b]) =>
+          !isSmokeBlocked(game, a, b)
+          && (skillId === "dark" || distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2));
+      if (recoveryEdge) return recoveryEdge;
+    }
+  }
   const objective = aiObjectiveRegion(game, agent.team, agent.region, intel);
   const ownPath = shortestPath(agent.region, objective);
   const ownPathEdges = new Set(ownPath.slice(0, -1).map((region, index) => edgeKey(region, ownPath[index + 1])));
@@ -2598,6 +2676,8 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
   const intel = aiEnemyIntel(game, side);
   const observed = observedRegions(game, side);
   const enemyDeployables = game.deployables.filter((item) => item.owner !== side && observed.has(item.region));
+  const recoveryBlockerIds = new Set(aiGuardedRecoveryObjectives(game, side)
+    .flatMap((objective) => objective.blockers.map((blocker) => blocker.agent.id)));
 
   for (const agent of game.teams[side].agents.filter((item) => item.alive && item.extraActions > 0 && !isChanneling(game, item))) {
     const camera = agent.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === side && item.ownerAgentId === agent.id) : null;
@@ -2647,6 +2727,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           region,
           score: intel.filter((item) => item.region === region).length * 4
             + enemyDeployables.filter((item) => item.region === region).length * 2
+            + intel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 8
             + (entryRegion === region ? 3 : 0),
         })).sort((a, b) => b.score - a.score)[0];
         if (!target?.score) continue;
@@ -2715,7 +2796,8 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           region,
           targets: exactIntel.filter((item) => item.region === region),
           entryScore: entryRegion === region ? 1 : 0,
-        })).sort((a, b) => b.targets.length * 5 + b.entryScore - (a.targets.length * 5 + a.entryScore));
+          recoveryScore: exactIntel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 4,
+        })).sort((a, b) => b.targets.length * 5 + b.entryScore + b.recoveryScore - (a.targets.length * 5 + a.entryScore + a.recoveryScore));
         const target = candidates[0];
         if (!target || (!target.targets.length && !target.entryScore)) continue;
         if (!begin()) return true;
@@ -2770,7 +2852,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       if (definition.id === "recon") {
         const target = aiSkillRegions(agent, "range2").map((region) => {
           const scanned = new Set([region, ...(GRAPH.get(region) ?? [])]);
-          const score = intel.filter((item) => scanned.has(item.region)).length * 8 + Math.max(0, 4 - distance(region, objective));
+          const score = intel.filter((item) => scanned.has(item.region)).length * 8
+            + intel.filter((item) => scanned.has(item.region) && recoveryBlockerIds.has(item.agent.id)).length * 10
+            + Math.max(0, 4 - distance(region, objective));
           return { region, score };
         }).sort((a, b) => b.score - a.score)[0];
         if (!target) continue;
@@ -2793,7 +2877,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       if (definition.id === "shock") {
         const targetIntel = intel
           .filter((item) => distance(agent.region, item.region) <= 2)
-          .sort((a, b) => (a.agent.hp + a.agent.armor) - (b.agent.hp + b.agent.armor))[0];
+          .sort((a, b) =>
+            Number(recoveryBlockerIds.has(b.agent.id)) - Number(recoveryBlockerIds.has(a.agent.id))
+            || (a.agent.hp + a.agent.armor) - (b.agent.hp + b.agent.armor))[0];
         const targetDevice = enemyDeployables.filter((item) => distance(agent.region, item.region) <= 2)[0];
         if (!targetIntel && !targetDevice) continue;
         const targetRegion = targetIntel?.region ?? targetDevice!.region;
@@ -4740,6 +4826,14 @@ export default function Home() {
         }
         const targets = cardTargets(draft, agent, card).filter((region) => region !== agent.region);
         if (!targets.length) continue;
+        const weaponObjective = aiWeaponPickupObjective(draft, agent);
+        const spikeRecoveryRegion = side === "attack" && draft.spike.status === "dropped" ? draft.spike.region : null;
+        const recoveryRegion = spikeRecoveryRegion ?? weaponObjective?.region ?? null;
+        const recoveryBlocked = recoveryRegion !== null && aiRecoveryBlockers(draft, side, recoveryRegion).length > 0;
+        const recoveryFlankDestination = recoveryBlocked
+          ? aiRecoveryFlankDestination(draft, agent, recoveryRegion!, targets)
+          : null;
+        if (recoveryBlocked && recoveryFlankDestination === null) continue;
         const objectiveRegion = side === "defense" && ["planted", "half", "defusing"].includes(draft.spike.status) ? draft.spike.region : null;
         const destination = [...targets].sort((a, b) => side === "attack"
           ? 0
@@ -4752,12 +4846,17 @@ export default function Home() {
         const priorityDestination = agent.weapon === "classic"
           ? weaponDestination ?? escortDestination
           : escortDestination ?? weaponDestination;
-        const tacticalDestination = priorityDestination ?? recoveryEscortDestination ?? (side === "attack"
+        const safePriorityDestination = recoveryFlankDestination ?? priorityDestination;
+        const tacticalDestination = safePriorityDestination ?? recoveryEscortDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
           : objectiveRegion === null
             ? aiDefenseDestination(draft, agent, targets)
             : destination);
         if (tacticalDestination === null || tacticalDestination === undefined) continue;
+        if (recoveryFlankDestination !== null) {
+          addLog(draft, `${SIDE_LABEL[side]} AI · ${agent.name}이 ${regionName(recoveryRegion!)} 회수를 막는 대기 사격을 피해 측면으로 우회합니다.`);
+          addAnalyticsEvent(draft, side, "objective", `${agent.name} 회수 저지선 측면 우회`);
+        }
         draft.selectedAgentId = agent.id;
         playCard(draft, card, agent);
         if (!applyActionStartFire(draft, agent)) return;
@@ -4767,7 +4866,10 @@ export default function Home() {
       }
     }
     draft.actionsUsed = 3;
-    addLog(draft, `AI가 사용할 수 있는 행동카드가 없어 턴을 정리합니다.`);
+    const guardedRecovery = aiGuardedRecoveryObjectives(draft, side)[0];
+    addLog(draft, guardedRecovery
+      ? `${SIDE_LABEL[side]} AI · ${regionName(guardedRecovery.region)} 회수는 확인된 대기 사격 때문에 보류하고, 적의 이동이나 유틸 돌파 기회를 기다립니다.`
+      : `AI가 사용할 수 있는 행동카드가 없어 턴을 정리합니다.`);
   });
   const selectedRegion = selectedAgent ? REGIONS.find((region) => region.id === selectedAgent.region) : null;
   const droppedHere = selectedAgent ? game.droppedWeapons.find((item) => item.region === selectedAgent.region) : null;

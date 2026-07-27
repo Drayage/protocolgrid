@@ -394,7 +394,7 @@ test("losing AI uses recovery packages, hard eco escorts, and keeps the original
   assert.match(page, /const recoveryFrontliners = team\.agents\.filter/);
   assert.match(page, /const aFrontlinePlayable = recoveryFrontliners\.some/);
   assert.match(page, /Number\(a\.weapon === "classic"\) - Number\(b\.weapon === "classic"\)/);
-  assert.match(page, /priorityDestination \?\? recoveryEscortDestination/);
+  assert.match(page, /safePriorityDestination \?\? recoveryEscortDestination/);
   assert.match(page, /game\.previousWeapons\[otherSide\(side\)\]/);
   assert.match(page, /operator: \{[\s\S]{0,180}price: 38/);
   assert.match(page, /won \? 65 : nextLossStreak >= 3 \? 55/);
@@ -414,6 +414,20 @@ test("AI preserves unused action cards when holding is tactically stronger than 
   assert.match(page, /draft\.aiTurnComplete = true/);
   assert.match(page, /props\.game\.actionsUsed >= 3 \|\| props\.game\.aiTurnComplete/);
   assert.match(page, /남은 행동카드는 사용하지 않습니다/);
+});
+
+test("AI clears, flanks, or waits instead of repeatedly entering a guarded recovery region", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function aiRecoveryBlockers/);
+  assert.match(page, /function aiGuardedRecoveryObjectives/);
+  assert.match(page, /function shortestRecoveryFlankPath/);
+  assert.match(page, /function aiRecoveryFlankDestination/);
+  assert.match(page, /next !== end && \(next === objectiveRegion \|\| blockedRegions\.has\(next\)\)/);
+  assert.match(page, /if \(aiRecoveryBlockers\(game, agent\.team, objective\.region\)\.length\)/);
+  assert.match(page, /const recoveryBlockerIds = new Set/);
+  assert.match(page, /recoveryFlankDestination === null\) continue/);
+  assert.match(page, /회수를 막는 대기 사격을 피해 측면으로 우회합니다/);
+  assert.match(page, /회수는 확인된 대기 사격 때문에 보류하고/);
 });
 
 test("attackers configure opening waits at spawn before the first defense turn", async () => {
