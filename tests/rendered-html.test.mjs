@@ -345,11 +345,17 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /interface DroppedWeapon/);
   assert.match(page, /knownBy: Side\[\]/);
   assert.match(page, /function rememberObservedDroppedWeapons/);
+  assert.match(page, /function aiWeaponPickupClaimScore/);
   assert.match(page, /function aiWeaponPickupObjective/);
-  assert.match(page, /ally\.weapon === "classic" \? 24 : 0/);
+  assert.match(page, /agent\.weapon === "classic" \? 80 : 0/);
+  assert.match(page, /agent\.weapon === "classic" \? 4 : 7/);
+  assert.match(page, /game\.spike\.carrierId === agent\.id/);
   assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
   assert.match(page, /if \(aiPickupWeaponAtCurrentRegion\(draft, side\)\) return/);
   assert.match(page, /const weaponDestination = aiWeaponDestination/);
+  assert.match(page, /const classicWeaponClaimants = team\.agents\.filter/);
+  assert.match(page, /if \(weaponObjective && agent\.weapon === "classic"\) return -48/);
+  assert.match(page, /const priorityDestination = agent\.weapon === "classic"/);
   assert.match(page, /className="weapon-drop"/);
   assert.match(css, /\.effect-stack i\.weapon-drop/);
 });
@@ -376,7 +382,7 @@ test("losing AI uses recovery packages, hard eco escorts, and keeps the original
   assert.match(page, /const recoveryFrontliners = team\.agents\.filter/);
   assert.match(page, /const aFrontlinePlayable = recoveryFrontliners\.some/);
   assert.match(page, /Number\(a\.weapon === "classic"\) - Number\(b\.weapon === "classic"\)/);
-  assert.match(page, /escortDestination \?\? weaponDestination \?\? recoveryEscortDestination/);
+  assert.match(page, /priorityDestination \?\? recoveryEscortDestination/);
   assert.match(page, /game\.previousWeapons\[otherSide\(side\)\]/);
   assert.match(page, /operator: \{[\s\S]{0,180}price: 38/);
   assert.match(page, /won \? 65 : nextLossStreak >= 3 \? 55/);

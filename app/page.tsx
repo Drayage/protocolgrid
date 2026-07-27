@@ -1951,21 +1951,27 @@ function hasCriticalSpikeObjective(game: GameState, side: Side) {
   return side === "defense" && ["planted", "half", "defusing"].includes(game.spike.status);
 }
 
+function aiWeaponPickupClaimScore(agent: Agent, item: DroppedWeapon) {
+  const classicRecoveryBonus = agent.weapon === "classic" ? 80 : 0;
+  const distanceCost = distance(agent.region, item.region) * (agent.weapon === "classic" ? 4 : 7);
+  return weaponUpgradeValue(agent, item.weapon) * 5 + classicRecoveryBonus - distanceCost;
+}
+
 function aiWeaponPickupObjective(game: GameState, agent: Agent): DroppedWeapon | null {
-  if (hasCriticalSpikeObjective(game, agent.team)) return null;
+  if (hasCriticalSpikeObjective(game, agent.team) || (agent.team === "attack" && game.spike.carrierId === agent.id)) return null;
   const known = game.droppedWeapons.filter((item) => item.knownBy.includes(agent.team) && weaponUpgradeValue(agent, item.weapon) >= 6);
   const assigned = known.filter((item) => {
     const claimant = game.teams[agent.team].agents
       .filter((ally) => ally.alive && weaponUpgradeValue(ally, item.weapon) >= 6)
       .map((ally) => ({
         ally,
-        score: weaponUpgradeValue(ally, item.weapon) * 5 + (ally.weapon === "classic" ? 24 : 0) - distance(ally.region, item.region) * 7,
+        score: aiWeaponPickupClaimScore(ally, item),
       }))
       .sort((a, b) => b.score - a.score)[0];
     return claimant?.ally.id === agent.id && claimant.score > 0;
   });
   return assigned
-    .map((item) => ({ item, score: weaponUpgradeValue(agent, item.weapon) * 5 - distance(agent.region, item.region) * 7 }))
+    .map((item) => ({ item, score: aiWeaponPickupClaimScore(agent, item) }))
     .sort((a, b) => b.score - a.score)[0]?.item ?? null;
 }
 
@@ -4567,10 +4573,16 @@ export default function Home() {
       : { control: 0, basic: 1, follow: 2, peek: 3, entry: 4 };
     const recoveryFrontliners = team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && isAiRecoveryFrontlineLeader(draft, agent));
+    const classicWeaponClaimants = team.agents.filter((agent) =>
+      agent.alive && !isChanneling(draft, agent) && agent.weapon === "classic" && !!aiWeaponPickupObjective(draft, agent));
     const cards = team.hand.filter((card) => !card.used).sort((a, b) => {
+      const aWeaponPlayable = classicWeaponClaimants.some((agent) => canUseCard(a, agent)) ? 0 : 1;
+      const bWeaponPlayable = classicWeaponClaimants.some((agent) => canUseCard(b, agent)) ? 0 : 1;
       const aFrontlinePlayable = recoveryFrontliners.some((agent) => canUseCard(a, agent)) ? 0 : 1;
       const bFrontlinePlayable = recoveryFrontliners.some((agent) => canUseCard(b, agent)) ? 0 : 1;
-      return aFrontlinePlayable - bFrontlinePlayable || priority[a.kind] - priority[b.kind];
+      return aWeaponPlayable - bWeaponPlayable
+        || aFrontlinePlayable - bFrontlinePlayable
+        || priority[a.kind] - priority[b.kind];
     });
     for (const card of cards) {
       const cardsUsedByAgent = (agent: Agent) => team.hand.filter((item) => item.used && item.committedAgentId === agent.id).length;
@@ -4580,12 +4592,14 @@ export default function Home() {
       };
       const strategicBias = (agent: Agent) => {
         if (side === "attack" && draft.spike.status === "dropped" && draft.spike.region !== null) return -40 + distance(agent.region, draft.spike.region) * 5;
+        const weaponObjective = aiWeaponPickupObjective(draft, agent);
+        if (weaponObjective && agent.weapon === "classic") return -48;
         if (side === "attack" && draft.spike.status === "carried") {
           const escortAgents = attackCarrierEscortAgents(draft);
           if (escortAgents.length && draft.spike.carrierId === agent.id) return 18;
           if (escortAgents.some((escort) => escort.id === agent.id)) return distance(agent.region, getAgent(draft, draft.spike.carrierId)?.region ?? agent.region) <= 1 ? 14 : -16;
         }
-        if (aiWeaponPickupObjective(draft, agent)) return agent.weapon === "classic" ? -18 : -10;
+        if (weaponObjective) return -10;
         if (isAiRecoveryFrontlineLeader(draft, agent)) return -24;
         if (aiRecoveryEscortLeader(draft, agent)) return 16;
         return side === "attack" && isAttackLurker(draft, agent) && draft.attackPlan.lurkerMode === "probe" ? -6 : 0;
@@ -4613,7 +4627,10 @@ export default function Home() {
         const escortDestination = side === "attack" ? aiSpikeEscortDestination(draft, agent, targets) : null;
         const weaponDestination = aiWeaponDestination(draft, agent, targets);
         const recoveryEscortDestination = aiRecoveryEscortDestination(draft, agent, targets);
-        const tacticalDestination = escortDestination ?? weaponDestination ?? recoveryEscortDestination ?? (side === "attack"
+        const priorityDestination = agent.weapon === "classic"
+          ? weaponDestination ?? escortDestination
+          : escortDestination ?? weaponDestination;
+        const tacticalDestination = priorityDestination ?? recoveryEscortDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
           : objectiveRegion === null
             ? aiDefenseDestination(draft, agent, targets)
