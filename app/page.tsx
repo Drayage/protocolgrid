@@ -408,6 +408,7 @@ interface GameState {
 const SIDE_LABEL: Record<Side, string> = { attack: "공격팀", defense: "수비팀" };
 const PRE_PLANT_CYCLE_LIMIT = 12;
 const SPIKE_EXPLOSION_ROUNDS = 6;
+const FORCED_EXECUTE_CYCLE = PRE_PLANT_CYCLE_LIMIT - 2;
 const ROLE_LABEL: Record<Role, string> = {
   duelist: "타격대",
   initiator: "척후대",
@@ -573,13 +574,13 @@ const roleCards = (role: Role): CardKind[] => {
 };
 
 const ATTACK_PLAN_TEMPLATES: Pick<AttackPlan, "kind" | "label" | "targetSite" | "commitCycle">[] = [
-  { kind: "direct-a", label: "A 외곽 압박", targetSite: "A", commitCycle: 4 },
-  { kind: "mid-b", label: "미드 장악 → B", targetSite: "B", commitCycle: 7 },
-  { kind: "fake-a-b", label: "A 페이크 → B 전환", targetSite: "B", commitCycle: 8 },
-  { kind: "split-read", label: "하단 분산 정보전", targetSite: "A", commitCycle: 7 },
-  { kind: "direct-b", label: "B 외곽 압박", targetSite: "B", commitCycle: 4 },
-  { kind: "mid-a", label: "미드 장악 → A", targetSite: "A", commitCycle: 7 },
-  { kind: "fake-b-a", label: "B 페이크 → A 전환", targetSite: "A", commitCycle: 8 },
+  { kind: "direct-a", label: "A 외곽 압박", targetSite: "A", commitCycle: 3 },
+  { kind: "mid-b", label: "미드 장악 → B", targetSite: "B", commitCycle: 5 },
+  { kind: "fake-a-b", label: "A 페이크 → B 전환", targetSite: "B", commitCycle: 6 },
+  { kind: "split-read", label: "하단 분산 정보전", targetSite: "A", commitCycle: 5 },
+  { kind: "direct-b", label: "B 외곽 압박", targetSite: "B", commitCycle: 3 },
+  { kind: "mid-a", label: "미드 장악 → A", targetSite: "A", commitCycle: 5 },
+  { kind: "fake-b-a", label: "B 페이크 → A 전환", targetSite: "A", commitCycle: 6 },
 ];
 
 const DEFENSE_PLAN_TEMPLATES: DefensePlan[] = [
@@ -609,7 +610,7 @@ function createAttackPlan(matchRound: number, names: string[], strategySeed: num
     ...template,
     targetSite,
     initialTargetSite: targetSite,
-    commitCycle: Math.max(3, Math.min(10, template.commitCycle + timingOffset)),
+    commitCycle: Math.max(2, Math.min(FORCED_EXECUTE_CYCLE - 2, template.commitCycle + timingOffset)),
     tempo,
     adapted: false,
     readout: "초반 러쉬로 시야 확보 중",
@@ -922,7 +923,7 @@ const distance = (a: number, b: number) => {
 
 function attackPlanPhase(game: GameState): AttackPlanPhase {
   if (["planting", "planted", "half", "defusing"].includes(game.spike.status)) return "postplant";
-  if (game.cycle >= 12 || game.cycle >= game.attackPlan.commitCycle) return "execute";
+  if (game.cycle >= FORCED_EXECUTE_CYCLE || game.cycle >= game.attackPlan.commitCycle) return "execute";
   if (game.attackPlan.adapted && game.attackPlan.targetSite !== game.attackPlan.initialTargetSite) return "rotate";
   if (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a") return game.cycle < game.attackPlan.commitCycle - 2 ? "pressure" : "rotate";
   if (game.attackPlan.kind === "mid-a" || game.attackPlan.kind === "mid-b") return game.cycle <= 2 ? "spread" : "pressure";
@@ -2333,7 +2334,7 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
   const phase = attackPlanPhase(game);
   const deepFlanking = isAttackLurker(game, agent) && game.attackPlan.lurkerMode === "deep-flank";
   const allowedTargets = targets.filter((region) => {
-    if (phase === "execute" || phase === "postplant" || game.cycle >= 12 || deepFlanking) return true;
+    if (phase === "execute" || phase === "postplant" || game.cycle >= FORCED_EXECUTE_CYCLE || deepFlanking) return true;
     const site = REGIONS.find((item) => item.id === region)?.site;
     if (!site) return true;
     return site === game.attackPlan.targetSite && game.cycle >= 2 && attackEntryIsOpen(game, site);

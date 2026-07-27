@@ -288,7 +288,12 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /return site === game\.attackPlan\.targetSite && game\.cycle >= 2 && attackEntryIsOpen\(game, site\)/);
   assert.match(page, /knownThreatScoreAtRegion\(game, "attack", a\)/);
   assert.match(page, /routeDistance\(destination\) > routeDistance\(agent\.region\)/);
-  assert.match(page, /game\.cycle >= 12 \|\| game\.cycle >= game\.attackPlan\.commitCycle/);
+  assert.match(page, /const FORCED_EXECUTE_CYCLE = PRE_PLANT_CYCLE_LIMIT - 2/);
+  assert.match(page, /game\.cycle >= FORCED_EXECUTE_CYCLE \|\| game\.cycle >= game\.attackPlan\.commitCycle/);
+  assert.match(page, /kind: "direct-a"[\s\S]{0,100}commitCycle: 3/);
+  assert.match(page, /kind: "mid-b"[\s\S]{0,100}commitCycle: 5/);
+  assert.match(page, /kind: "fake-a-b"[\s\S]{0,100}commitCycle: 6/);
+  assert.match(page, /Math\.max\(2, Math\.min\(FORCED_EXECUTE_CYCLE - 2/);
   assert.match(page, /const attackWaypoints = agent\.team === "attack" \? attackPlanWaypoints/);
   assert.match(page, /attackExecuting[\s\S]{0,220}\{ entry: 0, peek: 1/);
   assert.match(page, /공격 AI 작전 브리핑/);
