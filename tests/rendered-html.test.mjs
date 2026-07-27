@@ -345,6 +345,10 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /interface DroppedWeapon/);
   assert.match(page, /knownBy: Side\[\]/);
   assert.match(page, /function rememberObservedDroppedWeapons/);
+  assert.match(page, /function aiClassicCanDelayObjectiveForWeapon/);
+  assert.match(page, /const maxDetourDistance = aliveCount <= 2 \? 2 : 1/);
+  assert.match(page, /const attackTurnsRemaining = Math\.max\(0, 17 - game\.cycle\)/);
+  assert.match(page, /game\.spike\.status === "planted" \? 5 : game\.spike\.status === "half" \? 4 : 3/);
   assert.match(page, /function aiWeaponPickupClaimScore/);
   assert.match(page, /function aiWeaponPickupObjective/);
   assert.match(page, /agent\.weapon === "classic" \? 80 : 0/);
@@ -352,6 +356,7 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /game\.spike\.carrierId === agent\.id/);
   assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
   assert.match(page, /if \(aiPickupWeaponAtCurrentRegion\(draft, side\)\) return/);
+  assert.match(page, /&& !aiWeaponPickupObjective\(draft, agent\)/);
   assert.match(page, /const weaponDestination = aiWeaponDestination/);
   assert.match(page, /const classicWeaponClaimants = team\.agents\.filter/);
   assert.match(page, /if \(weaponObjective && agent\.weapon === "classic"\) return -48/);

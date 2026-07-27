@@ -1951,6 +1951,24 @@ function hasCriticalSpikeObjective(game: GameState, side: Side) {
   return side === "defense" && ["planted", "half", "defusing"].includes(game.spike.status);
 }
 
+function aiClassicCanDelayObjectiveForWeapon(game: GameState, agent: Agent, item: DroppedWeapon) {
+  if (agent.weapon !== "classic" || isChanneling(game, agent)) return false;
+  const aliveCount = game.teams[agent.team].agents.filter((ally) => ally.alive).length;
+  const pickupDistance = distance(agent.region, item.region);
+  const maxDetourDistance = aliveCount <= 2 ? 2 : 1;
+  if (pickupDistance > maxDetourDistance) return false;
+  if (game.spike.status === "dropped") {
+    const attackTurnsRemaining = Math.max(0, 17 - game.cycle);
+    return attackTurnsRemaining >= pickupDistance + (aliveCount <= 2 ? 2 : 3);
+  }
+  if (agent.team === "defense") {
+    if (game.spike.status === "defusing" && game.spike.actorId !== agent.id) return true;
+    const safeExplosionBuffer = game.spike.status === "planted" ? 5 : game.spike.status === "half" ? 4 : 3;
+    return game.spike.explosion >= safeExplosionBuffer;
+  }
+  return false;
+}
+
 function aiWeaponPickupClaimScore(agent: Agent, item: DroppedWeapon) {
   const classicRecoveryBonus = agent.weapon === "classic" ? 80 : 0;
   const distanceCost = distance(agent.region, item.region) * (agent.weapon === "classic" ? 4 : 7);
@@ -1958,8 +1976,12 @@ function aiWeaponPickupClaimScore(agent: Agent, item: DroppedWeapon) {
 }
 
 function aiWeaponPickupObjective(game: GameState, agent: Agent): DroppedWeapon | null {
-  if (hasCriticalSpikeObjective(game, agent.team) || (agent.team === "attack" && game.spike.carrierId === agent.id)) return null;
-  const known = game.droppedWeapons.filter((item) => item.knownBy.includes(agent.team) && weaponUpgradeValue(agent, item.weapon) >= 6);
+  if (agent.team === "attack" && game.spike.carrierId === agent.id) return null;
+  const criticalObjective = hasCriticalSpikeObjective(game, agent.team);
+  const known = game.droppedWeapons.filter((item) =>
+    item.knownBy.includes(agent.team)
+    && weaponUpgradeValue(agent, item.weapon) >= 6
+    && (!criticalObjective || aiClassicCanDelayObjectiveForWeapon(game, agent, item)));
   const assigned = known.filter((item) => {
     const claimant = game.teams[agent.team].agents
       .filter((ally) => ally.alive && weaponUpgradeValue(ally, item.weapon) >= 6)
@@ -1984,10 +2006,15 @@ function aiWeaponDestination(game: GameState, agent: Agent, targets: number[]) {
 }
 
 function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
+  const criticalObjective = hasCriticalSpikeObjective(game, side);
   const candidates = game.teams[side].agents
     .filter((agent) => agent.alive && agent.extraActions > 0 && !isChanneling(game, agent))
     .flatMap((agent) => game.droppedWeapons
-      .filter((item) => item.region === agent.region && item.knownBy.includes(side) && weaponUpgradeValue(agent, item.weapon) > 0)
+      .filter((item) =>
+        item.region === agent.region
+        && item.knownBy.includes(side)
+        && weaponUpgradeValue(agent, item.weapon) > 0
+        && (!criticalObjective || aiClassicCanDelayObjectiveForWeapon(game, agent, item)))
       .map((item) => ({ agent, item, upgrade: weaponUpgradeValue(agent, item.weapon) })))
     .sort((a, b) => (b.agent.weapon === "classic" ? 1 : 0) - (a.agent.weapon === "classic" ? 1 : 0) || b.upgrade - a.upgrade)[0];
   if (!candidates) return false;
@@ -4491,8 +4518,13 @@ export default function Home() {
       draft.targeting = null;
       return;
     }
+    if (aiPickupWeaponAtCurrentRegion(draft, side)) return;
     if (side === "defense" && ["planted", "half"].includes(draft.spike.status) && draft.spike.region !== null) {
-      const defuser = draft.teams.defense.agents.find((agent) => agent.alive && agent.region === draft.spike.region && agent.extraActions > 0);
+      const defuser = draft.teams.defense.agents.find((agent) =>
+        agent.alive
+        && agent.region === draft.spike.region
+        && agent.extraActions > 0
+        && !aiWeaponPickupObjective(draft, agent));
       if (defuser && draft.spike.status === "planted") {
         defuser.extraActions -= 1;
         draft.spike.status = "half";
@@ -4512,7 +4544,11 @@ export default function Home() {
       }
     }
     if (side === "attack" && draft.spike.status === "dropped") {
-      const retriever = draft.teams.attack.agents.find((agent) => agent.alive && agent.region === draft.spike.region && agent.extraActions > 0);
+      const retriever = draft.teams.attack.agents.find((agent) =>
+        agent.alive
+        && agent.region === draft.spike.region
+        && agent.extraActions > 0
+        && !aiWeaponPickupObjective(draft, agent));
       if (retriever) {
         retriever.extraActions -= 1;
         draft.spike.status = "carried";
@@ -4538,7 +4574,6 @@ export default function Home() {
         return;
       }
     }
-    if (aiPickupWeaponAtCurrentRegion(draft, side)) return;
     if (tryUseAiSkill(draft, side)) return;
     if (draft.turnSide === "attack" && draft.spike.status !== "dropped" && draft.cycle <= 2 && !draft.teams.attack.rushUsed) {
       const groups = new Map<number, Agent[]>();
@@ -4591,9 +4626,9 @@ export default function Home() {
         return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
       };
       const strategicBias = (agent: Agent) => {
-        if (side === "attack" && draft.spike.status === "dropped" && draft.spike.region !== null) return -40 + distance(agent.region, draft.spike.region) * 5;
         const weaponObjective = aiWeaponPickupObjective(draft, agent);
         if (weaponObjective && agent.weapon === "classic") return -48;
+        if (side === "attack" && draft.spike.status === "dropped" && draft.spike.region !== null) return -40 + distance(agent.region, draft.spike.region) * 5;
         if (side === "attack" && draft.spike.status === "carried") {
           const escortAgents = attackCarrierEscortAgents(draft);
           if (escortAgents.length && draft.spike.carrierId === agent.id) return 18;
