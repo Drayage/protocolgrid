@@ -401,6 +401,21 @@ test("losing AI uses recovery packages, hard eco escorts, and keeps the original
   assert.match(page, /team\.killsThisRound \* 5/);
 });
 
+test("AI preserves unused action cards when holding is tactically stronger than moving", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /aiTurnComplete: boolean/);
+  assert.match(page, /function aiHoldPositionDecision/);
+  assert.match(page, /if \(immediateContact\) return null/);
+  assert.match(page, /phase === "execute"/);
+  assert.match(page, /game\.cycle < game\.attackPlan\.commitCycle/);
+  assert.match(page, /현재 수비 배치와 대기 각이 안정적이므로 위치를 유지합니다/);
+  assert.match(page, /설치 후 교차 대기와 사이트 수비 진형을 유지합니다/);
+  assert.match(page, /최종 해체 요원을 보호하며 위치를 유지합니다/);
+  assert.match(page, /draft\.aiTurnComplete = true/);
+  assert.match(page, /props\.game\.actionsUsed >= 3 \|\| props\.game\.aiTurnComplete/);
+  assert.match(page, /남은 행동카드는 사용하지 않습니다/);
+});
+
 test("attackers configure opening waits at spawn before the first defense turn", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

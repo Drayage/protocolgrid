@@ -373,6 +373,7 @@ interface GameState {
   teamTurns: Record<Side, number>;
   turnSide: Side;
   actionsUsed: number;
+  aiTurnComplete: boolean;
   selectedAgentId: string | null;
   selectedCardId: string | null;
   pendingWait: string | null;
@@ -725,6 +726,7 @@ function createInitialGame(
     teamTurns: { attack: 0, defense: 1 },
     turnSide: "defense",
     actionsUsed: 0,
+    aiTurnComplete: false,
     selectedAgentId: defense.agents[0].id,
     selectedCardId: null,
     pendingWait: null,
@@ -859,6 +861,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.teamTurns = { attack: 0, defense: 1 };
   game.turnSide = "defense";
   game.actionsUsed = 0;
+  game.aiTurnComplete = false;
   game.selectedAgentId = game.teams.defense.agents[0]?.id ?? null;
   game.selectedCardId = null;
   game.pendingWait = null;
@@ -2231,6 +2234,79 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
   return destination;
 }
 
+function aiHoldPositionDecision(game: GameState, side: Side): string | null {
+  const alive = game.teams[side].agents.filter((agent) => agent.alive);
+  if (!alive.length || game.actionsUsed >= 3) return null;
+  if (alive.some((agent) => aiWeaponPickupObjective(game, agent))) return null;
+
+  const exactEnemies = aiEnemyIntel(game, side).filter((enemy) => enemy.exact);
+  const immediateContact = alive.some((ally) => exactEnemies.some((enemy) =>
+    distance(ally.region, enemy.region) <= 1
+    && !isWaitPathSmokeBlocked(game, ally.region, enemy.region)));
+  if (immediateContact) return null;
+
+  if (side === "attack") {
+    if (game.spike.status === "dropped") return null;
+    if (game.spike.status === "planting") {
+      const planter = getAgent(game, game.spike.actorId);
+      return planter?.alive ? "설치 요원과 확보한 진입각을 유지합니다" : null;
+    }
+    if (["planted", "half", "defusing"].includes(game.spike.status) && game.spike.region !== null) {
+      const nearSpike = alive.filter((agent) => distance(agent.region, game.spike.region!) <= 1);
+      const coveringAgents = nearSpike.filter((agent) => agent.waitDirs.length > 0 || isChanneling(game, agent));
+      const requiredCoverage = Math.min(2, alive.length);
+      return nearSpike.length >= Math.ceil(alive.length * 0.6) && coveringAgents.length >= requiredCoverage
+        ? "설치 후 교차 대기와 사이트 수비 진형을 유지합니다"
+        : null;
+    }
+
+    const phase = attackPlanPhase(game);
+    const situation = attackSiteSituation(game, game.attackPlan.targetSite);
+    if (
+      phase === "execute"
+      || phase === "rotate"
+      || situation.alliesOnSite.length > 0
+      || attackEntryIsOpen(game, game.attackPlan.targetSite)
+    ) return null;
+    const staged = alive.every((agent) => {
+      const waypoints = attackPlanWaypoints(game, agent);
+      return agent.waitDirs.length > 0 && waypoints.some((region) => agent.region === region);
+    });
+    return staged && game.cycle < game.attackPlan.commitCycle
+      ? `${attackPlanPhaseLabel(game)} 진형을 유지하며 다음 진입 타이밍을 기다립니다`
+      : null;
+  }
+
+  if (game.spike.status === "defusing") {
+    const defuser = getAgent(game, game.spike.actorId);
+    return defuser?.alive ? "최종 해체 요원을 보호하며 위치를 유지합니다" : null;
+  }
+  if (["planted", "half"].includes(game.spike.status)) return null;
+
+  const settled = alive.every((agent) => {
+    const waypoints = defensePlanWaypoints(game, agent);
+    return agent.waitDirs.length > 0 && waypoints.some((region) => agent.region === region);
+  });
+  if (!settled) return null;
+
+  if (game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
+    const guards = alive.filter((agent) =>
+      distance(agent.region, game.spike.region!) <= 1 && agent.waitDirs.length > 0);
+    return guards.length >= Math.min(2, alive.length)
+      ? "떨어진 스파이크의 회수 경로를 대기하며 위치를 유지합니다"
+      : null;
+  }
+
+  const threatSite = defenseThreatSite(game);
+  if (!threatSite) return "현재 수비 배치와 대기 각이 안정적이므로 위치를 유지합니다";
+  const threatStrength = defenseThreatStrength(game, threatSite);
+  const readyAtThreat = alive.filter((agent) =>
+    tacticalRegionsForSite(threatSite).has(agent.region) && agent.waitDirs.length > 0).length;
+  return readyAtThreat >= Math.min(alive.length, Math.max(2, threatStrength))
+    ? `${threatSite} 압박에 필요한 수비 대기가 갖춰져 위치를 유지합니다`
+    : null;
+}
+
 function attackMainBodyEngaged(game: GameState) {
   const exactIntel = aiEnemyIntel(game, "attack").filter((item) => item.exact);
   return attackMainAgents(game).some((ally) => ally.alive && exactIntel.some((enemy) => distance(ally.region, enemy.region) <= 1));
@@ -3308,7 +3384,7 @@ function AiController(props: AiControllerProps) {
         if ((mover && props.sides.includes(mover.team)) || (holder && props.sides.includes(holder.team))) action = props.onCombatContinue;
       }
     } else if (props.sides.includes(props.game.turnSide)) {
-      action = props.game.actionsUsed >= 3 && !props.game.pendingWait && !props.game.targeting && !props.game.pendingContact ? props.onEndTurn : () => props.onStep(props.game.turnSide);
+      action = (props.game.actionsUsed >= 3 || props.game.aiTurnComplete) && !props.game.pendingWait && !props.game.targeting && !props.game.pendingContact ? props.onEndTurn : () => props.onStep(props.game.turnSide);
     }
     if (!action) return;
     const delay = manualStep ? 80 : Math.max(120, (scene?.phase === "encounter" ? 1400 : scene?.phase === "result" ? 1650 : 650) / props.speed);
@@ -4025,6 +4101,7 @@ export default function Home() {
       draft.targeting = null;
       draft.selectedCardId = null;
       draft.actionsUsed = 0;
+      draft.aiTurnComplete = false;
       draft.pendingMovement = null;
       draft.pendingReengagements = [];
       draft.pendingContact = null;
@@ -4596,6 +4673,13 @@ export default function Home() {
         return;
       }
       draft.teams.attack.rushUsed = true;
+    }
+    const holdReason = aiHoldPositionDecision(draft, side);
+    if (holdReason) {
+      draft.aiTurnComplete = true;
+      addLog(draft, `${SIDE_LABEL[side]} AI · ${holdReason} · 남은 행동카드는 사용하지 않습니다.`);
+      addAnalyticsEvent(draft, side, "objective", `조기 턴 종료 · ${holdReason}`);
+      return;
     }
     if (draft.actionsUsed >= 3) return;
     const team = draft.teams[side];
