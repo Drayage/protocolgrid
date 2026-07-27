@@ -184,7 +184,7 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   assert.match(page, /definition\.id === "alarm" && attackPlanPhase\(game\) !== "execute"/);
   assert.match(page, /game\.analytics\[agent\.team\]\.skillsUsed \+= 1/);
   assert.match(page, /스파이캠으로 \$\{cameraTarget\.name\} 탐지/);
-  assert.match(page, /const skillReserve = Math\.min/);
+  assert.match(page, /const skillReserve = losingTeam \? 0 : Math\.min/);
   assert.match(page, /const skillRounds =/);
   for (const skillId of ["tailwind", "updraft", "gear", "paint", "blast", "curve", "hot", "relay", "flash", "aftershock", "trip", "turret", "camera", "alarm", "recon", "shock", "smoke", "dark", "stim", "shadow"]) {
     assert.match(page, new RegExp(`definition\\.id === "${skillId}"`), `${skillId} needs an AI decision branch`);
@@ -347,6 +347,24 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /const weaponDestination = aiWeaponDestination/);
   assert.match(page, /className="weapon-drop"/);
   assert.match(css, /\.effect-stack i\.weapon-drop/);
+});
+
+test("losing AI uses recovery packages, hard eco escorts, and keeps the original income model", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /previousWeapons: Record<Side, WeaponId\[\]>/);
+  assert.match(page, /function recoveryPackageCost/);
+  assert.match(page, /const losingTeam = team\.lossStreak > 0/);
+  assert.match(page, /team\.funds < fullRecoveryCost/);
+  assert.match(page, /recoveryCoreAgents\(team\)/);
+  assert.match(page, /셰리프\+대형 방어구 2명 · 클래식\+소형 방어구 3명/);
+  assert.match(page, /전원 셰리프 이상 \+ 대형 방어구 \+ 모든 스킬 확보/);
+  assert.match(page, /function aiRecoveryEscortLeader/);
+  assert.match(page, /function aiRecoveryEscortDestination/);
+  assert.match(page, /escortDestination \?\? weaponDestination \?\? recoveryEscortDestination/);
+  assert.match(page, /game\.previousWeapons\[otherSide\(side\)\]/);
+  assert.match(page, /operator: \{[\s\S]{0,180}price: 38/);
+  assert.match(page, /won \? 65 : nextLossStreak >= 3 \? 55/);
+  assert.match(page, /team\.killsThisRound \* 5/);
 });
 
 test("attackers configure opening waits at spawn before the first defense turn", async () => {

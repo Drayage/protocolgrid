@@ -365,6 +365,7 @@ interface DefensePlan {
 interface GameState {
   matchRound: number;
   strategySeed: number;
+  previousWeapons: Record<Side, WeaponId[]>;
   attackPlan: AttackPlan;
   defensePlan: DefensePlan;
   cycle: number;
@@ -486,7 +487,7 @@ const WEAPONS: Record<WeaponId, Weapon> = {
   judge: { id: "judge", name: "저지", type: "shotgun", body: 3, head: 4, price: 16, aim: 0, move: 1, unlock: 3 },
   phantom: { id: "phantom", name: "팬텀", type: "normal", body: 2, head: 3, price: 24, aim: 1, move: 1, unlock: 3 },
   vandal: { id: "vandal", name: "밴달", type: "normal", body: 2, head: 4, price: 24, aim: 1, move: 0, unlock: 3 },
-  operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 4, head: 6, price: 32, aim: 0, move: 0, unlock: 3 },
+  operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 4, head: 6, price: 38, aim: 0, move: 0, unlock: 3 },
 };
 
 function weaponRuleSummary(weapon: Weapon) {
@@ -710,6 +711,10 @@ function createInitialGame(
   return {
     matchRound: 1,
     strategySeed,
+    previousWeapons: {
+      attack: attack.agents.map(() => "classic"),
+      defense: defense.agents.map(() => "classic"),
+    },
     attackPlan,
     defensePlan,
     cycle: 1,
@@ -811,6 +816,10 @@ function resetTeamForRound(team: TeamState, side: Side, matchRound: number, econ
 
 function prepareNextRoundState(game: GameState, swapSides: boolean) {
   if (!game.winner) return;
+  const previousWeapons: Record<Side, WeaponId[]> = {
+    attack: game.teams.attack.agents.map((agent) => agent.weapon),
+    defense: game.teams.defense.agents.map((agent) => agent.weapon),
+  };
   const winner = game.winner;
   const loser = otherSide(winner);
   if (!game.roundRewardsApplied) {
@@ -829,7 +838,14 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
     game.teams.attack = game.teams.defense;
     game.teams.defense = previousAttack;
     game.matchRound = 1;
-  } else game.matchRound += 1;
+    game.previousWeapons = {
+      attack: game.teams.attack.agents.map(() => "classic"),
+      defense: game.teams.defense.agents.map(() => "classic"),
+    };
+  } else {
+    game.matchRound += 1;
+    game.previousWeapons = previousWeapons;
+  }
 
   resetTeamForRound(game.teams.attack, "attack", game.matchRound, swapSides);
   resetTeamForRound(game.teams.defense, "defense", game.matchRound, swapSides);
@@ -958,6 +974,28 @@ function aiSpikeEscortDestination(game: GameState, agent: Agent, targets: number
   if (!carrier?.alive || !attackCarrierEscortAgents(game).some((escort) => escort.id === agent.id) || distance(agent.region, carrier.region) <= 1) return null;
   const destination = [...targets].sort((a, b) => distance(a, carrier.region) - distance(b, carrier.region))[0];
   if (destination === undefined || distance(destination, carrier.region) >= distance(agent.region, carrier.region)) return null;
+  return destination;
+}
+
+function aiRecoveryEscortLeader(game: GameState, agent: Agent) {
+  const team = game.teams[agent.team];
+  if (team.lossStreak < 1 || agent.weapon !== "classic" || hasCriticalSpikeObjective(game, agent.team)) return null;
+  const leaders = team.agents.filter((ally) => ally.alive && ally.weapon !== "classic");
+  if (!leaders.length) return null;
+  const followers = team.agents.filter((ally) => ally.alive && ally.weapon === "classic");
+  const followerIndex = Math.max(0, followers.findIndex((ally) => ally.id === agent.id));
+  return leaders[followerIndex % leaders.length] ?? null;
+}
+
+function aiRecoveryEscortDestination(game: GameState, agent: Agent, targets: number[]) {
+  const leader = aiRecoveryEscortLeader(game, agent);
+  if (!leader) return null;
+  const currentDistance = distance(agent.region, leader.region);
+  const destination = [...targets].sort((a, b) =>
+    distance(a, leader.region) - distance(b, leader.region)
+    || knownThreatScoreAtRegion(game, agent.team, a) - knownThreatScoreAtRegion(game, agent.team, b),
+  )[0];
+  if (destination === undefined || distance(destination, leader.region) > Math.max(1, currentDistance)) return null;
   return destination;
 }
 
@@ -2872,22 +2910,108 @@ function remainingSkillBuyCost(agent: Agent): number {
   }, 0);
 }
 
+function aiBuyWeapon(team: TeamState, agent: Agent, weaponId: WeaponId) {
+  const difference = WEAPONS[weaponId].price - WEAPONS[agent.weapon].price;
+  if (difference <= 0 || team.funds < difference) return false;
+  agent.weapon = weaponId;
+  team.funds -= difference;
+  return true;
+}
+
+function aiBuyArmor(team: TeamState, agent: Agent, type: Agent["armorType"]) {
+  const difference = ARMOR_PRICE[type] - ARMOR_PRICE[agent.armorType];
+  if (difference <= 0 || team.funds < difference) return false;
+  agent.armorType = type;
+  agent.armor = type === "heavy" ? 2 : type === "none" ? 0 : 1;
+  agent.armorDamaged = false;
+  team.funds -= difference;
+  return true;
+}
+
+function aiBuyAllSkills(team: TeamState, agent: Agent) {
+  const cost = remainingSkillBuyCost(agent);
+  if (team.funds < cost) return false;
+  AGENTS[agent.name].skills.forEach((definition) => {
+    agent.skills[definition.id] = definition.price.includes("2회") ? 2 : 1;
+  });
+  team.funds -= cost;
+  return true;
+}
+
+function recoveryPackageCost(agent: Agent) {
+  const weaponCost = agent.weapon === "classic" ? WEAPONS.sheriff.price : 0;
+  const armorCost = Math.max(0, ARMOR_PRICE.heavy - ARMOR_PRICE[agent.armorType]);
+  return weaponCost + armorCost + remainingSkillBuyCost(agent);
+}
+
+function recoveryCoreAgents(team: TeamState) {
+  const roleRank: Record<Role, number> = { initiator: 0, controller: 1, sentinel: 2, duelist: 3 };
+  return [...team.agents]
+    .sort((a, b) => {
+      const armedA = a.weapon === "classic" ? 1 : 0;
+      const armedB = b.weapon === "classic" ? 1 : 0;
+      return armedA - armedB || roleRank[a.role] - roleRank[b.role] || team.agents.indexOf(a) - team.agents.indexOf(b);
+    })
+    .slice(0, 2);
+}
+
 function autoBuyTeamLoadout(game: GameState, side: Side) {
   const team = game.teams[side];
-  const skillReserve = Math.min(team.funds, game.matchRound === 1 ? 10 : game.matchRound === 2 ? 14 : 18);
+  const opponentOperators = game.previousWeapons[otherSide(side)].filter((weapon) => weapon === "operator").length;
+  const losingTeam = team.lossStreak > 0;
+  const fullRecoveryCost = team.agents.reduce((total, agent) => total + recoveryPackageCost(agent), 0);
+
+  if (losingTeam && team.funds < fullRecoveryCost) {
+    const coreAgents = recoveryCoreAgents(team);
+    const coreIds = new Set(coreAgents.map((agent) => agent.id));
+    coreAgents.forEach((agent) => {
+      if (agent.weapon === "classic") aiBuyWeapon(team, agent, "sheriff");
+      aiBuyArmor(team, agent, "heavy");
+    });
+    team.agents.filter((agent) => !coreIds.has(agent.id)).forEach((agent) => {
+      aiBuyArmor(team, agent, "light");
+    });
+    addLog(game, `${SIDE_LABEL[side]} AI 재정비 에코 · 셰리프+대형 방어구 2명 · 클래식+소형 방어구 3명 · 잔액 ${team.funds}원 보존.`);
+    team.buyLocked = true;
+    return;
+  }
+
+  if (losingTeam) {
+    team.agents.forEach((agent) => {
+      if (agent.weapon === "classic") aiBuyWeapon(team, agent, "sheriff");
+      aiBuyArmor(team, agent, "heavy");
+      aiBuyAllSkills(team, agent);
+    });
+    addLog(game, `${SIDE_LABEL[side]} AI 재정비 바이 · 전원 셰리프 이상 + 대형 방어구 + 모든 스킬 확보.`);
+  }
+
+  const armorTarget: Agent["armorType"] = opponentOperators >= 2 ? "light" : game.matchRound >= 2 ? "heavy" : "light";
+  const armorReserve = losingTeam ? 0 : team.agents.reduce((total, agent) =>
+    total + Math.max(0, ARMOR_PRICE[armorTarget] - ARMOR_PRICE[agent.armorType]), 0);
+  const skillReserve = losingTeam ? 0 : Math.min(team.funds, game.matchRound === 1 ? 3 : game.matchRound === 2 ? 14 : 18);
   const preferred: WeaponId[] = game.matchRound === 1
     ? ["sheriff"]
     : game.matchRound === 2
       ? side === "defense" ? ["outlaw", "bulldog", "spectre", "bucky"] : ["bulldog", "spectre", "bucky", "outlaw"]
+      : opponentOperators >= 2
+        ? ["phantom", "spectre", "vandal", "bulldog", "judge", "operator"]
       : side === "defense"
         ? ["operator", "vandal", "phantom", "judge", "outlaw", "bulldog"]
         : ["vandal", "phantom", "judge", "outlaw", "bulldog", "spectre"];
   for (const agent of team.agents) {
-    if (agent.weapon !== "classic") continue;
-    const weapon = preferred.map((id) => WEAPONS[id]).find((item) => item.unlock <= game.matchRound && item.price <= team.funds - skillReserve);
+    const weapon = preferred.map((id) => WEAPONS[id]).find((item) => {
+      const difference = item.price - WEAPONS[agent.weapon].price;
+      return item.unlock <= game.matchRound
+        && weaponTacticalValue(item.id) > weaponTacticalValue(agent.weapon)
+        && difference > 0
+        && difference <= team.funds - skillReserve - armorReserve;
+    });
     if (!weapon) continue;
-    agent.weapon = weapon.id;
-    team.funds -= weapon.price;
+    aiBuyWeapon(team, agent, weapon.id);
+  }
+
+  if (!losingTeam) {
+    team.agents.forEach((agent) => { aiBuyArmor(team, agent, armorTarget); });
   }
 
   const skillRounds = [
@@ -2907,9 +3031,7 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
   }
   for (const agent of team.agents) {
     if (agent.armorType === "none" && team.funds >= 2) {
-      agent.armorType = "light";
-      agent.armor = 1;
-      team.funds -= 2;
+      aiBuyArmor(team, agent, "light");
     }
   }
   team.buyLocked = true;
@@ -4432,6 +4554,7 @@ export default function Home() {
           if (escortAgents.some((escort) => escort.id === agent.id)) return distance(agent.region, getAgent(draft, draft.spike.carrierId)?.region ?? agent.region) <= 1 ? 14 : -16;
         }
         if (aiWeaponPickupObjective(draft, agent)) return agent.weapon === "classic" ? -18 : -10;
+        if (aiRecoveryEscortLeader(draft, agent)) return -12;
         return side === "attack" && isAttackLurker(draft, agent) && draft.attackPlan.lurkerMode === "probe" ? -6 : 0;
       };
       const candidates = team.agents
@@ -4456,7 +4579,8 @@ export default function Home() {
             : 0)[0];
         const escortDestination = side === "attack" ? aiSpikeEscortDestination(draft, agent, targets) : null;
         const weaponDestination = aiWeaponDestination(draft, agent, targets);
-        const tacticalDestination = escortDestination ?? weaponDestination ?? (side === "attack"
+        const recoveryEscortDestination = aiRecoveryEscortDestination(draft, agent, targets);
+        const tacticalDestination = escortDestination ?? weaponDestination ?? recoveryEscortDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
           : objectiveRegion === null
             ? aiDefenseDestination(draft, agent, targets)
