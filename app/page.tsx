@@ -2959,6 +2959,7 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
   const team = game.teams[side];
   const opponentOperators = game.previousWeapons[otherSide(side)].filter((weapon) => weapon === "operator").length;
   const losingTeam = team.lossStreak > 0;
+  const baselinePriority = losingTeam || game.matchRound > 1;
   const fullRecoveryCost = team.agents.reduce((total, agent) => total + recoveryPackageCost(agent), 0);
 
   if (losingTeam && team.funds < fullRecoveryCost) {
@@ -2976,19 +2977,31 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
     return;
   }
 
-  if (losingTeam) {
+  if (baselinePriority) {
     team.agents.forEach((agent) => {
       if (agent.weapon === "classic") aiBuyWeapon(team, agent, "sheriff");
+    });
+    team.agents.forEach((agent) => {
       aiBuyArmor(team, agent, "heavy");
+    });
+    team.agents.forEach((agent) => {
       aiBuyAllSkills(team, agent);
     });
-    addLog(game, `${SIDE_LABEL[side]} AI 재정비 바이 · 전원 셰리프 이상 + 대형 방어구 + 모든 스킬 확보.`);
+    const baselineSecured = team.agents.every((agent) =>
+      agent.weapon !== "classic"
+      && agent.armorType === "heavy"
+      && remainingSkillBuyCost(agent) === 0);
+    addLog(game, baselineSecured
+      ? `${SIDE_LABEL[side]} AI ${losingTeam ? "재정비" : "승리 유지"} 바이 · 전원 셰리프 이상 + 대형 방어구 + 모든 스킬 확보 후 잔액 투자.`
+      : `${SIDE_LABEL[side]} AI ${losingTeam ? "재정비" : "승리 유지"} 바이 · 셰리프 → 대형 방어구 → 스킬 순으로 최소 패키지 우선 구매.`);
   }
 
-  const armorTarget: Agent["armorType"] = opponentOperators >= 2 ? "light" : game.matchRound >= 2 ? "heavy" : "light";
-  const armorReserve = losingTeam ? 0 : team.agents.reduce((total, agent) =>
+  const armorTarget: Agent["armorType"] = baselinePriority ? "heavy" : opponentOperators >= 2 ? "light" : game.matchRound >= 2 ? "heavy" : "light";
+  const armorReserve = team.agents.reduce((total, agent) =>
     total + Math.max(0, ARMOR_PRICE[armorTarget] - ARMOR_PRICE[agent.armorType]), 0);
-  const skillReserve = losingTeam ? 0 : Math.min(team.funds, game.matchRound === 1 ? 3 : game.matchRound === 2 ? 14 : 18);
+  const skillReserve = baselinePriority
+    ? team.agents.reduce((total, agent) => total + remainingSkillBuyCost(agent), 0)
+    : Math.min(team.funds, game.matchRound === 1 ? 3 : game.matchRound === 2 ? 14 : 18);
   const preferred: WeaponId[] = game.matchRound === 1
     ? ["sheriff"]
     : game.matchRound === 2
@@ -3010,7 +3023,7 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
     aiBuyWeapon(team, agent, weapon.id);
   }
 
-  if (!losingTeam) {
+  if (!baselinePriority) {
     team.agents.forEach((agent) => { aiBuyArmor(team, agent, armorTarget); });
   }
 

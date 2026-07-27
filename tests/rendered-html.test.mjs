@@ -184,7 +184,8 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   assert.match(page, /definition\.id === "alarm" && attackPlanPhase\(game\) !== "execute"/);
   assert.match(page, /game\.analytics\[agent\.team\]\.skillsUsed \+= 1/);
   assert.match(page, /스파이캠으로 \$\{cameraTarget\.name\} 탐지/);
-  assert.match(page, /const skillReserve = losingTeam \? 0 : Math\.min/);
+  assert.match(page, /const skillReserve = baselinePriority/);
+  assert.match(page, /Math\.min\(team\.funds, game\.matchRound === 1 \? 3/);
   assert.match(page, /const skillRounds =/);
   for (const skillId of ["tailwind", "updraft", "gear", "paint", "blast", "curve", "hot", "relay", "flash", "aftershock", "trip", "turret", "camera", "alarm", "recon", "shock", "smoke", "dark", "stim", "shadow"]) {
     assert.match(page, new RegExp(`definition\\.id === "${skillId}"`), `${skillId} needs an AI decision branch`);
@@ -354,10 +355,15 @@ test("losing AI uses recovery packages, hard eco escorts, and keeps the original
   assert.match(page, /previousWeapons: Record<Side, WeaponId\[\]>/);
   assert.match(page, /function recoveryPackageCost/);
   assert.match(page, /const losingTeam = team\.lossStreak > 0/);
+  assert.match(page, /const baselinePriority = losingTeam \|\| game\.matchRound > 1/);
   assert.match(page, /team\.funds < fullRecoveryCost/);
   assert.match(page, /recoveryCoreAgents\(team\)/);
   assert.match(page, /셰리프\+대형 방어구 2명 · 클래식\+소형 방어구 3명/);
-  assert.match(page, /전원 셰리프 이상 \+ 대형 방어구 \+ 모든 스킬 확보/);
+  assert.match(page, /승리 유지/);
+  assert.match(page, /전원 셰리프 이상 \+ 대형 방어구 \+ 모든 스킬 확보 후 잔액 투자/);
+  assert.match(page, /셰리프 → 대형 방어구 → 스킬 순으로 최소 패키지 우선 구매/);
+  assert.match(page, /const armorTarget: Agent\["armorType"\] = baselinePriority \? "heavy"/);
+  assert.match(page, /team\.agents\.reduce\(\(total, agent\) => total \+ remainingSkillBuyCost\(agent\), 0\)/);
   assert.match(page, /function aiRecoveryEscortLeader/);
   assert.match(page, /function aiRecoveryEscortDestination/);
   assert.match(page, /escortDestination \?\? weaponDestination \?\? recoveryEscortDestination/);
