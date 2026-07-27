@@ -331,6 +331,10 @@ test("AI protects spike transport, recovers drops, and converts defense to spike
   assert.match(page, /스파이크 확보 · 인접 구역 교차 대기 · 공격팀 회수 차단/);
   assert.match(page, /a === game\.spike\.region \? -20 : 0/);
   assert.match(page, /guardingDroppedSpike/);
+  assert.match(page, /agent\.alive && agent\.extraActions > 0 && !isChanneling\(game, agent\)/);
+  assert.match(page, /item\.alive && item\.extraActions > 0 && !isChanneling\(game, item\)/);
+  assert.match(page, /agent\.alive && !isChanneling\(draft, agent\) && canUseCard\(card, agent\)/);
+  assert.match(page, /agent\.alive && !isChanneling\(draft, agent\)/);
 });
 
 test("AI remembers visible weapon drops and prioritizes upgrades for classic users", async () => {
@@ -365,7 +369,13 @@ test("losing AI uses recovery packages, hard eco escorts, and keeps the original
   assert.match(page, /const armorTarget: Agent\["armorType"\] = baselinePriority \? "heavy"/);
   assert.match(page, /team\.agents\.reduce\(\(total, agent\) => total \+ remainingSkillBuyCost\(agent\), 0\)/);
   assert.match(page, /function aiRecoveryEscortLeader/);
+  assert.match(page, /function isAiRecoveryFrontlineLeader/);
   assert.match(page, /function aiRecoveryEscortDestination/);
+  assert.match(page, /if \(isAiRecoveryFrontlineLeader\(draft, agent\)\) return -24/);
+  assert.match(page, /if \(aiRecoveryEscortLeader\(draft, agent\)\) return 16/);
+  assert.match(page, /const recoveryFrontliners = team\.agents\.filter/);
+  assert.match(page, /const aFrontlinePlayable = recoveryFrontliners\.some/);
+  assert.match(page, /Number\(a\.weapon === "classic"\) - Number\(b\.weapon === "classic"\)/);
   assert.match(page, /escortDestination \?\? weaponDestination \?\? recoveryEscortDestination/);
   assert.match(page, /game\.previousWeapons\[otherSide\(side\)\]/);
   assert.match(page, /operator: \{[\s\S]{0,180}price: 38/);

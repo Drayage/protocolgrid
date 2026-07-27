@@ -987,6 +987,14 @@ function aiRecoveryEscortLeader(game: GameState, agent: Agent) {
   return leaders[followerIndex % leaders.length] ?? null;
 }
 
+function isAiRecoveryFrontlineLeader(game: GameState, agent: Agent) {
+  const team = game.teams[agent.team];
+  return team.lossStreak > 0
+    && agent.weapon !== "classic"
+    && !hasCriticalSpikeObjective(game, agent.team)
+    && team.agents.some((ally) => ally.alive && ally.weapon === "classic");
+}
+
 function aiRecoveryEscortDestination(game: GameState, agent: Agent, targets: number[]) {
   const leader = aiRecoveryEscortLeader(game, agent);
   if (!leader) return null;
@@ -1971,7 +1979,7 @@ function aiWeaponDestination(game: GameState, agent: Agent, targets: number[]) {
 
 function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
   const candidates = game.teams[side].agents
-    .filter((agent) => agent.alive && agent.extraActions > 0)
+    .filter((agent) => agent.alive && agent.extraActions > 0 && !isChanneling(game, agent))
     .flatMap((agent) => game.droppedWeapons
       .filter((item) => item.region === agent.region && item.knownBy.includes(side) && weaponUpgradeValue(agent, item.weapon) > 0)
       .map((item) => ({ agent, item, upgrade: weaponUpgradeValue(agent, item.weapon) })))
@@ -2479,7 +2487,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
   const observed = observedRegions(game, side);
   const enemyDeployables = game.deployables.filter((item) => item.owner !== side && observed.has(item.region));
 
-  for (const agent of game.teams[side].agents.filter((item) => item.alive && item.extraActions > 0)) {
+  for (const agent of game.teams[side].agents.filter((item) => item.alive && item.extraActions > 0 && !isChanneling(game, item))) {
     const camera = agent.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === side && item.ownerAgentId === agent.id) : null;
     const cameraTarget = camera ? game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && !enemy.detected && [camera.region, ...(GRAPH.get(camera.region) ?? [])].includes(enemy.region)) : null;
     if (cameraTarget) {
@@ -4528,12 +4536,17 @@ export default function Home() {
     if (tryUseAiSkill(draft, side)) return;
     if (draft.turnSide === "attack" && draft.spike.status !== "dropped" && draft.cycle <= 2 && !draft.teams.attack.rushUsed) {
       const groups = new Map<number, Agent[]>();
-      draft.teams.attack.agents.filter((agent) => agent.alive).forEach((agent) => groups.set(agent.region, [...(groups.get(agent.region) ?? []), agent]));
+      draft.teams.attack.agents
+        .filter((agent) => agent.alive && !isChanneling(draft, agent))
+        .forEach((agent) => groups.set(agent.region, [...(groups.get(agent.region) ?? []), agent]));
       const group = [...groups.entries()].sort((a, b) => b[1].length - a[1].length)[0];
       const destination = group ? attackPlanRushDestination(draft, group[0]) : null;
       if (group?.[1].length > 1 && destination !== null) {
+        const rushAgents = draft.teams.attack.lossStreak > 0
+          ? [...group[1]].sort((a, b) => Number(a.weapon === "classic") - Number(b.weapon === "classic"))
+          : group[1];
         draft.teams.attack.rushUsed = true;
-        draft.groupMovement = { agentIds: group[1].map((agent) => agent.id), nextIndex: 0, target: destination, special: "rush" };
+        draft.groupMovement = { agentIds: rushAgents.map((agent) => agent.id), nextIndex: 0, target: destination, special: "rush" };
         if (spectatorMode) addLog(draft, `공격팀 AI가 ${draft.attackPlan.label} 작전의 초반 러쉬로 ${regionName(destination)}에 전개합니다.`);
         continueGroupMovement(draft);
         return;
@@ -4552,7 +4565,13 @@ export default function Home() {
         ? { entry: 0, peek: 1, follow: 2, basic: 3, control: 4 }
         : { peek: 0, basic: 1, follow: 2, control: 3, entry: 4 }
       : { control: 0, basic: 1, follow: 2, peek: 3, entry: 4 };
-    const cards = team.hand.filter((card) => !card.used).sort((a, b) => priority[a.kind] - priority[b.kind]);
+    const recoveryFrontliners = team.agents.filter((agent) =>
+      agent.alive && !isChanneling(draft, agent) && isAiRecoveryFrontlineLeader(draft, agent));
+    const cards = team.hand.filter((card) => !card.used).sort((a, b) => {
+      const aFrontlinePlayable = recoveryFrontliners.some((agent) => canUseCard(a, agent)) ? 0 : 1;
+      const bFrontlinePlayable = recoveryFrontliners.some((agent) => canUseCard(b, agent)) ? 0 : 1;
+      return aFrontlinePlayable - bFrontlinePlayable || priority[a.kind] - priority[b.kind];
+    });
     for (const card of cards) {
       const cardsUsedByAgent = (agent: Agent) => team.hand.filter((item) => item.used && item.committedAgentId === agent.id).length;
       const rotationRank = (agent: Agent) => {
@@ -4567,11 +4586,12 @@ export default function Home() {
           if (escortAgents.some((escort) => escort.id === agent.id)) return distance(agent.region, getAgent(draft, draft.spike.carrierId)?.region ?? agent.region) <= 1 ? 14 : -16;
         }
         if (aiWeaponPickupObjective(draft, agent)) return agent.weapon === "classic" ? -18 : -10;
-        if (aiRecoveryEscortLeader(draft, agent)) return -12;
+        if (isAiRecoveryFrontlineLeader(draft, agent)) return -24;
+        if (aiRecoveryEscortLeader(draft, agent)) return 16;
         return side === "attack" && isAttackLurker(draft, agent) && draft.attackPlan.lurkerMode === "probe" ? -6 : 0;
       };
       const candidates = team.agents
-        .filter((agent) => agent.alive && canUseCard(card, agent))
+        .filter((agent) => agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent))
         .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
       for (const agent of candidates) {
         if (card.kind === "control") {
