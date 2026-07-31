@@ -232,6 +232,9 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .unit-token.selected { box-shadow: 0 0 0 3px rgba(95,246,213,.25), 0 0 12px var(--cyan); }
 .unit-token.hostile { background: var(--red); border-color: #ffd4da; color: #270207; }
 .movement-path-fx { position: absolute; inset: 0; z-index: 17; pointer-events: none; }
+.post-combat-move-banner { position: absolute; top: 12px; left: 50%; z-index: 24; display: grid; gap: 3px; min-width: 210px; padding: 9px 14px; border: 1px solid color-mix(in srgb, var(--team-color) 70%, white 10%); background: rgba(3, 14, 18, .9); box-shadow: 0 0 24px color-mix(in srgb, var(--team-color) 28%, transparent); color: #dcebee; text-align: center; transform: translateX(-50%); pointer-events: none; animation: movementRoutePulse 760ms ease-out both; }
+.post-combat-move-banner.team-attack { --team-color: var(--red); }.post-combat-move-banner.team-defense { --team-color: var(--blue); }
+.post-combat-move-banner span { color: var(--team-color); font: 8px var(--font-geist-mono), monospace; letter-spacing: .18em; }.post-combat-move-banner b { font-size: 12px; }
 .movement-fx-segment { position: absolute; inset: 0; pointer-events: none; }
 .movement-route-line { position: absolute; height: 2px; transform-origin: 0 50%; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--team-color), white 12%), transparent); box-shadow: 0 0 8px color-mix(in srgb, var(--team-color), transparent 35%); opacity: 0; animation: movementRoutePulse 620ms ease-out var(--move-delay) both; }
 .movement-path-fx.team-attack { --team-color: var(--red); }.movement-path-fx.team-defense { --team-color: var(--blue); }

@@ -206,6 +206,15 @@ interface AiEnemyKnowledge {
   observedTeamTurn: number;
 }
 
+interface AiRetreatMemory {
+  side: Side;
+  agentId: string;
+  avoidedRegion: number;
+  retreatRegion: number;
+  createdTeamTurn: number;
+  expiresTeamTurn: number;
+}
+
 interface VisibilityContext {
   actorSide: Side;
   viewerSide: Side;
@@ -372,6 +381,7 @@ interface CombatScene {
   waitClaim: { actorId: string; region: number; originRegion: number } | null;
   tailwindActorId: string | null;
   pendingShotActorId: string | null;
+  postMovementFx?: MovementFx[];
 }
 
 interface TeamAnalytics {
@@ -461,8 +471,10 @@ interface GameState {
   enemyMemories: EnemyMemory[];
   aiEnemyKnowledge: AiEnemyKnowledge[];
   aiRecoveryOrders: AiRecoveryOrder[];
+  aiRetreatMemories: AiRetreatMemory[];
   lastSkillFx: SkillFx | null;
   lastMovementFx: MovementFx | null;
+  postCombatMovementFxQueue: MovementFx[];
   turnKillCounts: Record<string, number>;
   lastKillFx: KillHighlight | null;
   roundKillHighlights: KillHighlight[];
@@ -854,8 +866,10 @@ function createInitialGame(
     enemyMemories: [],
     aiEnemyKnowledge: [],
     aiRecoveryOrders: [],
+    aiRetreatMemories: [],
     lastSkillFx: null,
     lastMovementFx: null,
+    postCombatMovementFxQueue: [],
     turnKillCounts: {},
     lastKillFx: null,
     roundKillHighlights: [],
@@ -998,8 +1012,10 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.enemyMemories = [];
   game.aiEnemyKnowledge = [];
   game.aiRecoveryOrders = [];
+  game.aiRetreatMemories = [];
   game.lastSkillFx = null;
   game.lastMovementFx = null;
+  game.postCombatMovementFxQueue = [];
   game.turnKillCounts = {};
   game.lastKillFx = null;
   game.roundKillHighlights = [];
@@ -1345,7 +1361,9 @@ function addTrade(game: GameState, trade: TradeState) {
 function ensureAiTacticalState(game: GameState) {
   game.aiEnemyKnowledge ??= [];
   game.aiRecoveryOrders ??= [];
+  game.aiRetreatMemories ??= [];
   game.lastMovementFx ??= null;
+  game.postCombatMovementFxQueue ??= [];
 }
 
 function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
@@ -1948,15 +1966,20 @@ function declinePendingContact(game: GameState) {
   resumeAfterSkippedContact(game, contact);
 }
 
-function showMovementFx(game: GameState, agent: Agent, path: number[]) {
-  if (path.length < 2) return;
-  game.lastMovementFx = {
+function createMovementFx(agent: Agent, path: number[]): MovementFx | null {
+  if (path.length < 2) return null;
+  return {
     id: `move-${Date.now()}-${agent.id}-${path.join("-")}`,
     agentId: agent.id,
     agentName: agent.name,
     team: agent.team,
     path: [...path],
   };
+}
+
+function showMovementFx(game: GameState, agent: Agent, path: number[]) {
+  const movementFx = createMovementFx(agent, path);
+  if (movementFx) game.lastMovementFx = movementFx;
 }
 
 function finishMovement(game: GameState, agent: Agent, origin: number, stopped = false) {
@@ -2483,6 +2506,42 @@ function aiRecoveryOrderIsValid(game: GameState, order: AiRecoveryOrder) {
 function pruneAiRecoveryOrders(game: GameState) {
   ensureAiTacticalState(game);
   game.aiRecoveryOrders = game.aiRecoveryOrders.filter((order) => aiRecoveryOrderIsValid(game, order));
+}
+
+function pruneAiRetreatMemories(game: GameState) {
+  ensureAiTacticalState(game);
+  game.aiRetreatMemories = game.aiRetreatMemories.filter((memory) => {
+    const agent = getAgent(game, memory.agentId);
+    return !!agent?.alive && agent.team === memory.side && game.teamTurns[memory.side] <= memory.expiresTeamTurn;
+  });
+}
+
+function aiRetreatReentryIsUrgent(game: GameState, agent: Agent) {
+  if (agent.team === "defense" && defenseRetakeMustAdvance(game, agent)) return true;
+  if (agent.team === "attack" && game.cycle >= FORCED_EXECUTE_CYCLE && !["planted", "half", "defusing"].includes(game.spike.status)) return true;
+  return false;
+}
+
+function aiCanReenterRetreatRegion(game: GameState, agent: Agent, memory: AiRetreatMemory) {
+  if (game.teamTurns[agent.team] <= memory.createdTeamTurn) return false;
+  const blockers = aiEnemyIntel(game, agent.team).filter((enemy) => enemy.exact && enemy.region === memory.avoidedRegion);
+  if (!blockers.length) return true;
+  const support = game.teams[agent.team].agents.filter((ally) =>
+    ally.alive && ally.id !== agent.id && distance(ally.region, memory.avoidedRegion) <= 1);
+  const breachSkillIds = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark"]);
+  const hasBreachUtility = AGENTS[agent.name].skills.some((skill) =>
+    breachSkillIds.has(skill.id) && (agent.skills[skill.id] ?? 0) > 0);
+  return hasBreachUtility || support.length > blockers.length;
+}
+
+function aiTargetsAfterRetreatMemory(game: GameState, agent: Agent, targets: number[]) {
+  pruneAiRetreatMemories(game);
+  const memory = game.aiRetreatMemories.find((item) => item.agentId === agent.id);
+  if (!memory || aiCanReenterRetreatRegion(game, agent, memory)) return targets;
+  return targets.filter((region) => {
+    const path = shortestPath(agent.region, region);
+    return region !== memory.avoidedRegion && !path.slice(1).includes(memory.avoidedRegion);
+  });
 }
 
 function aiRecoveryOrderForAgent(game: GameState, agent: Agent) {
@@ -3158,7 +3217,12 @@ function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) 
   })[0];
 }
 
-function shouldAiRetreat(game: GameState, agent: Agent) {
+function shouldAiRetreat(game: GameState, agent: Agent, retreatRegion?: number) {
+  if (aiRetreatReentryIsUrgent(game, agent)) return false;
+  if (agent.team === "defense" && retreatRegion !== undefined && game.spike.region !== null && ["planted", "half", "defusing"].includes(game.spike.status)) {
+    const interactionTurns = game.spike.status === "planted" ? 2 : 1;
+    if (game.spike.explosion <= distance(retreatRegion, game.spike.region) + interactionTurns) return false;
+  }
   const nearbyEnemies = aiEnemyIntel(game, agent.team).filter((enemy) => distance(agent.region, enemy.region) <= 1).length;
   const nearbyAllies = game.teams[agent.team].agents.filter((ally) => ally.alive && distance(agent.region, ally.region) <= 1).length;
   const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
@@ -4250,6 +4314,7 @@ function AiController(props: AiControllerProps) {
   const handledStepRef = useRef(0);
   useEffect(() => {
     if (!props.sides.length) return;
+    if (props.game.postCombatMovementFxQueue?.length) return;
     const manualStep = props.paused && props.stepSignal > handledStepRef.current;
     if (props.paused && !manualStep) return;
     if (manualStep) handledStepRef.current = props.stepSignal;
@@ -4274,7 +4339,7 @@ function AiController(props: AiControllerProps) {
             if (canAdvance) action = props.onCombatAdvance;
             else if (retreatTarget !== undefined) action = () => props.onCombatRetreat(retreatTarget);
           } else {
-            const shouldRetreat = retreatTarget !== undefined && shouldAiRetreat(props.game, actor);
+            const shouldRetreat = retreatTarget !== undefined && shouldAiRetreat(props.game, actor, retreatTarget);
             action = shouldRetreat ? () => props.onCombatRetreat(retreatTarget) : props.onCombatAttack;
           }
         }
@@ -4320,6 +4385,7 @@ export default function Home() {
   const [showSound, setShowSound] = useState(false);
   const combatTurnRef = useRef<HTMLDivElement | null>(null);
   const combatStageRef = useRef<HTMLDivElement | null>(null);
+  const mapBoardRef = useRef<HTMLDivElement | null>(null);
   const audioEventRef = useRef({
     encounterId: "",
     shots: new Set<string>(),
@@ -4426,6 +4492,26 @@ export default function Home() {
     }, 2200);
     return () => window.clearTimeout(timer);
   }, [activeKillFxId]);
+
+  const activePostCombatMovementFx = game.postCombatMovementFxQueue?.[0] ?? null;
+  useEffect(() => {
+    if (!activePostCombatMovementFx) return;
+    const activeId = activePostCombatMovementFx.id;
+    const duration = Math.max(760, (activePostCombatMovementFx.path.length - 1) * 260 + 520);
+    window.setTimeout(() => mapBoardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 40);
+    const timer = window.setTimeout(() => {
+      setGame((current) => {
+        if (current.postCombatMovementFxQueue[0]?.id !== activeId) return current;
+        const remaining = current.postCombatMovementFxQueue.slice(1);
+        return {
+          ...current,
+          postCombatMovementFxQueue: remaining,
+          lastMovementFx: remaining[0] ?? current.lastMovementFx,
+        };
+      });
+    }, duration);
+    return () => window.clearTimeout(timer);
+  }, [activePostCombatMovementFx]);
 
   const currentCombatPhase = game.combatQueue[0]?.phase ?? null;
   const currentCombatResult = game.combatQueue[0]?.result ?? null;
@@ -5100,6 +5186,7 @@ export default function Home() {
       draft.turnStartContactQueue = [];
       draft.groupMovement = null;
       draft.lastMovementFx = null;
+      draft.postCombatMovementFxQueue = [];
       draft.turnKillCounts = {};
 
       if (endingSide === "defense") {
@@ -5295,12 +5382,25 @@ export default function Home() {
     cancelProgress(draft, agent);
     if (draft.pendingMovement?.agentId === agent.id) draft.pendingMovement = null;
     agent.region = region;
-    showMovementFx(draft, agent, [from, region]);
+    const retreatMovementFx = createMovementFx(agent, [from, region]);
+    if (retreatMovementFx) {
+      scene.postMovementFx ??= [];
+      scene.postMovementFx.push(retreatMovementFx);
+    }
     agent.status.aimPenalty = Math.max(1, agent.status.aimPenalty);
     agent.status.moveBonus = Math.min(-1, agent.status.moveBonus);
     if (agent.id === scene.mover.id) scene.moverRetreated = true;
     const opponentId = agent.id === scene.mover.id ? scene.holder.id : scene.mover.id;
     const opponent = getAgent(draft, opponentId);
+    draft.aiRetreatMemories = draft.aiRetreatMemories.filter((memory) => memory.agentId !== agent.id);
+    draft.aiRetreatMemories.push({
+      side: agent.team,
+      agentId: agent.id,
+      avoidedRegion: from,
+      retreatRegion: region,
+      createdTeamTurn: draft.teamTurns[agent.team],
+      expiresTeamTurn: draft.teamTurns[agent.team] + 1,
+    });
     const recoveryOrder = aiRecoveryOrderForAgent(draft, agent);
     if (recoveryOrder) {
       if (opponent?.alive && !recoveryOrder.blockerIds.includes(opponent.id)) {
@@ -5545,6 +5645,10 @@ export default function Home() {
       return;
     }
     draft.combatQueue.shift();
+    if (scene.postMovementFx?.length) {
+      draft.postCombatMovementFxQueue.push(...scene.postMovementFx);
+      draft.lastMovementFx = draft.postCombatMovementFxQueue[0];
+    }
     const mover = getAgent(draft, scene.mover.id);
     const handledWaitClaim = !!scene.waitClaim;
     if (scene.waitClaim && continueWaitClaim(draft, scene.waitClaim)) return;
@@ -5782,7 +5886,8 @@ export default function Home() {
           playCard(draft, card, agent);
           return;
         }
-        const targets = cardTargets(draft, agent, card).filter((region) => region !== agent.region);
+        const rawTargets = cardTargets(draft, agent, card).filter((region) => region !== agent.region);
+        const targets = aiTargetsAfterRetreatMemory(draft, agent, rawTargets);
         if (!targets.length) continue;
         const recoveryObjective = aiRecoveryObjectiveForAgent(draft, agent);
         const recoveryDecision = recoveryObjective
@@ -5853,7 +5958,8 @@ export default function Home() {
   const canPlant = selectedAgent?.team === "attack" && selectedRegion?.site && game.spike.status === "carried" && game.spike.carrierId === selectedAgent.id;
   const canHalf = selectedAgent?.team === "defense" && game.spike.status === "planted" && game.spike.region === selectedAgent.region;
   const canFinal = selectedAgent?.team === "defense" && game.spike.status === "half" && game.spike.region === selectedAgent.region && game.spike.halfCycle !== game.cycle;
-  const combatScene = game.combatQueue[0] ?? null;
+  const combatIntermission = (game.postCombatMovementFxQueue?.length ?? 0) > 0;
+  const combatScene = combatIntermission ? null : game.combatQueue[0] ?? null;
   const combatActor = combatScene ? getAgent(game, combatScene.actorId) : null;
   const combatActorIsMover = !!(combatScene && combatActor?.id === combatScene.mover.id);
   const combatOpponent = combatScene && combatActor
@@ -5895,6 +6001,7 @@ export default function Home() {
   const movementVisible = !!movementFx && (
     spectatorMode
     || movementFx.team === viewerSide
+    || activePostCombatMovementFx?.id === movementFx.id
     || movementFx.path.every((region) => observed.has(region))
   );
   const movementArrivalDelay = movementFx ? Math.max(360, (movementFx.path.length - 2) * 240 + 360) : 0;
@@ -5980,8 +6087,12 @@ export default function Home() {
             <div><span className="live-dot" /> LIVE TACTICAL MAP</div>
             <div className="map-legend"><span><i className="dot ally" /> 아군</span><span><i className="dot enemy" /> 적</span><span><i className="dot target" /> 행동 가능</span></div>
           </div>
-          <div className="map-board fog-on">
+          <div className="map-board fog-on" ref={mapBoardRef}>
             <div className="map-vignette" />
+            {combatIntermission && activePostCombatMovementFx && <div className={`post-combat-move-banner team-${activePostCombatMovementFx.team}`}>
+              <span>COMBAT RETREAT</span>
+              <b>{activePostCombatMovementFx.agentName} · {activePostCombatMovementFx.path[0]} → {activePostCombatMovementFx.path.at(-1)}</b>
+            </div>}
             <div className="map-coordinate-layer">
             <div className="map-image" />
             {EDGES.map(([a, b]) => {
@@ -6082,7 +6193,7 @@ export default function Home() {
               <span>{game.pendingWait ? "점유 중인 적이 있으면 먼저 일반 교전을 벌입니다. 대기 시도자는 이 교전에서 후퇴할 수 없습니다." : "청록색으로 표시된 구역을 선택하세요."}</span>
               <button onClick={(event) => { event.stopPropagation(); if (game.pendingWait) skipWait(); else cancelTargeting(); }}>취소</button>
             </div>}
-            {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
+            {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && !combatIntermission && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
               <header><span>VISUAL CONTACT // 거리 1</span><strong>{pendingContactAgent.name}이 적을 발견했습니다</strong><p>보이는 것만으로는 교전하지 않습니다. 카드 소모 없이 지금 교전을 시작할 수 있습니다.</p></header>
               <div>{pendingContactEnemies.map((enemy) => { const offAngle = enemy.waitDirs.length > 0 && !enemy.waitDirs.includes(pendingContactAgent.region); return <button key={enemy.id} className={`contact-engage ${offAngle ? "off-angle-contact" : ""}`} onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{offAngle ? `기습 우선도 ${Math.max(1, (game.pendingContact?.priority ?? 3) - 1)} · 적 대응 우선도 3` : `${regionName(enemy.region)} · 양쪽 보너스 없음`}</small>{offAngle && <em>다른 방향 대기 중: {enemy.waitDirs.map((region) => `${region}번`).join(" · ")} · 대기 미발동</em>}</span></button>; })}</div>
               <button className="contact-skip" onClick={skipOptionalContact}><b>교전하지 않기</b><small>{game.pendingContact.source === "turn-start" ? "턴을 그대로 시작합니다" : "남은 이동·행동을 계속합니다"}</small></button>
@@ -6146,13 +6257,13 @@ export default function Home() {
             <div className="log-heading"><span>전투 기록</span><i>LIVE</i></div>
             {isAiControlledTurn && !spectatorMode ? <div className="opponent-turn-note"><b>상대 작전 진행 중</b><span>아군의 거리 1 시야와 직접 교전으로 확인되는 정보만 표시합니다.</span></div> : <ol>{viewerLog.map((entry, index) => <li key={`${entry}-${index}`}><span>{String(viewerLog.length - index).padStart(2, "0")}</span>{entry}</li>)}</ol>}
           </div>
-          {spectatorMode ? <div className="spectator-status"><i className={spectatorPaused ? "paused" : ""} /><span>{spectatorPaused ? "시뮬레이션 일시정지" : `AI 자동 진행 · ×${spectatorSpeed}`}</span><small>전장 전체 정보 공개</small></div> : <button className="end-turn" disabled={isAiControlledTurn || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner || !!combatScene || !!pendingAftershock || !!(selectedCard?.used && selectedCard.committedAgentId)} onClick={endTurn}><span>턴 종료</span><small>{game.actionsUsed}/3 카드 사용 · 미사용 카드도 버림</small></button>}
+          {spectatorMode ? <div className="spectator-status"><i className={spectatorPaused ? "paused" : ""} /><span>{spectatorPaused ? "시뮬레이션 일시정지" : `AI 자동 진행 · ×${spectatorSpeed}`}</span><small>전장 전체 정보 공개</small></div> : <button className="end-turn" disabled={isAiControlledTurn || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner || game.combatQueue.length > 0 || combatIntermission || !!pendingAftershock || !!(selectedCard?.used && selectedCard.committedAgentId)} onClick={endTurn}><span>턴 종료</span><small>{game.actionsUsed}/3 카드 사용 · 미사용 카드도 버림</small></button>}
         </aside>
       </section>
 
       {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner} ${spectatorMode ? "spectator-victory" : ""}`}><span className="eyebrow">ROUND {game.matchRound} COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p><RoundAccoladeSplash accolades={accolades} />{roundHighlight && <RoundHighlightCard highlight={roundHighlight} />}{spectatorMode && <MatchAnalysisPanel game={game} />}<div className="round-economy"><article><span>{SIDE_LABEL[game.winner]}</span><b>+{winnerReward?.total}원</b><small>라운드 {winnerReward?.resultIncome} · 보너스 {winnerReward?.bonus}</small></article><article><span>{SIDE_LABEL[otherSide(game.winner)]}</span><b>+{loserReward?.total}원</b><small>라운드 {loserReward?.resultIncome} · 보너스 {loserReward?.bonus}</small></article></div><div className="victory-actions"><button onClick={() => startNextRound(false)}><span>{spectatorMode ? "AI 자동 구매 후 계속" : "장비·경제 유지"}</span><strong>다음 라운드</strong></button><button onClick={() => startNextRound(true)}><span>공수 교대 · 경제 초기화</span><strong>진영 교대</strong></button><button className="secondary" onClick={restartToTitle}>새 작전</button></div></div></div>}
 
-      {pendingAftershock && !combatScene && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">AFTERSHOCK // FORCED CHOICE</span><h2>{pendingAftershock.agent!.name} · 여진 해결</h2><p>{regionName(pendingAftershock.effect.region)}을 떠나거나 피해 {SKILL_DAMAGE.aftershock}를 받아야 합니다. 이동하면 대기와 설치·해체 진행을 잃습니다.</p><div className="choice-grid"><button className="danger-choice" onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id)}><b>위치 유지</b><small>피해 {SKILL_DAMAGE.aftershock} 받기</small></button>{(GRAPH.get(pendingAftershock.agent!.region) ?? []).map((region) => <button key={region} onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id, region)}><b>{region}번 이동</b><small>{regionName(region)}</small></button>)}</div></section></div>}
+      {pendingAftershock && !combatScene && !combatIntermission && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">AFTERSHOCK // FORCED CHOICE</span><h2>{pendingAftershock.agent!.name} · 여진 해결</h2><p>{regionName(pendingAftershock.effect.region)}을 떠나거나 피해 {SKILL_DAMAGE.aftershock}를 받아야 합니다. 이동하면 대기와 설치·해체 진행을 잃습니다.</p><div className="choice-grid"><button className="danger-choice" onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id)}><b>위치 유지</b><small>피해 {SKILL_DAMAGE.aftershock} 받기</small></button>{(GRAPH.get(pendingAftershock.agent!.region) ?? []).map((region) => <button key={region} onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id, region)}><b>{region}번 이동</b><small>{regionName(region)}</small></button>)}</div></section></div>}
 
       {game.targeting?.kind === "skill" && ((game.targeting.candidateAgentIds?.length ?? 0) > 0 || (game.targeting.candidateDeployableIds?.length ?? 0) > 0) && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">TARGET SELECT</span><h2>스킬 목표 선택</h2><div className="choice-grid">{game.targeting.candidateAgentIds?.map((id) => { const target = getAgent(game, id); return target ? <button key={id} onClick={() => resolveSkillCandidate(id, "agent")}><b>{target.name}</b><small>{target.team === game.turnSide ? "아군" : "탐지된 적"} · {target.region}번</small></button> : null; })}{game.targeting.candidateDeployableIds?.map((id) => { const device = game.deployables.find((item) => item.id === id); return device ? <button key={id} onClick={() => resolveSkillCandidate(id, "deployable")}><b>{device.kind}</b><small>설치물 · {device.region}번</small></button> : null; })}</div><button className="choice-cancel" onClick={cancelTargeting}>취소</button></section></div>}
 

@@ -444,6 +444,34 @@ test("map movement follows the graph while attack AI avoids rear holds and misti
   assert.match(page, /agent\.status\.moveRangeBonus > 0 \|\| agent\.status\.highGear/);
 });
 
+test("combat retreat closes the result scene before replaying movement on the tactical map", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /postMovementFx\?: MovementFx\[\]/);
+  assert.match(page, /postCombatMovementFxQueue: MovementFx\[\]/);
+  assert.match(page, /scene\.postMovementFx\.push\(retreatMovementFx\)/);
+  assert.match(page, /draft\.combatQueue\.shift\(\);[\s\S]*draft\.postCombatMovementFxQueue\.push/);
+  assert.match(page, /const combatScene = combatIntermission \? null : game\.combatQueue\[0\]/);
+  assert.match(page, /mapBoardRef\.current\?\.scrollIntoView/);
+  assert.match(page, /props\.game\.postCombatMovementFxQueue\?\.length/);
+  assert.match(page, /COMBAT RETREAT/);
+  assert.match(css, /\.post-combat-move-banner/);
+});
+
+test("AI remembers a conceded entry and only re-enters after regrouping or utility", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /interface AiRetreatMemory/);
+  assert.match(page, /avoidedRegion: from/);
+  assert.match(page, /expiresTeamTurn: draft\.teamTurns\[agent\.team\] \+ 1/);
+  assert.match(page, /function aiTargetsAfterRetreatMemory/);
+  assert.match(page, /!path\.slice\(1\)\.includes\(memory\.avoidedRegion\)/);
+  assert.match(page, /hasBreachUtility \|\| support\.length > blockers\.length/);
+  assert.match(page, /if \(aiRetreatReentryIsUrgent\(game, agent\)\) return false/);
+  assert.match(page, /shouldAiRetreat\(props\.game, actor, retreatTarget\)/);
+});
+
 test("defense retake deadline forces a paired trade entry before two-stage defuse expires", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function defenseRetakeMustAdvance/);
