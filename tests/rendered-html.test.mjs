@@ -344,7 +344,7 @@ test("mid-round AI replans, plants secured sites, and uses utility for entry and
   assert.match(page, /사이트 설치 판단 · 주변 아군/);
   assert.match(page, /const sameRegionThreats = visibleThreats\.filter/);
   assert.match(page, /bodyguards\.length >= visibleThreats\.length/);
-  assert.match(page, /const forced = game\.cycle >= PRE_PLANT_CYCLE_LIMIT - 2/);
+  assert.match(page, /const forced = attackForcedPlantMode\(game\)/);
   assert.match(page, /const plantingReserveCarrierId =/);
   assert.match(page, /const reservedPlantCarrierId =/);
   assert.match(page, /function aiEntryUtilityRegion/);
@@ -355,6 +355,22 @@ test("mid-round AI replans, plants secured sites, and uses utility for entry and
   assert.match(page, /mainBodyDistance > 2 && !knownHold/);
   assert.match(page, /side === "defense" && !spikeActive && !defenseThreatSite\(game\)/);
   assert.match(page, /attackSiteSituation\(draft, draft\.attackPlan\.targetSite\)\.alliesOnSite\.length > 0/);
+});
+
+test("attack AI abandons scouting and forces site clear, carrier entry, plant, and cover with two cycles left", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function attackForcedPlantMode/);
+  assert.match(page, /game\.cycle >= FORCED_EXECUTE_CYCLE/);
+  assert.match(page, /function enforceAttackForcedPlantPlan/);
+  assert.match(page, /game\.attackPlan\.formation = "five"/);
+  assert.match(page, /사이트 강제 실행 · 사이트 정리 → 운반자 진입 → 즉시 설치 → 설치 보호/);
+  assert.match(page, /enforceAttackForcedPlantPlan\(draft\)/);
+  assert.match(page, /!\(side === "attack" && attackForcedPlantMode\(draft\)\) && aiPickupWeaponAtCurrentRegion/);
+  assert.match(page, /sameRegionEnemy && queueCurrentEncounter\(draft, carrier, 3, true, 0, true, "turn-start"\)/);
+  assert.match(page, /if \(siteContested && agent\.role === "duelist"/);
+  assert.match(page, /if \(agent\.id === carrier\?\.id\) return -100/);
+  assert.match(page, /const weaponDestination = forcedPlant \? null : aiWeaponDestination/);
+  assert.match(page, /forcedPlant && draft\.spike\.status === "carried" \? null : aiRecoveryObjectiveForAgent/);
 });
 
 test("AI protects spike transport, recovers drops, and converts defense to spike denial", async () => {
@@ -399,10 +415,10 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /agent\.weapon === "classic" \? 4 : 7/);
   assert.match(page, /game\.spike\.carrierId === agent\.id/);
   assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
-  assert.match(page, /if \(aiPickupWeaponAtCurrentRegion\(draft, side\)\) return/);
+  assert.match(page, /!\(side === "attack" && attackForcedPlantMode\(draft\)\) && aiPickupWeaponAtCurrentRegion\(draft, side\)/);
   assert.match(page, /&& !aiWeaponPickupObjective\(draft, agent\)/);
-  assert.match(page, /const weaponDestination = aiWeaponDestination/);
-  assert.match(page, /const classicWeaponClaimants = team\.agents\.filter/);
+  assert.match(page, /const weaponDestination = forcedPlant \? null : aiWeaponDestination/);
+  assert.match(page, /const classicWeaponClaimants = forcedPlant \? \[\] : team\.agents\.filter/);
   assert.match(page, /if \(weaponObjective && agent\.weapon === "classic"\) return -48/);
   assert.match(page, /const priorityDestination = agent\.weapon === "classic"/);
   assert.match(page, /className="weapon-drop"/);
@@ -576,7 +592,7 @@ test("attackers configure opening waits at spawn before the first defense turn",
   assert.match(css, /\.opening-wait-screen/);
 });
 
-test("sniper waits target exact range-two regions and respect every smoke edge", async () => {
+test("sniper waits target exact range-two regions while non-wait attacks lose one priority step", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function waitTargetsFor\(agent: Agent\)/);
   assert.match(page, /WEAPONS\[agent\.weapon\]\.type === "sniper" \? 2 : 1/);
@@ -587,6 +603,11 @@ test("sniper waits target exact range-two regions and respect every smoke edge",
   assert.match(page, /enemy\.waitDirs\.includes\(mover\.region\)/);
   assert.match(page, /function isWaitPathSmokeBlocked/);
   assert.match(page, /path\.slice\(0, -1\)\.some/);
+  assert.match(page, /const moverSniperNonWaitPenalty = WEAPONS\[mover\.weapon\]\.type === "sniper" \? 1 : 0/);
+  assert.match(page, /const holderSniperNonWaitPenalty = WEAPONS\[enemy\.weapon\]\.type === "sniper" && !waiting \? 1 : 0/);
+  assert.match(page, /moverPriority \+ moverSniperNonWaitPenalty/);
+  assert.match(page, /\(waiting \? 1 : 3\) \+ holderSniperNonWaitPenalty/);
+  assert.match(page, /비대기 교전 우선도 \+1\(한 단계 느림\)/);
   assert.match(page, /저격 대기 구역 선택 · 거리 1~2/);
   assert.doesNotMatch(page, /enemy\.waitDirs\.includes\(path\[1\]\)/);
 });
