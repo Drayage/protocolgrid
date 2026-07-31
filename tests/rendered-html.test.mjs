@@ -533,7 +533,9 @@ test("four health, two armor, weapons, and utility share the six-durability bala
   assert.match(page, /bucky: \{[^}]*body: 3, head: 4/);
   assert.match(page, /spectre: \{[^}]*body: 3, head: 4/);
   assert.match(page, /bulldog: \{[^}]*body: 3, head: 4/);
-  assert.match(page, /outlaw: \{[^}]*body: 4, head: 5/);
+  assert.match(page, /outlaw: \{[^}]*body: 5, head: 6, price: 20/);
+  assert.match(page, /const outlawNonWaitPenalty = weapon\.id === "outlaw" && !waiting \? 1 : 0/);
+  assert.match(page, /비대기 공격 몸통·헤드 피해 -1/);
   assert.match(page, /judge: \{[^}]*body: 4, head: 5/);
   assert.match(page, /phantom: \{[^}]*body: 4, head: 5/);
   assert.match(page, /vandal: \{[^}]*body: 4, head: 6/);

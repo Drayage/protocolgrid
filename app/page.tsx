@@ -535,7 +535,7 @@ const WEAPONS: Record<WeaponId, Weapon> = {
   bucky: { id: "bucky", name: "버키", type: "shotgun", body: 3, head: 4, price: 8, aim: 0, move: 0, unlock: 2 },
   spectre: { id: "spectre", name: "스펙터", type: "normal", body: 3, head: 4, price: 10, aim: 0, move: 1, unlock: 2 },
   bulldog: { id: "bulldog", name: "불독", type: "normal", body: 3, head: 4, price: 12, aim: 1, move: 0, unlock: 2 },
-  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 4, head: 5, price: 14, aim: 0, move: 0, unlock: 2 },
+  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 5, head: 6, price: 20, aim: 0, move: 0, unlock: 2 },
   judge: { id: "judge", name: "저지", type: "shotgun", body: 4, head: 5, price: 16, aim: 0, move: 1, unlock: 3 },
   phantom: { id: "phantom", name: "팬텀", type: "normal", body: 4, head: 5, price: 24, aim: 1, move: 1, unlock: 3 },
   vandal: { id: "vandal", name: "밴달", type: "normal", body: 4, head: 6, price: 24, aim: 1, move: 0, unlock: 3 },
@@ -549,6 +549,7 @@ function weaponRuleSummary(weapon: Weapon) {
   if (weapon.type === "normal") rules.push("사거리 1", "거리 0 에임 +1");
   if (weapon.type === "shotgun") rules.push("사거리 1", "거리 1 에임 -2", `거리 0 에임 +2 · 피해 +${SHOTGUN_CLOSE_DAMAGE_BONUS}`);
   if (weapon.type === "sniper") rules.push("대기 구역 거리 2 지정", "대기 사격 에임 +1", "거리 0 에임 -1");
+  if (weapon.id === "outlaw") rules.push("비대기 공격 몸통·헤드 피해 -1");
   return rules.join(" · ");
 }
 
@@ -1378,20 +1379,21 @@ function appliedMoveSize(game: GameState, defender: Agent, defenderMoveBonus: nu
   return Math.max(1, finalStats(game, defender).move + defenderMoveBonus);
 }
 
-function appliedDamageProfile(attacker: Agent, defender: Agent, range: number) {
+function appliedDamageProfile(attacker: Agent, defender: Agent, range: number, waiting: boolean) {
   const weapon = WEAPONS[attacker.weapon];
   const rangeBonus = weapon.type === "shotgun" && range === 0 ? SHOTGUN_CLOSE_DAMAGE_BONUS : 0;
   const vulnerableBonus = defender.status.vulnerable ? 1 : 0;
+  const outlawNonWaitPenalty = weapon.id === "outlaw" && !waiting ? 1 : 0;
   return {
-    body: weapon.body + rangeBonus + vulnerableBonus,
-    head: weapon.head + rangeBonus + vulnerableBonus,
+    body: weapon.body + rangeBonus + vulnerableBonus - outlawNonWaitPenalty,
+    head: weapon.head + rangeBonus + vulnerableBonus - outlawNonWaitPenalty,
   };
 }
 
 function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number) {
   const aim = appliedAimSize(game, attacker, defender, range, waiting, aimBonus);
   const move = appliedMoveSize(game, defender, defenderMoveBonus);
-  const damage = appliedDamageProfile(attacker, defender, range);
+  const damage = appliedDamageProfile(attacker, defender, range, waiting);
   const total = aim * move;
   let bodyOutcomes = 0;
   let headOutcomes = 0;
@@ -1418,7 +1420,7 @@ function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, ra
 function makeShot(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number): ShotResult {
   const aim = appliedAimSize(game, attacker, defender, range, waiting, aimBonus);
   const move = appliedMoveSize(game, defender, defenderMoveBonus);
-  const damageProfile = appliedDamageProfile(attacker, defender, range);
+  const damageProfile = appliedDamageProfile(attacker, defender, range, waiting);
   const aimRoll = roll(aim);
   const moveRoll = roll(move);
   const value = aimRoll - moveRoll;
@@ -3402,7 +3404,7 @@ function combatAppliedStats(game: GameState, scene: CombatScene, fighter: Combat
   const aimBonus = isMover ? scene.moverAimBonus : scene.holderAimBonus;
   const previewAim = appliedAimSize(game, agent, opponent, scene.range, !isMover && scene.waiting, aimBonus);
   const previewMove = appliedMoveSize(game, agent, isMover ? scene.moverMoveBonus : 0);
-  const previewDamage = appliedDamageProfile(agent, opponent, scene.range);
+  const previewDamage = appliedDamageProfile(agent, opponent, scene.range, !isMover && scene.waiting);
   const aim = fighter.shot?.aimSize ?? previewAim;
   const move = incomingShot?.moveSize ?? previewMove;
   const bodyDamage = fighter.shot?.bodyDamage ?? previewDamage.body;
