@@ -1484,11 +1484,18 @@ function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, ra
   const total = aim * move;
   let bodyOutcomes = 0;
   let headOutcomes = 0;
+  let killOutcomes = 0;
+  const defenderDurability = defender.hp + defender.armor;
   for (let aimRoll = 1; aimRoll <= aim; aimRoll += 1) {
     for (let moveRoll = 1; moveRoll <= move; moveRoll += 1) {
       const value = aimRoll - moveRoll;
-      if (value >= 5) headOutcomes += 1;
-      else if (value > 0) bodyOutcomes += 1;
+      if (value >= 5) {
+        headOutcomes += 1;
+        if (damage.head >= defenderDurability) killOutcomes += 1;
+      } else if (value > 0) {
+        bodyOutcomes += 1;
+        if (damage.body >= defenderDurability) killOutcomes += 1;
+      }
     }
   }
   const percentage = (count: number) => Math.round((count / total) * 100);
@@ -1500,6 +1507,7 @@ function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, ra
     headDamage: damage.head,
     hitChance: percentage(bodyOutcomes + headOutcomes),
     headChance: percentage(headOutcomes),
+    killChance: percentage(killOutcomes),
     expectedDamage,
   };
 }
@@ -3232,6 +3240,66 @@ function shouldAiRetreat(game: GameState, agent: Agent, retreatRegion?: number) 
   return defenseOverextended || heavilyOutnumbered || (agent.hp <= AGENT_MAX_HP / 2 && nearbyEnemies > nearbyAllies);
 }
 
+function aiCombatOdds(game: GameState, scene: CombatScene, attacker: Agent, defender: Agent) {
+  const attackerIsMover = attacker.id === scene.mover.id;
+  const defenderIsMover = defender.id === scene.mover.id;
+  return calculateShotOdds(
+    game,
+    attacker,
+    defender,
+    scene.range,
+    !attackerIsMover && scene.waiting,
+    attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus,
+    defenderIsMover ? scene.moverMoveBonus : 0,
+  );
+}
+
+function aiShotgunApproachRegion(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent, retreatOptions: number[]) {
+  if (WEAPONS[actor.weapon].type !== "shotgun" || scene.range !== 1 || !retreatOptions.includes(opponent.region)) return null;
+  const nearbyExactEnemies = aiEnemyIntel(game, actor.team).filter((enemy) =>
+    enemy.exact && distance(enemy.region, opponent.region) <= 1);
+  if (nearbyExactEnemies.length !== 1 || nearbyExactEnemies[0].agent.id !== opponent.id) return null;
+
+  const currentOdds = aiCombatOdds(game, scene, actor, opponent);
+  const currentReturnFire = aiCombatOdds(game, scene, opponent, actor);
+  const retreatAimDelta = actor.status.aimPenalty > 0 ? 0 : -1;
+  const retreatMoveDelta = Math.min(-1, actor.status.moveBonus) - actor.status.moveBonus;
+  const closeOdds = calculateShotOdds(game, actor, opponent, 0, false, retreatAimDelta, 0);
+  const closeReturnFire = calculateShotOdds(game, opponent, actor, 0, opponent.waitDirs.length > 0, 0, retreatMoveDelta);
+  const actorDurability = Math.max(1, actor.hp + actor.armor);
+  const opponentDurability = Math.max(1, opponent.hp + opponent.armor);
+  const currentValue = currentOdds.killChance * 1.4
+    + currentOdds.expectedDamage / opponentDurability * 55
+    - currentReturnFire.expectedDamage / actorDurability * 22;
+  const closeSurvival = Math.max(0, 100 - closeReturnFire.killChance);
+  const closeValue = (closeOdds.killChance * 1.4 + closeOdds.expectedDamage / opponentDurability * 55)
+    * closeSurvival / 100
+    - closeReturnFire.expectedDamage / actorDurability * 28;
+  return closeSurvival >= 35 && closeValue >= currentValue + 8 ? opponent.region : null;
+}
+
+function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, retreatOptions: number[]) {
+  const opponentId = actor.id === scene.mover.id ? scene.holder.id : scene.mover.id;
+  const opponent = getAgent(game, opponentId);
+  if (!opponent?.alive) return { type: "attack" as const };
+
+  const shotgunApproach = aiShotgunApproachRegion(game, scene, actor, opponent, retreatOptions);
+  if (shotgunApproach !== null) return { type: "retreat" as const, region: shotgunApproach, approach: true };
+
+  const retreatRegion = aiRetreatDestination(game, actor, retreatOptions);
+  if (retreatRegion === undefined) return { type: "attack" as const };
+  const attackOdds = aiCombatOdds(game, scene, actor, opponent);
+  const returnFire = aiCombatOdds(game, scene, opponent, actor);
+  const actorDurability = Math.max(1, actor.hp + actor.armor);
+  const opponentDurability = Math.max(1, opponent.hp + opponent.armor);
+  const attackValue = attackOdds.killChance * 1.35 + attackOdds.expectedDamage / opponentDurability * 55;
+  const dangerValue = returnFire.killChance * 1.15 + returnFire.expectedDamage / actorDurability * 48;
+  const oddsFavorRetreat = dangerValue >= attackValue + 20 || (attackOdds.hitChance <= 25 && returnFire.hitChance >= attackOdds.hitChance + 25);
+  return oddsFavorRetreat || shouldAiRetreat(game, actor, retreatRegion)
+    ? { type: "retreat" as const, region: retreatRegion, approach: false }
+    : { type: "attack" as const };
+}
+
 function aiSkillRegions(agent: Agent, target: SkillTarget) {
   return REGIONS
     .filter((region) => {
@@ -3284,6 +3352,39 @@ function aiHasFollowupMovementCard(game: GameState, agent: Agent) {
     !card.used
     && canUseCard(card, agent)
     && cardTargets(game, agent, card).some((region) => region !== agent.region));
+}
+
+function aiPhoenixShouldHoldOwnFire(game: GameState, agent: Agent) {
+  return agent.name === "피닉스"
+    && agent.hp < AGENT_MAX_HP
+    && game.fires.some((fire) => fire.owner === agent.team && fire.ownerAgentId === agent.id && fire.region === agent.region);
+}
+
+function aiShadowStepDestination(game: GameState, agent: Agent, objective: number, intel: AiEnemyIntel[]) {
+  const exactIntel = intel.filter((item) => item.exact);
+  const currentObjectiveDistance = distance(agent.region, objective);
+  const candidates = aiSkillRegions(agent, "range2")
+    .filter((region) => region !== agent.region)
+    .map((region) => {
+      const exposedEnemies = exactIntel.filter((enemy) =>
+        distance(region, enemy.region) <= 1 && !isWaitPathSmokeBlocked(game, enemy.region, region));
+      const activeHolds = exactIntel.filter((enemy) =>
+        enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region));
+      const occupied = exposedEnemies.some((enemy) => enemy.region === region);
+      if (occupied || exposedEnemies.length || activeHolds.length) return null;
+      const progress = currentObjectiveDistance - distance(region, objective);
+      const smokeCover = exactIntel.filter((enemy) => isWaitPathSmokeBlocked(game, enemy.region, region)).length;
+      const support = game.teams[agent.team].agents.filter((ally) =>
+        ally.alive && ally.id !== agent.id && distance(ally.region, region) <= 1).length;
+      const exits = GRAPH.get(region)?.length ?? 0;
+      const danger = knownThreatScoreAtRegion(game, agent.team, region);
+      const score = progress * 6 + smokeCover * 5 + support * 2 + exits - danger * 3;
+      return { region, progress, smokeCover, support, score };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate)
+    .filter((candidate) => candidate.progress > 0 || candidate.smokeCover > 0 || candidate.support > 0)
+    .sort((a, b) => b.score - a.score);
+  return candidates[0]?.score > 0 ? candidates[0].region : null;
 }
 
 function aiWatchDirection(game: GameState, agent: Agent, intel: AiEnemyIntel[], kind: "trip" | "turret") {
@@ -3534,7 +3635,8 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         const enemyRegion = currentAndAdjacent
           .map((region) => ({ region, count: intel.filter((item) => item.region === region).length }))
           .sort((a, b) => b.count - a.count)[0];
-        const target = agent.hp < AGENT_MAX_HP ? agent.region : enemyRegion?.count ? enemyRegion.region : null;
+        const canHoldForHealing = agent.hp < AGENT_MAX_HP && !aiRetreatReentryIsUrgent(game, agent);
+        const target = canHoldForHealing ? agent.region : enemyRegion?.count ? enemyRegion.region : null;
         if (target === null || game.fires.some((fire) => fire.owner === side && fire.region === target)) continue;
         if (!begin()) return true;
         game.fires.push({ id: `ai-hot-${game.turnSerial}-${target}`, owner: side, ownerAgentId: agent.id, region: target, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
@@ -3674,14 +3776,8 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "shadow") {
-        const destination = aiSkillRegions(agent, "range2")
-          .filter((region) => region !== agent.region)
-          .sort((a, b) => {
-            const enemyA = exactIntel.some((item) => item.region === a) ? -4 : 0;
-            const enemyB = exactIntel.some((item) => item.region === b) ? -4 : 0;
-            return distance(a, objective) + enemyA - (distance(b, objective) + enemyB);
-          })[0];
-        if (destination === undefined || (distance(destination, objective) >= distance(agent.region, objective) && !exactIntel.some((item) => item.region === destination))) continue;
+        const destination = aiShadowStepDestination(game, agent, objective, intel);
+        if (destination === null) continue;
         if (!begin()) return true;
         clearWait(agent);
         cancelProgress(game, agent);
@@ -4339,8 +4435,8 @@ function AiController(props: AiControllerProps) {
             if (canAdvance) action = props.onCombatAdvance;
             else if (retreatTarget !== undefined) action = () => props.onCombatRetreat(retreatTarget);
           } else {
-            const shouldRetreat = retreatTarget !== undefined && shouldAiRetreat(props.game, actor, retreatTarget);
-            action = shouldRetreat ? () => props.onCombatRetreat(retreatTarget) : props.onCombatAttack;
+            const decision = aiCombatDecision(props.game, scene, actor, retreatOptions);
+            action = decision.type === "retreat" ? () => props.onCombatRetreat(decision.region) : props.onCombatAttack;
           }
         }
       } else {
@@ -5874,7 +5970,8 @@ export default function Home() {
           const holdingPlantSite = agent.id === reservedPlantCarrierId
             && agent.extraActions > 0
             && !!REGIONS.find((region) => region.id === agent.region)?.site;
-          return agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent) && !holdingPlantSite;
+          const holdingOwnFireForHealing = aiPhoenixShouldHoldOwnFire(draft, agent);
+          return agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent) && !holdingPlantSite && !holdingOwnFireForHealing;
         })
         .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
       for (const agent of candidates) {

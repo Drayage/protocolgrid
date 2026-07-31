@@ -192,6 +192,38 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   }
 });
 
+test("Phoenix holds healing fire while Omen teleports only into a covered empty angle", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function aiPhoenixShouldHoldOwnFire/);
+  assert.match(page, /agent\.hp < AGENT_MAX_HP/);
+  assert.match(page, /holdingOwnFireForHealing = aiPhoenixShouldHoldOwnFire/);
+  assert.match(page, /!holdingPlantSite && !holdingOwnFireForHealing/);
+  assert.match(page, /const canHoldForHealing = agent\.hp < AGENT_MAX_HP && !aiRetreatReentryIsUrgent/);
+  assert.match(page, /function aiShadowStepDestination/);
+  assert.match(page, /const exposedEnemies = exactIntel\.filter/);
+  assert.match(page, /const activeHolds = exactIntel\.filter/);
+  assert.match(page, /if \(occupied \|\| exposedEnemies\.length \|\| activeHolds\.length\) return null/);
+  assert.match(page, /progress \* 6 \+ smokeCover \* 5 \+ support \* 2/);
+  assert.match(page, /const destination = aiShadowStepDestination\(game, agent, objective, intel\)/);
+  assert.doesNotMatch(page, /const enemyA = exactIntel\.some\(\(item\) => item\.region === a\) \? -4 : 0/);
+});
+
+test("AI compares real combat odds and lets an isolated shotgun close distance through retreat", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /let killOutcomes = 0/);
+  assert.match(page, /killChance: percentage\(killOutcomes\)/);
+  assert.match(page, /function aiCombatOdds/);
+  assert.match(page, /function aiShotgunApproachRegion/);
+  assert.match(page, /WEAPONS\[actor\.weapon\]\.type !== "shotgun" \|\| scene\.range !== 1/);
+  assert.match(page, /nearbyExactEnemies\.length !== 1/);
+  assert.match(page, /const retreatAimDelta = actor\.status\.aimPenalty > 0 \? 0 : -1/);
+  assert.match(page, /const retreatMoveDelta = Math\.min\(-1, actor\.status\.moveBonus\) - actor\.status\.moveBonus/);
+  assert.match(page, /const closeSurvival = Math\.max\(0, 100 - closeReturnFire\.killChance\)/);
+  assert.match(page, /closeValue >= currentValue \+ 8 \? opponent\.region : null/);
+  assert.match(page, /const oddsFavorRetreat = dangerValue >= attackValue \+ 20/);
+  assert.match(page, /const decision = aiCombatDecision\(props\.game, scene, actor, retreatOptions\)/);
+});
+
 test("defense AI holds the site perimeter, spreads cards, and retreats when heavily outnumbered", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /const DEFENSE_OPERATING_REGIONS = new Set/);
@@ -469,7 +501,7 @@ test("AI remembers a conceded entry and only re-enters after regrouping or utili
   assert.match(page, /!path\.slice\(1\)\.includes\(memory\.avoidedRegion\)/);
   assert.match(page, /hasBreachUtility \|\| support\.length > blockers\.length/);
   assert.match(page, /if \(aiRetreatReentryIsUrgent\(game, agent\)\) return false/);
-  assert.match(page, /shouldAiRetreat\(props\.game, actor, retreatTarget\)/);
+  assert.match(page, /shouldAiRetreat\(game, actor, retreatRegion\)/);
 });
 
 test("defense retake deadline forces a paired trade entry before two-stage defuse expires", async () => {
