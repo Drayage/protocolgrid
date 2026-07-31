@@ -486,7 +486,7 @@ test("turret attacks use the combat scene and weapon cards explain every modifie
   assert.match(page, /상시 에임 \+\$\{weapon\.aim\}/);
   assert.match(page, /상시 무빙 \+\$\{weapon\.move\}/);
   assert.match(page, /대기 사격 에임 \+1/);
-  assert.match(page, /거리 0 에임 \+2 · 피해 \+1/);
+  assert.match(page, /거리 0 에임 \+2 · 피해 \+\$\{SHOTGUN_CLOSE_DAMAGE_BONUS\}/);
   assert.match(css, /\.turret-avatar, \.turret-portrait/);
   assert.match(css, /\.weapon-rule-copy/);
 });
@@ -505,7 +505,8 @@ test("combat UI shows applied dice, distance damage, vital slots, and distinct s
   assert.match(page, /fighter\.shot\?\.aimSize \?\? previewAim/);
   assert.match(page, /incomingShot\?\.moveSize \?\? previewMove/);
   assert.match(page, /function CombatVitalSlots/);
-  assert.match(page, /\{\[0, 1\]\.map/);
+  assert.match(page, /const max = kind === "hp" \? AGENT_MAX_HP : MAX_ARMOR/);
+  assert.match(page, /Array\.from\(\{ length: max \}/);
   assert.match(page, /className=\{statClass\(appliedStats\.aimDelta\)\}/);
   assert.match(page, /BODY <b>\{appliedStats\.bodyDamage\}/);
   assert.match(page, /HEAD <b>\{appliedStats\.headDamage\}/);
@@ -520,6 +521,22 @@ test("combat UI shows applied dice, distance damage, vital slots, and distinct s
   assert.match(css, /\.combat-roll\.miss/);
   assert.match(css, /\.combat-fighter\.incoming-headshot/);
   assert.match(css, /@keyframes headshotImpact/);
+});
+
+test("four health, two armor, weapons, and utility share the six-durability balance scale", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const AGENT_MAX_HP = 4/);
+  assert.match(page, /const MAX_ARMOR = 2/);
+  assert.match(page, /const SHOTGUN_CLOSE_DAMAGE_BONUS = 2/);
+  assert.match(page, /sheriff: \{[^}]*body: 2, head: 6/);
+  assert.match(page, /outlaw: \{[^}]*body: 4, head: 6/);
+  assert.match(page, /phantom: \{[^}]*body: 2, head: 5/);
+  assert.match(page, /vandal: \{[^}]*body: 2, head: 6/);
+  assert.match(page, /operator: \{[^}]*body: 6, head: 8/);
+  assert.match(page, /paint: 2,[\s\S]*hot: 2,[\s\S]*shock: 2,[\s\S]*aftershock: 4,[\s\S]*turret: 2/);
+  assert.match(page, /hp: AGENT_MAX_HP/);
+  assert.match(page, /agent\.hp = AGENT_MAX_HP/);
+  assert.match(page, /Math\.min\(AGENT_MAX_HP, agent\.hp \+ 1\)/);
 });
 
 test("death selection, objective intel, and dropped weapons obey the active viewer", async () => {
@@ -544,7 +561,7 @@ test("combat odds, aftershock damage, condition badges, and weapon silhouettes s
   assert.match(page, /for \(let aimRoll = 1; aimRoll <= aim; aimRoll \+= 1\)/);
   assert.match(page, /combatAttackPreview\.hitChance/);
   assert.match(page, /combatAttackPreview\.expectedDamage/);
-  assert.match(page, /applyDamage\(draft, getAgent\(draft, effect\.ownerAgentId\), agent, 2, "여진 폭발"\)/);
+  assert.match(page, /applyDamage\(draft, getAgent\(draft, effect\.ownerAgentId\), agent, SKILL_DAMAGE\.aftershock, "여진 폭발"\)/);
   assert.match(page, /function AgentStatusBadges/);
   assert.match(page, /effect\.kind === "blind"/);
   assert.match(page, /effect\.kind === "concussed"/);

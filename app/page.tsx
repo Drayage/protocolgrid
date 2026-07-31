@@ -446,6 +446,16 @@ const SIDE_LABEL: Record<Side, string> = { attack: "공격팀", defense: "수비
 const PRE_PLANT_CYCLE_LIMIT = 12;
 const SPIKE_EXPLOSION_ROUNDS = 6;
 const FORCED_EXECUTE_CYCLE = PRE_PLANT_CYCLE_LIMIT - 2;
+const AGENT_MAX_HP = 4;
+const MAX_ARMOR = 2;
+const SHOTGUN_CLOSE_DAMAGE_BONUS = 2;
+const SKILL_DAMAGE = {
+  paint: 2,
+  hot: 2,
+  shock: 2,
+  aftershock: 4,
+  turret: 2,
+} as const;
 const PROTOTYPE_CREDIT_RATE = 125;
 const THRIFTY_CREDIT_GAP = 12500;
 const ROLE_LABEL: Record<Role, string> = {
@@ -521,15 +531,15 @@ const DEFENDER_BACK_EDGES: Record<"A" | "B", [number, number][]> = {
 
 const WEAPONS: Record<WeaponId, Weapon> = {
   classic: { id: "classic", name: "클래식", type: "normal", body: 1, head: 2, price: 0, aim: 0, move: 0, unlock: 1 },
-  sheriff: { id: "sheriff", name: "셰리프", type: "normal", body: 2, head: 3, price: 6, aim: 0, move: 0, unlock: 1 },
+  sheriff: { id: "sheriff", name: "셰리프", type: "normal", body: 2, head: 6, price: 6, aim: 0, move: 0, unlock: 1 },
   bucky: { id: "bucky", name: "버키", type: "shotgun", body: 2, head: 4, price: 8, aim: 0, move: 0, unlock: 2 },
   spectre: { id: "spectre", name: "스펙터", type: "normal", body: 2, head: 3, price: 10, aim: 0, move: 1, unlock: 2 },
-  bulldog: { id: "bulldog", name: "불독", type: "normal", body: 2, head: 3, price: 12, aim: 1, move: 0, unlock: 2 },
-  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 3, head: 4, price: 14, aim: 0, move: 0, unlock: 2 },
+  bulldog: { id: "bulldog", name: "불독", type: "normal", body: 2, head: 4, price: 12, aim: 1, move: 0, unlock: 2 },
+  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 4, head: 6, price: 14, aim: 0, move: 0, unlock: 2 },
   judge: { id: "judge", name: "저지", type: "shotgun", body: 3, head: 4, price: 16, aim: 0, move: 1, unlock: 3 },
-  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 2, head: 3, price: 24, aim: 1, move: 1, unlock: 3 },
-  vandal: { id: "vandal", name: "밴달", type: "normal", body: 2, head: 4, price: 24, aim: 1, move: 0, unlock: 3 },
-  operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 4, head: 6, price: 38, aim: 0, move: 0, unlock: 3 },
+  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 2, head: 5, price: 24, aim: 1, move: 1, unlock: 3 },
+  vandal: { id: "vandal", name: "밴달", type: "normal", body: 2, head: 6, price: 24, aim: 1, move: 0, unlock: 3 },
+  operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 6, head: 8, price: 38, aim: 0, move: 0, unlock: 3 },
 };
 
 function weaponRuleSummary(weapon: Weapon) {
@@ -537,7 +547,7 @@ function weaponRuleSummary(weapon: Weapon) {
   if (weapon.aim) rules.push(`상시 에임 +${weapon.aim}`);
   if (weapon.move) rules.push(`상시 무빙 +${weapon.move}`);
   if (weapon.type === "normal") rules.push("사거리 1", "거리 0 에임 +1");
-  if (weapon.type === "shotgun") rules.push("사거리 1", "거리 1 에임 -2", "거리 0 에임 +2 · 피해 +1");
+  if (weapon.type === "shotgun") rules.push("사거리 1", "거리 1 에임 -2", `거리 0 에임 +2 · 피해 +${SHOTGUN_CLOSE_DAMAGE_BONUS}`);
   if (weapon.type === "sniper") rules.push("대기 구역 거리 2 지정", "대기 사격 에임 +1", "거리 0 에임 -1");
   return rules.join(" · ");
 }
@@ -550,13 +560,13 @@ const skill = (id: string, name: string, price: string, target: SkillTarget, des
 
 const AGENTS: Record<string, AgentTemplate> = {
   "제트": { name: "제트", role: "duelist", skills: [skill("tailwind", "순풍", "2원 · 1회", "self", "다음 최초 교전의 총격 전에 인접 구역으로 이동합니다."), skill("updraft", "상승 기류", "1원 · 2회", "self", "다음 이동 거리와 무빙이 1 증가합니다.")] },
-  "레이즈": { name: "레이즈", role: "duelist", skills: [skill("paint", "페인트탄", "2원 · 1회", "adjacent", "인접 구역의 적 모두에게 피해 1, 설치물을 파괴합니다."), skill("blast", "폭발 팩", "1원 · 2회", "adjacent", "인접 구역으로 강제 이동하며 대기를 해제합니다.")] },
-  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", "구역에 다음 턴까지 피해 1의 불길을 만듭니다.")] },
+  "레이즈": { name: "레이즈", role: "duelist", skills: [skill("paint", "페인트탄", "2원 · 1회", "adjacent", `인접 구역의 적 모두에게 피해 ${SKILL_DAMAGE.paint}, 설치물을 파괴합니다.`), skill("blast", "폭발 팩", "1원 · 2회", "adjacent", "인접 구역으로 강제 이동하며 대기를 해제합니다.")] },
+  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", `구역에 다음 턴까지 피해 ${SKILL_DAMAGE.hot}의 불길을 만듭니다.`)] },
   "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "구역 적의 우선도 숫자를 1 높입니다.")] },
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "1원 · 2회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
-  "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", "거리 2 구역의 보이는 적을 선택합니다. 보이지 않으면 무작위 적 또는 설치물에 피해 1을 줍니다.")] },
-  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "adjacent", "인접 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "adjacent", "인접 구역의 적에게 피해 2, 진행 행동을 취소합니다.")] },
+  "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 구역의 보이는 적을 선택합니다. 보이지 않으면 무작위 적 또는 설치물에 피해 ${SKILL_DAMAGE.shock}를 줍니다.`)] },
+  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "adjacent", "인접 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "adjacent", `인접 구역의 적에게 피해 ${SKILL_DAMAGE.aftershock}, 진행 행동을 취소합니다.`)] },
   "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "목표 방향의 첫 연결을 다음 턴까지 차단합니다."), skill("stim", "전투 자극제", "2원 · 1회", "self", "현재 구역 아군의 에임과 우선도를 강화합니다.")] },
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
 };
@@ -695,7 +705,7 @@ function createAgent(name: string, team: Side): Agent {
     role: template.role,
     team,
     region: team === "attack" ? 1 : 7,
-    hp: 2,
+    hp: AGENT_MAX_HP,
     armor: 0,
     armorType: "none",
     armorDamaged: false,
@@ -843,7 +853,7 @@ function resetAgentForRound(agent: Agent, side: Side, economyReset: boolean) {
   agent.armorDamaged = false;
   agent.team = side;
   agent.region = side === "attack" ? 1 : 7;
-  agent.hp = 2;
+  agent.hp = AGENT_MAX_HP;
   agent.alive = true;
   agent.extraActions = 0;
   clearWait(agent);
@@ -1370,7 +1380,7 @@ function appliedMoveSize(game: GameState, defender: Agent, defenderMoveBonus: nu
 
 function appliedDamageProfile(attacker: Agent, defender: Agent, range: number) {
   const weapon = WEAPONS[attacker.weapon];
-  const rangeBonus = weapon.type === "shotgun" && range === 0 ? 1 : 0;
+  const rangeBonus = weapon.type === "shotgun" && range === 0 ? SHOTGUN_CLOSE_DAMAGE_BONUS : 0;
   const vulnerableBonus = defender.status.vulnerable ? 1 : 0;
   return {
     body: weapon.body + rangeBonus + vulnerableBonus,
@@ -1710,7 +1720,7 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
   const enemy = otherSide(agent.team);
   let stopped = false;
   const fire = game.fires.find((zone) => zone.owner === enemy && zone.region === to);
-  if (fire) applyDamage(game, getAgent(game, fire.ownerAgentId), agent, 1, "불길 진입");
+  if (fire) applyDamage(game, getAgent(game, fire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 진입");
 
   const trip = game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === from && item.to === to)
     ?? game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === to && item.to === from);
@@ -1971,7 +1981,7 @@ function playCard(game: GameState, card: ActionCard, agent: Agent) {
 function applyActionStartFire(game: GameState, agent: Agent): boolean {
   const fire = game.fires.find((zone) => zone.owner !== agent.team && zone.region === agent.region);
   if (!fire) return true;
-  applyDamage(game, getAgent(game, fire.ownerAgentId), agent, 1, "불길에서 행동 시작");
+  applyDamage(game, getAgent(game, fire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길에서 행동 시작");
   checkWinner(game);
   return agent.alive;
 }
@@ -2763,7 +2773,7 @@ function shouldAiRetreat(game: GameState, agent: Agent) {
   const guardingDroppedSpike = agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null && distance(agent.region, game.spike.region) <= 1;
   const defenseOverextended = agent.team === "defense" && !spikeActive && !guardingDroppedSpike && !DEFENSE_OPERATING_REGIONS.has(agent.region);
   const heavilyOutnumbered = nearbyEnemies >= nearbyAllies + 2;
-  return defenseOverextended || heavilyOutnumbered || (agent.hp === 1 && nearbyEnemies > nearbyAllies);
+  return defenseOverextended || heavilyOutnumbered || (agent.hp <= AGENT_MAX_HP / 2 && nearbyEnemies > nearbyAllies);
 }
 
 function aiSkillRegions(agent: Agent, target: SkillTarget) {
@@ -2980,7 +2990,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
           clearWait(enemy);
-          applyDamage(game, agent, enemy, 1, "페인트탄");
+          applyDamage(game, agent, enemy, SKILL_DAMAGE.paint, "페인트탄");
         });
         game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side);
         finish(target.region);
@@ -3028,7 +3038,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         const enemyRegion = currentAndAdjacent
           .map((region) => ({ region, count: intel.filter((item) => item.region === region).length }))
           .sort((a, b) => b.count - a.count)[0];
-        const target = agent.hp < 2 ? agent.region : enemyRegion?.count ? enemyRegion.region : null;
+        const target = agent.hp < AGENT_MAX_HP ? agent.region : enemyRegion?.count ? enemyRegion.region : null;
         if (target === null || game.fires.some((fire) => fire.owner === side && fire.region === target)) continue;
         if (!begin()) return true;
         game.fires.push({ id: `ai-hot-${game.turnSerial}-${target}`, owner: side, ownerAgentId: agent.id, region: target, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
@@ -3129,7 +3139,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         const targetRegion = targetIntel?.region ?? targetDevice!.region;
         if (!begin()) return true;
         const actualTarget = targetIntel?.agent.region === targetRegion ? targetIntel.agent : game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && enemy.region === targetRegion);
-        if (actualTarget) applyDamage(game, agent, actualTarget, 1, "충격 화살");
+        if (actualTarget) applyDamage(game, agent, actualTarget, SKILL_DAMAGE.shock, "충격 화살");
         else if (targetDevice) game.deployables = game.deployables.filter((item) => item.id !== targetDevice.id);
         finish(targetRegion);
         return true;
@@ -3285,14 +3295,17 @@ function MatchAnalysisPanel({ game, compact = false }: { game: GameState; compac
 }
 
 function CombatVitalSlots({ fighter }: { fighter: CombatFighterView }) {
-  const slots = (kind: "hp" | "armor", before: number, after: number) => (
-    <span className={`combat-vital-slots ${kind}`} aria-label={`${kind === "hp" ? "체력" : "방어구"} ${after}/2`}>
-      {[0, 1].map((index) => {
-        const state = index < after ? "filled" : index < before ? "lost" : "empty";
-        return <i key={`${kind}-${index}`} className={state} aria-hidden="true">{kind === "hp" ? "♥" : "◆"}</i>;
-      })}
-    </span>
-  );
+  const slots = (kind: "hp" | "armor", before: number, after: number) => {
+    const max = kind === "hp" ? AGENT_MAX_HP : MAX_ARMOR;
+    return (
+      <span className={`combat-vital-slots ${kind}`} aria-label={`${kind === "hp" ? "체력" : "방어구"} ${after}/${max}`}>
+        {Array.from({ length: max }, (_, index) => {
+          const state = index < after ? "filled" : index < before ? "lost" : "empty";
+          return <i key={`${kind}-${index}`} className={state} aria-hidden="true">{kind === "hp" ? "♥" : "◆"}</i>;
+        })}
+      </span>
+    );
+  };
   return <div className="combat-vital-display">
     <span><small>HP</small>{slots("hp", fighter.hpBefore, fighter.hpAfter)}</span>
     <span><small>ARMOR</small>{slots("armor", fighter.armorBefore, fighter.armorAfter)}</span>
@@ -3306,7 +3319,7 @@ function AgentStatusBadges({ game, agent, compact = false }: { game: GameState; 
     timed.some((effect) => effect.kind === "concussed" || (effect.priorityPenalty ?? 0) > 0) ? { key: "concussed", icon: "⌁", label: "충격 · 공격 우선도 지연" } : null,
     agent.detected ? { key: "detected", icon: "◎", label: "탐지됨" } : null,
     agent.status.vulnerable ? { key: "vulnerable", icon: "!", label: "취약 · 다음 피해 +1" } : null,
-    game.aftershocks.some((effect) => effect.targetIds.includes(agent.id) && effect.region === agent.region) ? { key: "aftershock", icon: "≋", label: "여진 · 이탈하지 않으면 피해 2" } : null,
+    game.aftershocks.some((effect) => effect.targetIds.includes(agent.id) && effect.region === agent.region) ? { key: "aftershock", icon: "≋", label: `여진 · 이탈하지 않으면 피해 ${SKILL_DAMAGE.aftershock}` } : null,
     agent.status.aimPenalty > 0 ? { key: "aim-down", icon: "A↓", label: `에임 -${agent.status.aimPenalty}` } : null,
     agent.status.moveBonus < 0 ? { key: "move-down", icon: "M↓", label: `무빙 ${agent.status.moveBonus}` } : null,
   ].filter((badge): badge is { key: string; icon: string; label: string } => !!badge);
@@ -4206,7 +4219,7 @@ export default function Home() {
       const deployableId = () => `${targeting.skillId}-${Date.now()}-${region}`;
       switch (targeting.skillId) {
         case "paint":
-          enemies.forEach((enemy) => { clearWait(enemy); applyDamage(draft, agent, enemy, 1, "페인트탄"); });
+          enemies.forEach((enemy) => { clearWait(enemy); applyDamage(draft, agent, enemy, SKILL_DAMAGE.paint, "페인트탄"); });
           draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team);
           break;
         case "blast": {
@@ -4275,7 +4288,7 @@ export default function Home() {
             return;
           }
           const target = visibleEnemies[0] ?? (!devices.length && enemies.length ? enemies[Math.floor(Math.random() * enemies.length)] : null);
-          if (target) applyDamage(draft, agent, target, 1, "충격 화살");
+          if (target) applyDamage(draft, agent, target, SKILL_DAMAGE.shock, "충격 화살");
           else if (devices[0]) draft.deployables = draft.deployables.filter((item) => item.id !== devices[0].id);
           break;
         }
@@ -4365,7 +4378,7 @@ export default function Home() {
       const fxTargetRegion = kind === "agent" ? getAgent(draft, id)?.region : draft.deployables.find((item) => item.id === id)?.region;
       if (kind === "agent") {
         const target = getAgent(draft, id);
-        if (target?.alive) applyDamage(draft, caster, target, 1, "충격 화살");
+        if (target?.alive) applyDamage(draft, caster, target, SKILL_DAMAGE.shock, "충격 화살");
       } else {
         draft.deployables = draft.deployables.filter((item) => item.id !== id);
         addLog(draft, `충격 화살이 설치물을 파괴했습니다.`);
@@ -4415,7 +4428,7 @@ export default function Home() {
       addLog(draft, `${agent.name}이 여진 구역을 벗어났습니다.`);
     } else {
       effect.targetIds = effect.targetIds.filter((id) => id !== agent.id);
-      applyDamage(draft, getAgent(draft, effect.ownerAgentId), agent, 2, "여진 폭발");
+      applyDamage(draft, getAgent(draft, effect.ownerAgentId), agent, SKILL_DAMAGE.aftershock, "여진 폭발");
       addLog(draft, `${agent.name}이 이동하지 않고 여진 피해를 받았습니다.`);
     }
     draft.aftershocks = draft.aftershocks.filter((item) => item.targetIds.length > 0);
@@ -4546,7 +4559,7 @@ export default function Home() {
         if (agent.alive && agent.armorType === "regen") agent.armor = 1;
         const standingInOwnFire = agent.alive && agent.name === "피닉스" && draft.fires.some((fire) => fire.owner === endingSide && fire.region === agent.region);
         if (standingInOwnFire) {
-          agent.hp = Math.min(2, agent.hp + 1);
+          agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
           addLog(draft, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
         }
         agent.status.aimPenalty = 0;
@@ -4740,7 +4753,7 @@ export default function Home() {
     const moveRoll = roll(moveSize);
     const hit = aimRoll - moveRoll > 0;
     const vulnerableBonus = target.status.vulnerable ? 1 : 0;
-    const damagePower = 1 + vulnerableBonus;
+    const damagePower = SKILL_DAMAGE.turret + vulnerableBonus;
     const damage = hit ? damagePower : 0;
     const shot: ShotResult = { hit, head: false, damage, bodyDamage: damagePower, headDamage: damagePower, aimRoll, moveRoll, aimSize: 5, moveSize };
     recordShot(draft, turret.owner, shot, `${scene.holder.name} → ${target.name}`);
@@ -5061,7 +5074,7 @@ export default function Home() {
       const options = GRAPH.get(pendingShock.agent.region) ?? [];
       pendingShock.effect.targetIds = pendingShock.effect.targetIds.filter((id) => id !== pendingShock.agent!.id);
       if (options[0] !== undefined) moveAgent(draft, pendingShock.agent, options[0], "forced");
-      else applyDamage(draft, getAgent(draft, pendingShock.effect.ownerAgentId), pendingShock.agent, 2, "여진 폭발");
+      else applyDamage(draft, getAgent(draft, pendingShock.effect.ownerAgentId), pendingShock.agent, SKILL_DAMAGE.aftershock, "여진 폭발");
       draft.aftershocks = draft.aftershocks.filter((effect) => effect.targetIds.length);
       checkWinner(draft);
       return;
@@ -5513,7 +5526,7 @@ export default function Home() {
               <div><span className="eyebrow">{isAiControlledTurn ? "YOUR AGENT" : "SELECTED AGENT"}</span><h2>{displayedAgent.name}</h2><p>{ROLE_LABEL[displayedAgent.role]} · {regionName(displayedAgent.region)}</p></div>
             </div>
             <div className="stat-grid">
-              <div><span>체력</span><strong>{displayedAgent.hp}/2</strong></div><div><span>방어</span><strong>{displayedAgent.armor}</strong></div>
+              <div><span>체력</span><strong>{displayedAgent.hp}/{AGENT_MAX_HP}</strong></div><div><span>방어</span><strong>{displayedAgent.armor}/{MAX_ARMOR}</strong></div>
               <div><span>에임</span><strong>{finalStats(game, displayedAgent).aim}</strong></div><div><span>무빙</span><strong>{finalStats(game, displayedAgent).move}</strong></div>
             </div>
             <div className="loadout-line"><div><span className="eyebrow">PRIMARY</span><strong>{WEAPONS[displayedAgent.weapon].name}</strong></div><div className="damage-chip">{WEAPONS[displayedAgent.weapon].body}<small>BODY</small> / {WEAPONS[displayedAgent.weapon].head}<small>HEAD</small></div></div>
@@ -5549,7 +5562,7 @@ export default function Home() {
 
       {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner} ${spectatorMode ? "spectator-victory" : ""}`}><span className="eyebrow">ROUND {game.matchRound} COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p><RoundAccoladeSplash accolades={accolades} />{roundHighlight && <RoundHighlightCard highlight={roundHighlight} />}{spectatorMode && <MatchAnalysisPanel game={game} />}<div className="round-economy"><article><span>{SIDE_LABEL[game.winner]}</span><b>+{winnerReward?.total}원</b><small>라운드 {winnerReward?.resultIncome} · 보너스 {winnerReward?.bonus}</small></article><article><span>{SIDE_LABEL[otherSide(game.winner)]}</span><b>+{loserReward?.total}원</b><small>라운드 {loserReward?.resultIncome} · 보너스 {loserReward?.bonus}</small></article></div><div className="victory-actions"><button onClick={() => startNextRound(false)}><span>{spectatorMode ? "AI 자동 구매 후 계속" : "장비·경제 유지"}</span><strong>다음 라운드</strong></button><button onClick={() => startNextRound(true)}><span>공수 교대 · 경제 초기화</span><strong>진영 교대</strong></button><button className="secondary" onClick={restartToTitle}>새 작전</button></div></div></div>}
 
-      {pendingAftershock && !combatScene && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">AFTERSHOCK // FORCED CHOICE</span><h2>{pendingAftershock.agent!.name} · 여진 해결</h2><p>{regionName(pendingAftershock.effect.region)}을 떠나거나 피해 2를 받아야 합니다. 이동하면 대기와 설치·해체 진행을 잃습니다.</p><div className="choice-grid"><button className="danger-choice" onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id)}><b>위치 유지</b><small>피해 2 받기</small></button>{(GRAPH.get(pendingAftershock.agent!.region) ?? []).map((region) => <button key={region} onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id, region)}><b>{region}번 이동</b><small>{regionName(region)}</small></button>)}</div></section></div>}
+      {pendingAftershock && !combatScene && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">AFTERSHOCK // FORCED CHOICE</span><h2>{pendingAftershock.agent!.name} · 여진 해결</h2><p>{regionName(pendingAftershock.effect.region)}을 떠나거나 피해 {SKILL_DAMAGE.aftershock}를 받아야 합니다. 이동하면 대기와 설치·해체 진행을 잃습니다.</p><div className="choice-grid"><button className="danger-choice" onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id)}><b>위치 유지</b><small>피해 {SKILL_DAMAGE.aftershock} 받기</small></button>{(GRAPH.get(pendingAftershock.agent!.region) ?? []).map((region) => <button key={region} onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id, region)}><b>{region}번 이동</b><small>{regionName(region)}</small></button>)}</div></section></div>}
 
       {game.targeting?.kind === "skill" && ((game.targeting.candidateAgentIds?.length ?? 0) > 0 || (game.targeting.candidateDeployableIds?.length ?? 0) > 0) && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">TARGET SELECT</span><h2>스킬 목표 선택</h2><div className="choice-grid">{game.targeting.candidateAgentIds?.map((id) => { const target = getAgent(game, id); return target ? <button key={id} onClick={() => resolveSkillCandidate(id, "agent")}><b>{target.name}</b><small>{target.team === game.turnSide ? "아군" : "탐지된 적"} · {target.region}번</small></button> : null; })}{game.targeting.candidateDeployableIds?.map((id) => { const device = game.deployables.find((item) => item.id === id); return device ? <button key={id} onClick={() => resolveSkillCandidate(id, "deployable")}><b>{device.kind}</b><small>설치물 · {device.region}번</small></button> : null; })}</div><button className="choice-cancel" onClick={cancelTargeting}>취소</button></section></div>}
 
@@ -5613,7 +5626,7 @@ export default function Home() {
               {isMover && combatScene.offAngle && <div className="ambush-ribbon">AMBUSH · 우선도 +1 · 대기 무효</div>}
               <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? combatScene.offAngle ? "측면 공격" : "진입" : combatScene.waiting ? "대기 반응" : combatScene.offAngle ? "일반 대응 · 대기 보너스 없음" : "범위 내 반응"}</div>
               <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span>{liveAgent && <AgentStatusBadges game={game} agent={liveAgent} compact />}</div>
-              <h3>{fighter.name}</h3><p>{fighter.kind === "turret" ? "설치물 · 에임 5 · 피해 1" : `${ROLE_LABEL[fighter.role]} · ${WEAPONS[fighter.weapon].name}`}</p>
+              <h3>{fighter.name}</h3><p>{fighter.kind === "turret" ? `설치물 · 에임 5 · 피해 ${SKILL_DAMAGE.turret}` : `${ROLE_LABEL[fighter.role]} · ${WEAPONS[fighter.weapon].name}`}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
               {fighter.kind === "turret" ? <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div> : <CombatVitalSlots fighter={fighter} />}
               {fighter.kind === "turret" ? <div className="combat-live-stats"><span>MODE <b>AUTO</b></span><span className={turretDamage > 1 ? "buff" : "neutral"}>DMG <b>{turretDamage}</b><small>{turretDamage > 1 ? "(+1)" : null}</small></span><span>AIM <b>5</b><small>D5</small></span><span>PRIO <b>2</b></span></div> : liveAgent && appliedStats && <div className="combat-live-stats applied">
