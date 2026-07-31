@@ -212,6 +212,20 @@ interface KillHighlight {
   source: string;
 }
 
+interface ClutchCandidate {
+  side: Side;
+  agentId: string;
+  enemyCount: number;
+  turnSerial: number;
+}
+
+interface RoundAccolade {
+  kind: "ace" | "clutch" | "team-ace" | "flawless" | "thrifty";
+  label: string;
+  subject: string;
+  detail: string;
+}
+
 interface PendingMovement {
   agentId: string;
   path: number[];
@@ -416,6 +430,10 @@ interface GameState {
   turnKillCounts: Record<string, number>;
   lastKillFx: KillHighlight | null;
   roundKillHighlights: KillHighlight[];
+  roundKillVictims: Record<string, string[]>;
+  roundDeaths: string[];
+  clutchCandidate: ClutchCandidate | null;
+  roundStartingEquipment: Record<Side, number>;
   waitCounter: number;
   log: string[];
   winner: Side | null;
@@ -428,6 +446,8 @@ const SIDE_LABEL: Record<Side, string> = { attack: "공격팀", defense: "수비
 const PRE_PLANT_CYCLE_LIMIT = 12;
 const SPIKE_EXPLOSION_ROUNDS = 6;
 const FORCED_EXECUTE_CYCLE = PRE_PLANT_CYCLE_LIMIT - 2;
+const PROTOTYPE_CREDIT_RATE = 125;
+const THRIFTY_CREDIT_GAP = 12500;
 const ROLE_LABEL: Record<Role, string> = {
   duelist: "타격대",
   initiator: "척후대",
@@ -777,6 +797,10 @@ function createInitialGame(
     turnKillCounts: {},
     lastKillFx: null,
     roundKillHighlights: [],
+    roundKillVictims: {},
+    roundDeaths: [],
+    clutchCandidate: null,
+    roundStartingEquipment: { attack: 0, defense: 0 },
     waitCounter: 0,
     log: ["수비팀이 먼저 행동합니다.", "작전 개시 — 손패에서 카드 3장을 사용하세요."],
     winner: null,
@@ -914,6 +938,10 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.turnKillCounts = {};
   game.lastKillFx = null;
   game.roundKillHighlights = [];
+  game.roundKillVictims = {};
+  game.roundDeaths = [];
+  game.clutchCandidate = null;
+  game.roundStartingEquipment = { attack: 0, defense: 0 };
   game.waitCounter = 0;
   game.log = [`매치 ${game.matchRound}라운드 준비. 수비팀 구매부터 시작합니다.`];
   game.winner = null;
@@ -933,9 +961,97 @@ function multiKillLabel(count: number) {
   return "ELIMINATION";
 }
 
+function agentEquipmentCredits(agent: Agent) {
+  const skillCoins = AGENTS[agent.name].skills.reduce((total, definition) => {
+    const perCharge = definition.price.includes("2회") ? 1 : 2;
+    return total + (agent.skills[definition.id] ?? 0) * perCharge;
+  }, 0);
+  return (WEAPONS[agent.weapon].price + ARMOR_PRICE[agent.armorType] + skillCoins) * PROTOTYPE_CREDIT_RATE;
+}
+
+function captureRoundStartingEquipment(game: GameState) {
+  game.roundStartingEquipment = {
+    attack: game.teams.attack.agents.reduce((total, agent) => total + agentEquipmentCredits(agent), 0),
+    defense: game.teams.defense.agents.reduce((total, agent) => total + agentEquipmentCredits(agent), 0),
+  };
+}
+
 function getAgent(game: GameState, id: string | null | undefined): Agent | null {
   if (!id) return null;
   return [...game.teams.attack.agents, ...game.teams.defense.agents].find((agent) => agent.id === id) ?? null;
+}
+
+function recordRoundDeath(game: GameState, defender: Agent) {
+  if (!game.roundDeaths.includes(defender.id)) game.roundDeaths.push(defender.id);
+  if (game.clutchCandidate) return;
+  const survivors = game.teams[defender.team].agents.filter((agent) => agent.alive);
+  const enemies = game.teams[otherSide(defender.team)].agents.filter((agent) => agent.alive);
+  if (survivors.length === 1 && enemies.length >= 2) {
+    game.clutchCandidate = {
+      side: defender.team,
+      agentId: survivors[0].id,
+      enemyCount: enemies.length,
+      turnSerial: game.turnSerial,
+    };
+    addLog(game, `${survivors[0].name} 클러치 상황 — 1 vs ${enemies.length}.`);
+  }
+}
+
+function roundAccolades(game: GameState): RoundAccolade[] {
+  if (!game.winner) return [];
+  const winner = game.winner;
+  const winningTeam = game.teams[winner];
+  const losingTeam = game.teams[otherSide(winner)];
+  const enemyIds = losingTeam.agents.map((agent) => agent.id);
+  const accolades: RoundAccolade[] = [];
+  const aceAgent = winningTeam.agents.find((agent) => {
+    const victims = new Set(game.roundKillVictims[agent.id] ?? []);
+    return enemyIds.every((enemyId) => victims.has(enemyId));
+  });
+  if (aceAgent) {
+    accolades.push({
+      kind: "ace",
+      label: "ACE",
+      subject: aceAgent.name,
+      detail: "상대 팀의 모든 요원을 한 번 이상 직접 처치하고 라운드 승리",
+    });
+  }
+  const clutch = game.clutchCandidate;
+  if (clutch?.side === winner) {
+    const clutchAgent = getAgent(game, clutch.agentId);
+    accolades.push({
+      kind: "clutch",
+      label: "CLUTCH",
+      subject: clutchAgent?.name ?? SIDE_LABEL[winner],
+      detail: `먼저 홀로 남은 뒤 1 vs ${clutch.enemyCount} 상황에서 승리`,
+    });
+  }
+  if (winningTeam.agents.every((agent) => (game.roundKillVictims[agent.id]?.length ?? 0) > 0)) {
+    accolades.push({
+      kind: "team-ace",
+      label: "TEAM ACE",
+      subject: SIDE_LABEL[winner],
+      detail: "팀원 5명 모두가 한 번 이상 처치에 성공한 뒤 승리",
+    });
+  }
+  if (winningTeam.agents.every((agent) => !game.roundDeaths.includes(agent.id)) && losingTeam.agents.every((agent) => !agent.alive)) {
+    accolades.push({
+      kind: "flawless",
+      label: "FLAWLESS",
+      subject: SIDE_LABEL[winner],
+      detail: "아군 사망 기록 없이 상대 팀을 전멸시키고 승리",
+    });
+  }
+  const equipmentGap = game.roundStartingEquipment[otherSide(winner)] - game.roundStartingEquipment[winner];
+  if (equipmentGap >= THRIFTY_CREDIT_GAP) {
+    accolades.push({
+      kind: "thrifty",
+      label: "THRIFTY",
+      subject: SIDE_LABEL[winner],
+      detail: `시작 장비 가치 ${equipmentGap.toLocaleString("ko-KR")} 크레드 열세를 극복`,
+    });
+  }
+  return accolades;
 }
 
 function shortestPath(start: number, end: number): number[] {
@@ -1348,6 +1464,7 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   if (defender.hp > 0) return;
   defender.hp = 0;
   defender.alive = false;
+  recordRoundDeath(game, defender);
   clearWait(defender);
   if (game.selectedAgentId === defender.id) {
     game.selectedAgentId = game.teams[defender.team].agents.find((agent) => agent.alive)?.id ?? null;
@@ -1368,6 +1485,8 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   if (attacker) {
     game.teams[attacker.team].killsThisRound += 1;
     game.analytics[attacker.team].kills += 1;
+    const victims = game.roundKillVictims[attacker.id] ?? [];
+    if (!victims.includes(defender.id)) game.roundKillVictims[attacker.id] = [...victims, defender.id];
     const count = (game.turnKillCounts[attacker.id] ?? 0) + 1;
     game.turnKillCounts[attacker.id] = count;
     const killHighlight: KillHighlight = {
@@ -3215,6 +3334,30 @@ function KillStreakOverlay({ highlight }: { highlight: KillHighlight }) {
   </aside>;
 }
 
+const ACCOLADE_ICON: Record<RoundAccolade["kind"], string> = {
+  ace: "V",
+  clutch: "1",
+  "team-ace": "5",
+  flawless: "◇",
+  thrifty: "₩",
+};
+
+function RoundAccoladeSplash({ accolades }: { accolades: RoundAccolade[] }) {
+  if (!accolades.length) return null;
+  const primary = accolades[0];
+  return <section className={`round-accolade-splash accolade-${primary.kind}`} aria-label={`라운드 특수 결과 ${accolades.map((item) => item.label).join(", ")}`}>
+    <div className="accolade-rays"><i /><i /><i /><i /></div>
+    <span>ROUND PERFORMANCE</span>
+    <div className="accolade-emblem"><i>{ACCOLADE_ICON[primary.kind]}</i></div>
+    <strong>{primary.label}</strong>
+    <b>{primary.subject}</b>
+    <p>{primary.detail}</p>
+    {accolades.length > 1 && <div className="accolade-stack">
+      {accolades.slice(1).map((item) => <article key={item.kind} className={`accolade-${item.kind}`}><i>{ACCOLADE_ICON[item.kind]}</i><span><b>{item.label}</b><small>{item.subject} · {item.detail}</small></span></article>)}
+    </div>}
+  </section>;
+}
+
 function RoundHighlightCard({ highlight }: { highlight: KillHighlight }) {
   const count = Math.min(5, highlight.count);
   return <section className={`round-highlight team-${highlight.side}`} aria-label="라운드 하이라이트">
@@ -3510,6 +3653,7 @@ function prepareAiVsAiRound(game: GameState) {
   autoDeployDefense(game);
   autoBuyTeamLoadout(game, "attack");
   autoSetAttackOpeningWaits(game);
+  captureRoundStartingEquipment(game);
   game.turnSide = "defense";
   game.teams.attack.buyLocked = true;
   game.teams.defense.buyLocked = true;
@@ -3933,6 +4077,7 @@ export default function Home() {
       draft.turnSide = "defense";
       draft.teams.attack.buyLocked = true;
       draft.teams.defense.buyLocked = true;
+      captureRoundStartingEquipment(draft);
       draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null;
       addLog(draft, message);
       draft.turnStartContactQueue = draft.teams.defense.agents.filter((agent) => agent.alive).map((agent) => agent.id);
@@ -3948,6 +4093,7 @@ export default function Home() {
       draft.turnSide = "defense";
       draft.teams.attack.buyLocked = true;
       draft.teams.defense.buyLocked = true;
+      captureRoundStartingEquipment(draft);
       draft.selectedAgentId = draft.teams.defense.agents.find((agent) => agent.alive)?.id ?? null;
       addLog(draft, `공격팀 AI가 구매와 본진 대기 설정을 마쳤습니다. 수비팀 첫 턴을 시작합니다.`);
       draft.turnStartContactQueue = draft.teams.defense.agents.filter((agent) => agent.alive).map((agent) => agent.id);
@@ -5181,6 +5327,7 @@ export default function Home() {
     if (!best || highlight.count > best.count || (highlight.count === best.count && highlight.turnSerial >= best.turnSerial)) return highlight;
     return best;
   }, null);
+  const accolades = roundAccolades(game);
 
   return (
     <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""}`}>
@@ -5400,7 +5547,7 @@ export default function Home() {
         </aside>
       </section>
 
-      {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner} ${spectatorMode ? "spectator-victory" : ""}`}><span className="eyebrow">ROUND {game.matchRound} COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p>{roundHighlight && <RoundHighlightCard highlight={roundHighlight} />}{spectatorMode && <MatchAnalysisPanel game={game} />}<div className="round-economy"><article><span>{SIDE_LABEL[game.winner]}</span><b>+{winnerReward?.total}원</b><small>라운드 {winnerReward?.resultIncome} · 보너스 {winnerReward?.bonus}</small></article><article><span>{SIDE_LABEL[otherSide(game.winner)]}</span><b>+{loserReward?.total}원</b><small>라운드 {loserReward?.resultIncome} · 보너스 {loserReward?.bonus}</small></article></div><div className="victory-actions"><button onClick={() => startNextRound(false)}><span>{spectatorMode ? "AI 자동 구매 후 계속" : "장비·경제 유지"}</span><strong>다음 라운드</strong></button><button onClick={() => startNextRound(true)}><span>공수 교대 · 경제 초기화</span><strong>진영 교대</strong></button><button className="secondary" onClick={restartToTitle}>새 작전</button></div></div></div>}
+      {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner} ${spectatorMode ? "spectator-victory" : ""}`}><span className="eyebrow">ROUND {game.matchRound} COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p><RoundAccoladeSplash accolades={accolades} />{roundHighlight && <RoundHighlightCard highlight={roundHighlight} />}{spectatorMode && <MatchAnalysisPanel game={game} />}<div className="round-economy"><article><span>{SIDE_LABEL[game.winner]}</span><b>+{winnerReward?.total}원</b><small>라운드 {winnerReward?.resultIncome} · 보너스 {winnerReward?.bonus}</small></article><article><span>{SIDE_LABEL[otherSide(game.winner)]}</span><b>+{loserReward?.total}원</b><small>라운드 {loserReward?.resultIncome} · 보너스 {loserReward?.bonus}</small></article></div><div className="victory-actions"><button onClick={() => startNextRound(false)}><span>{spectatorMode ? "AI 자동 구매 후 계속" : "장비·경제 유지"}</span><strong>다음 라운드</strong></button><button onClick={() => startNextRound(true)}><span>공수 교대 · 경제 초기화</span><strong>진영 교대</strong></button><button className="secondary" onClick={restartToTitle}>새 작전</button></div></div></div>}
 
       {pendingAftershock && !combatScene && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">AFTERSHOCK // FORCED CHOICE</span><h2>{pendingAftershock.agent!.name} · 여진 해결</h2><p>{regionName(pendingAftershock.effect.region)}을 떠나거나 피해 2를 받아야 합니다. 이동하면 대기와 설치·해체 진행을 잃습니다.</p><div className="choice-grid"><button className="danger-choice" onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id)}><b>위치 유지</b><small>피해 2 받기</small></button>{(GRAPH.get(pendingAftershock.agent!.region) ?? []).map((region) => <button key={region} onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id, region)}><b>{region}번 이동</b><small>{regionName(region)}</small></button>)}</div></section></div>}
 

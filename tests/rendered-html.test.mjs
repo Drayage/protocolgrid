@@ -592,3 +592,29 @@ test("same-turn multikills animate and persist as a round highlight", async () =
   assert.match(css, /@keyframes multikillReveal/);
   assert.match(css, /@keyframes killPipPop/);
 });
+
+test("round-end accolades use distinct ace, clutch, team ace, flawless, and thrifty rules", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /roundKillVictims: Record<string, string\[\]>/);
+  assert.match(page, /roundDeaths: string\[\]/);
+  assert.match(page, /clutchCandidate: ClutchCandidate \| null/);
+  assert.match(page, /roundStartingEquipment: Record<Side, number>/);
+  assert.match(page, /const THRIFTY_CREDIT_GAP = 12500/);
+  assert.match(page, /if \(!game\.roundDeaths\.includes\(defender\.id\)\) game\.roundDeaths\.push\(defender\.id\)/);
+  assert.match(page, /if \(game\.clutchCandidate\) return/);
+  assert.match(page, /survivors\.length === 1 && enemies\.length >= 2/);
+  assert.match(page, /enemyIds\.every\(\(enemyId\) => victims\.has\(enemyId\)\)/);
+  assert.match(page, /clutch\?\.side === winner/);
+  assert.match(page, /winningTeam\.agents\.every\(\(agent\) => \(game\.roundKillVictims\[agent\.id\]\?\.length \?\? 0\) > 0\)/);
+  assert.match(page, /winningTeam\.agents\.every\(\(agent\) => !game\.roundDeaths\.includes\(agent\.id\)\) && losingTeam\.agents\.every\(\(agent\) => !agent\.alive\)/);
+  assert.match(page, /equipmentGap >= THRIFTY_CREDIT_GAP/);
+  assert.match(page, /captureRoundStartingEquipment\(draft\)/);
+  assert.match(page, /function RoundAccoladeSplash/);
+  assert.match(page, /<RoundAccoladeSplash accolades=\{accolades\} \/>/);
+  assert.match(css, /\.round-accolade-splash/);
+  assert.match(css, /\.accolade-stack/);
+  assert.match(css, /@keyframes accoladeReveal/);
+});
