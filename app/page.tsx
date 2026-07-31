@@ -198,6 +198,20 @@ interface SkillFx {
   kind: "throw" | "burst" | "scan" | "smoke" | "deploy" | "teleport" | "self";
 }
 
+interface KillHighlight {
+  id: string;
+  killerId: string;
+  killerName: string;
+  victimName: string;
+  side: Side;
+  count: number;
+  weapon: WeaponId;
+  region: number;
+  cycle: number;
+  turnSerial: number;
+  source: string;
+}
+
 interface PendingMovement {
   agentId: string;
   path: number[];
@@ -399,6 +413,9 @@ interface GameState {
   revealedEnemyIds: string[];
   enemyMemories: EnemyMemory[];
   lastSkillFx: SkillFx | null;
+  turnKillCounts: Record<string, number>;
+  lastKillFx: KillHighlight | null;
+  roundKillHighlights: KillHighlight[];
   waitCounter: number;
   log: string[];
   winner: Side | null;
@@ -757,6 +774,9 @@ function createInitialGame(
     revealedEnemyIds: [],
     enemyMemories: [],
     lastSkillFx: null,
+    turnKillCounts: {},
+    lastKillFx: null,
+    roundKillHighlights: [],
     waitCounter: 0,
     log: ["수비팀이 먼저 행동합니다.", "작전 개시 — 손패에서 카드 3장을 사용하세요."],
     winner: null,
@@ -891,6 +911,9 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.revealedEnemyIds = [];
   game.enemyMemories = [];
   game.lastSkillFx = null;
+  game.turnKillCounts = {};
+  game.lastKillFx = null;
+  game.roundKillHighlights = [];
   game.waitCounter = 0;
   game.log = [`매치 ${game.matchRound}라운드 준비. 수비팀 구매부터 시작합니다.`];
   game.winner = null;
@@ -901,6 +924,14 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
 
 const otherSide = (side: Side): Side => side === "attack" ? "defense" : "attack";
 const edgeKey = (a: number, b: number) => [a, b].sort((x, y) => x - y).join("-");
+
+function multiKillLabel(count: number) {
+  if (count >= 5) return "ACE";
+  if (count === 4) return "QUADRA KILL";
+  if (count === 3) return "TRIPLE KILL";
+  if (count === 2) return "DOUBLE KILL";
+  return "ELIMINATION";
+}
 
 function getAgent(game: GameState, id: string | null | undefined): Agent | null {
   if (!id) return null;
@@ -1337,7 +1368,25 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   if (attacker) {
     game.teams[attacker.team].killsThisRound += 1;
     game.analytics[attacker.team].kills += 1;
+    const count = (game.turnKillCounts[attacker.id] ?? 0) + 1;
+    game.turnKillCounts[attacker.id] = count;
+    const killHighlight: KillHighlight = {
+      id: `kill-${game.turnSerial}-${game.roundKillHighlights.length + 1}-${attacker.id}`,
+      killerId: attacker.id,
+      killerName: attacker.name,
+      victimName: defender.name,
+      side: attacker.team,
+      count,
+      weapon: attacker.weapon,
+      region: defender.region,
+      cycle: game.cycle,
+      turnSerial: game.turnSerial,
+      source: label.replace(`${attacker.name} `, ""),
+    };
+    game.lastKillFx = killHighlight;
+    game.roundKillHighlights.push(killHighlight);
     addAnalyticsEvent(game, attacker.team, "combat", `${attacker.name}이 ${defender.name} 제거`);
+    if (count >= 2) addLog(game, `${attacker.name} ${count}연속 처치 — ${multiKillLabel(count)}!`);
   }
   if (game.spike.carrierId === defender.id && game.spike.status === "carried") {
     game.spike = { ...game.spike, status: "dropped", carrierId: null, region: defender.region, actorId: null };
@@ -3148,6 +3197,46 @@ function AgentStatusBadges({ game, agent, compact = false }: { game: GameState; 
   </span>;
 }
 
+function KillPips({ count }: { count: number }) {
+  return <span className="kill-pips" aria-label={`${count}연속 처치`}>
+    {[1, 2, 3, 4, 5].map((step) => <i key={step} className={step <= count ? "active" : ""}>{step <= count ? "◆" : "◇"}</i>)}
+  </span>;
+}
+
+function KillStreakOverlay({ highlight }: { highlight: KillHighlight }) {
+  const count = Math.min(5, highlight.count);
+  return <aside key={highlight.id} className={`multikill-fx team-${highlight.side} streak-${count}`} role="status" aria-live="assertive">
+    <div className="multikill-burst" />
+    <div className="kill-emblem"><i /><b>×{highlight.count}</b></div>
+    <KillPips count={count} />
+    <strong>{multiKillLabel(highlight.count)}</strong>
+    <span>{highlight.killerName} <i>→</i> {highlight.victimName}</span>
+    <small>{WEAPONS[highlight.weapon].name} · {regionName(highlight.region)}</small>
+  </aside>;
+}
+
+function RoundHighlightCard({ highlight }: { highlight: KillHighlight }) {
+  const count = Math.min(5, highlight.count);
+  return <section className={`round-highlight team-${highlight.side}`} aria-label="라운드 하이라이트">
+    <header><span>ROUND HIGHLIGHT // 전술 {highlight.cycle}</span><b>{highlight.count >= 2 ? multiKillLabel(highlight.count) : "결정적 처치"}</b></header>
+    <div className="highlight-scene">
+      <i className={`highlight-portrait killer ${agentArtClass(highlight.killerName)}`} aria-label={`${highlight.killerName} 초상`} />
+      <div className="highlight-center">
+        <span>{SIDE_LABEL[highlight.side]}</span>
+        <strong>{highlight.killerName}</strong>
+        <KillPips count={count} />
+        <div className="highlight-weapon"><WeaponSilhouette weapon={highlight.weapon} compact /><b>{WEAPONS[highlight.weapon].name}</b></div>
+      </div>
+      <div className="highlight-victim">
+        <span>LAST TARGET</span>
+        <i className={`highlight-portrait victim ${agentArtClass(highlight.victimName)}`} aria-label={`${highlight.victimName} 초상`} />
+        <b>{highlight.victimName}</b>
+      </div>
+    </div>
+    <footer><span>{regionName(highlight.region)}</span><i /> <b>{highlight.source}</b><em>{highlight.count} KILL STREAK</em></footer>
+  </section>;
+}
+
 function combatAppliedStats(game: GameState, scene: CombatScene, fighter: CombatFighterView, incomingShot: ShotResult | null) {
   const agent = getAgent(game, fighter.id);
   const opponentView = fighter.id === scene.mover.id ? scene.holder : scene.mover;
@@ -3662,6 +3751,15 @@ export default function Home() {
     const timer = window.setTimeout(() => setShowShop(false), 0);
     return () => window.clearTimeout(timer);
   }, [isAiControlledTurn]);
+
+  const activeKillFxId = game.lastKillFx?.id ?? null;
+  useEffect(() => {
+    if (!activeKillFxId) return;
+    const timer = window.setTimeout(() => {
+      setGame((current) => current.lastKillFx?.id === activeKillFxId ? { ...current, lastKillFx: null } : current);
+    }, 2200);
+    return () => window.clearTimeout(timer);
+  }, [activeKillFxId]);
 
   const currentCombatPhase = game.combatQueue[0]?.phase ?? null;
   const currentCombatResult = game.combatQueue[0]?.result ?? null;
@@ -4332,6 +4430,7 @@ export default function Home() {
       draft.pendingContact = null;
       draft.turnStartContactQueue = [];
       draft.groupMovement = null;
+      draft.turnKillCounts = {};
 
       if (endingSide === "defense") {
         draft.turnSide = "attack";
@@ -5078,10 +5177,15 @@ export default function Home() {
   const canCombatAdvance = !!(combatScene && combatActor?.id === combatScene.mover.id && game.pendingMovement?.agentId === combatActor.id && game.pendingMovement.nextIndex < game.pendingMovement.path.length);
   const winnerReward = game.winner ? roundIncome(game.teams[game.winner], true, game.matchRound) : null;
   const loserReward = game.winner ? roundIncome(game.teams[otherSide(game.winner)], false, game.matchRound) : null;
+  const roundHighlight = game.roundKillHighlights.reduce<KillHighlight | null>((best, highlight) => {
+    if (!best || highlight.count > best.count || (highlight.count === best.count && highlight.turnSerial >= best.turnSerial)) return highlight;
+    return best;
+  }, null);
 
   return (
     <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""}`}>
       <AiController game={game} sides={controlledAiSides} paused={spectatorMode && spectatorPaused} speed={spectatorMode ? spectatorSpeed : 1} stepSignal={spectatorStep} onStep={runAiStep} onEndTurn={endTurn} onCombatAttack={combatAttack} onCombatRetreat={combatRetreat} onCombatAdvance={combatAdvance} onCombatContinue={advanceCombat} onTailwind={tailwindMove} />
+      {game.lastKillFx && <KillStreakOverlay key={game.lastKillFx.id} highlight={game.lastKillFx} />}
       <header className="topbar">
         <div className="brand-block">
           <span className="brand-mark">V//T</span>
@@ -5296,7 +5400,7 @@ export default function Home() {
         </aside>
       </section>
 
-      {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner} ${spectatorMode ? "spectator-victory" : ""}`}><span className="eyebrow">ROUND {game.matchRound} COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p>{spectatorMode && <MatchAnalysisPanel game={game} />}<div className="round-economy"><article><span>{SIDE_LABEL[game.winner]}</span><b>+{winnerReward?.total}원</b><small>라운드 {winnerReward?.resultIncome} · 보너스 {winnerReward?.bonus}</small></article><article><span>{SIDE_LABEL[otherSide(game.winner)]}</span><b>+{loserReward?.total}원</b><small>라운드 {loserReward?.resultIncome} · 보너스 {loserReward?.bonus}</small></article></div><div className="victory-actions"><button onClick={() => startNextRound(false)}><span>{spectatorMode ? "AI 자동 구매 후 계속" : "장비·경제 유지"}</span><strong>다음 라운드</strong></button><button onClick={() => startNextRound(true)}><span>공수 교대 · 경제 초기화</span><strong>진영 교대</strong></button><button className="secondary" onClick={restartToTitle}>새 작전</button></div></div></div>}
+      {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner} ${spectatorMode ? "spectator-victory" : ""}`}><span className="eyebrow">ROUND {game.matchRound} COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p>{roundHighlight && <RoundHighlightCard highlight={roundHighlight} />}{spectatorMode && <MatchAnalysisPanel game={game} />}<div className="round-economy"><article><span>{SIDE_LABEL[game.winner]}</span><b>+{winnerReward?.total}원</b><small>라운드 {winnerReward?.resultIncome} · 보너스 {winnerReward?.bonus}</small></article><article><span>{SIDE_LABEL[otherSide(game.winner)]}</span><b>+{loserReward?.total}원</b><small>라운드 {loserReward?.resultIncome} · 보너스 {loserReward?.bonus}</small></article></div><div className="victory-actions"><button onClick={() => startNextRound(false)}><span>{spectatorMode ? "AI 자동 구매 후 계속" : "장비·경제 유지"}</span><strong>다음 라운드</strong></button><button onClick={() => startNextRound(true)}><span>공수 교대 · 경제 초기화</span><strong>진영 교대</strong></button><button className="secondary" onClick={restartToTitle}>새 작전</button></div></div></div>}
 
       {pendingAftershock && !combatScene && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">AFTERSHOCK // FORCED CHOICE</span><h2>{pendingAftershock.agent!.name} · 여진 해결</h2><p>{regionName(pendingAftershock.effect.region)}을 떠나거나 피해 2를 받아야 합니다. 이동하면 대기와 설치·해체 진행을 잃습니다.</p><div className="choice-grid"><button className="danger-choice" onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id)}><b>위치 유지</b><small>피해 2 받기</small></button>{(GRAPH.get(pendingAftershock.agent!.region) ?? []).map((region) => <button key={region} onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id, region)}><b>{region}번 이동</b><small>{regionName(region)}</small></button>)}</div></section></div>}
 

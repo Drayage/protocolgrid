@@ -571,3 +571,24 @@ test("revised utility rules resolve tailwind before gunfire and use current sigh
   assert.match(page, /observedByCaster\.has\(enemy\.region\) \|\| enemy\.detected/);
   assert.match(page, /!devices\.length && enemies\.length/);
 });
+
+test("same-turn multikills animate and persist as a round highlight", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /turnKillCounts: Record<string, number>/);
+  assert.match(page, /roundKillHighlights: KillHighlight\[\]/);
+  assert.match(page, /const count = \(game\.turnKillCounts\[attacker\.id\] \?\? 0\) \+ 1/);
+  assert.match(page, /game\.lastKillFx = killHighlight/);
+  assert.match(page, /game\.roundKillHighlights\.push\(killHighlight\)/);
+  assert.match(page, /draft\.turnKillCounts = \{\}/);
+  assert.match(page, /function KillStreakOverlay/);
+  assert.match(page, /function RoundHighlightCard/);
+  assert.match(page, /multiKillLabel\(highlight\.count\)/);
+  assert.match(page, /<RoundHighlightCard highlight=\{roundHighlight\} \/>/);
+  assert.match(css, /\.multikill-fx/);
+  assert.match(css, /\.round-highlight/);
+  assert.match(css, /@keyframes multikillReveal/);
+  assert.match(css, /@keyframes killPipPop/);
+});
