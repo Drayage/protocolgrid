@@ -453,7 +453,7 @@ const SKILL_DAMAGE = {
   paint: 2,
   hot: 2,
   shock: 2,
-  aftershock: 4,
+  aftershock: 3,
   turret: 2,
 } as const;
 const PROTOTYPE_CREDIT_RATE = 125;
@@ -530,15 +530,15 @@ const DEFENDER_BACK_EDGES: Record<"A" | "B", [number, number][]> = {
 };
 
 const WEAPONS: Record<WeaponId, Weapon> = {
-  classic: { id: "classic", name: "클래식", type: "normal", body: 1, head: 2, price: 0, aim: 0, move: 0, unlock: 1 },
-  sheriff: { id: "sheriff", name: "셰리프", type: "normal", body: 2, head: 6, price: 6, aim: 0, move: 0, unlock: 1 },
-  bucky: { id: "bucky", name: "버키", type: "shotgun", body: 2, head: 4, price: 8, aim: 0, move: 0, unlock: 2 },
-  spectre: { id: "spectre", name: "스펙터", type: "normal", body: 2, head: 3, price: 10, aim: 0, move: 1, unlock: 2 },
-  bulldog: { id: "bulldog", name: "불독", type: "normal", body: 2, head: 4, price: 12, aim: 1, move: 0, unlock: 2 },
-  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 4, head: 6, price: 14, aim: 0, move: 0, unlock: 2 },
-  judge: { id: "judge", name: "저지", type: "shotgun", body: 3, head: 4, price: 16, aim: 0, move: 1, unlock: 3 },
-  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 2, head: 5, price: 24, aim: 1, move: 1, unlock: 3 },
-  vandal: { id: "vandal", name: "밴달", type: "normal", body: 2, head: 6, price: 24, aim: 1, move: 0, unlock: 3 },
+  classic: { id: "classic", name: "클래식", type: "normal", body: 2, head: 3, price: 0, aim: 0, move: 0, unlock: 1 },
+  sheriff: { id: "sheriff", name: "셰리프", type: "normal", body: 3, head: 4, price: 6, aim: 0, move: 0, unlock: 1 },
+  bucky: { id: "bucky", name: "버키", type: "shotgun", body: 3, head: 4, price: 8, aim: 0, move: 0, unlock: 2 },
+  spectre: { id: "spectre", name: "스펙터", type: "normal", body: 3, head: 4, price: 10, aim: 0, move: 1, unlock: 2 },
+  bulldog: { id: "bulldog", name: "불독", type: "normal", body: 3, head: 4, price: 12, aim: 1, move: 0, unlock: 2 },
+  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 4, head: 5, price: 14, aim: 0, move: 0, unlock: 2 },
+  judge: { id: "judge", name: "저지", type: "shotgun", body: 4, head: 5, price: 16, aim: 0, move: 1, unlock: 3 },
+  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 4, head: 5, price: 24, aim: 1, move: 1, unlock: 3 },
+  vandal: { id: "vandal", name: "밴달", type: "normal", body: 4, head: 6, price: 24, aim: 1, move: 0, unlock: 3 },
   operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 6, head: 8, price: 38, aim: 0, move: 0, unlock: 3 },
 };
 
