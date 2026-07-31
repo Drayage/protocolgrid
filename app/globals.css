@@ -90,6 +90,12 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .sound-popover input { width: 100%; height: 22px; accent-color: var(--cyan); cursor: pointer; }
 .sound-popover > button { width: 100%; margin-top: 7px; color: #dcebea; border-color: rgba(255,255,255,.12); }
 .sound-popover small { display: block; margin-top: 8px; color: #53696e; font-size: 7px; text-align: center; }
+.audio-profile-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 8px; }
+.audio-profile-switch button { min-height: 48px; padding: 7px 5px; color: #668087; border: 1px solid #1f363b; background: #071317; cursor: pointer; }
+.audio-profile-switch button.active { color: var(--cyan); border-color: rgba(95,246,213,.55); background: rgba(95,246,213,.08); box-shadow: inset 0 -2px var(--cyan); }
+.audio-profile-switch b, .audio-profile-switch small { display: block; margin: 0; }
+.audio-profile-switch b { font: 8px var(--font-geist-mono), monospace; letter-spacing: .08em; }
+.audio-profile-switch small { margin-top: 4px; color: #5b7075; font-size: 6px; line-height: 1.3; }
 .header-actions button, .modal-head button {
   border: 1px solid var(--line);
   color: #a9bec2;
@@ -525,6 +531,33 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   .weapon-grid { grid-template-columns: repeat(2,1fr); }.rules-grid { grid-template-columns: 1fr; }
 }
 
+/* Tactical audio audition lab */
+.audio-lab { min-height: 100dvh; padding: 32px clamp(16px,4vw,64px) 60px; color: #dce8e7; background: radial-gradient(circle at 82% 4%,rgba(255,82,103,.08),transparent 28%),linear-gradient(135deg,#030a0d,#071317 55%,#050c0f); }
+.audio-lab button, .audio-lab a { -webkit-tap-highlight-color: transparent; }
+.audio-lab-hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 28px; max-width: 1280px; margin: auto; padding-bottom: 24px; border-bottom: 1px solid rgba(95,246,213,.2); }
+.audio-lab-hero span, .audio-section > header > span { color: var(--cyan); font: 8px monospace; letter-spacing: .2em; }
+.audio-lab-hero h1 { margin: 7px 0 8px; font: 900 clamp(32px,5vw,68px)/.88 monospace; letter-spacing: -.07em; }
+.audio-lab-hero p { margin: 0; color: #769096; font-size: 11px; }
+.audio-lab-hero a { padding: 11px 14px; color: #9bb0b4; border: 1px solid #25393e; text-decoration: none; font-size: 9px; white-space: nowrap; }
+.audio-console { display: grid; grid-template-columns: minmax(0,2fr) minmax(240px,1fr); gap: 10px; max-width: 1280px; margin: 16px auto 28px; }
+.audio-master, .audio-now { min-height: 92px; border: 1px solid #1c3338; background: rgba(8,20,24,.87); }
+.audio-master { display: grid; grid-template-columns: 210px minmax(120px,1fr) 150px 105px; gap: 16px; align-items: center; padding: 12px; }
+.audio-demo, .audio-toggle { height: 64px; color: var(--cyan); border: 1px solid rgba(95,246,213,.3); background: rgba(95,246,213,.055); cursor: pointer; }
+.audio-demo { display: flex; flex-direction: column; justify-content: center; text-align: left; padding: 0 15px; }
+.audio-demo b { font-size: 11px; }.audio-demo small { margin-top: 4px; color: #61787d; font-size: 7px; }
+.audio-master label { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; color: #61777d; font: 7px monospace; letter-spacing: .12em; }.audio-master label b { color: #b7c9ca; }.audio-master input { grid-column: 1/-1; width: 100%; accent-color: var(--cyan); }
+.audio-toggle { color: #75878b; }.audio-toggle.on { color: var(--cyan); box-shadow: inset 0 0 18px rgba(95,246,213,.05); }
+.lab-profile-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.lab-profile-switch button { min-height: 32px; padding: 5px; color: #62777c; border: 1px solid #21363b; background: #071317; font: 7px monospace; cursor: pointer; }
+.lab-profile-switch button.active { color: var(--cyan); border-color: rgba(95,246,213,.48); background: rgba(95,246,213,.07); }
+.audio-now { display: grid; grid-template-columns: 8px 1fr; grid-template-rows: auto auto auto; align-content: center; gap: 3px 9px; padding: 16px; }.audio-now i { grid-row: 1/4; width: 4px; height: 42px; align-self: center; background: var(--red); box-shadow: 0 0 12px rgba(255,82,103,.5); }.audio-now span { color: #5f777c; font: 7px monospace; letter-spacing: .14em; }.audio-now strong { font-size: 14px; }.audio-now small { color: #52666a; font-size: 7px; }
+.audio-section { max-width: 1280px; margin: 34px auto 0; }.audio-section > header { display: flex; gap: 15px; align-items: flex-start; margin-bottom: 13px; }.audio-section > header > span { display: grid; place-items: center; width: 31px; height: 31px; border: 1px solid rgba(95,246,213,.25); }.audio-section h2 { margin: 0; font-size: 18px; }.audio-section header p { margin: 4px 0 0; color: #5e757a; font-size: 9px; }
+.weapon-sample-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }.weapon-sample-grid article { display: grid; grid-template-columns: 1fr repeat(3,64px); align-items: stretch; min-height: 62px; border: 1px solid #172c31; background: rgba(8,19,23,.78); }.weapon-sample-grid article > div { display: flex; flex-direction: column; justify-content: center; padding: 9px 13px; }.weapon-sample-grid article > div span { color: #526a6f; font: 7px monospace; }.weapon-sample-grid article > div strong { margin-top: 3px; font-size: 12px; }.weapon-sample-grid article button { color: #84999d; border: 0; border-left: 1px solid #172c31; background: transparent; font: 8px monospace; cursor: pointer; }.weapon-sample-grid article button:hover { color: #071214; background: var(--cyan); }.weapon-sample-grid article button:nth-last-child(2):hover { color: white; background: var(--red); }.weapon-sample-grid .turret-sample { grid-template-columns: 1fr repeat(2,96px); }
+.utility-sample-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }.utility-sample-grid button { position: relative; display: flex; flex-direction: column; min-height: 94px; padding: 15px; color: #dce8e7; border: 1px solid #172c31; background: rgba(8,19,23,.78); text-align: left; cursor: pointer; }.utility-sample-grid button:hover { border-color: rgba(95,246,213,.4); background: rgba(95,246,213,.06); }.utility-sample-grid span { color: var(--cyan); font: 6px monospace; letter-spacing: .14em; }.utility-sample-grid strong { margin-top: 8px; font-size: 12px; }.utility-sample-grid small { margin-top: 3px; color: #5f767b; font-size: 8px; }.utility-sample-grid i { position: absolute; right: 14px; bottom: 14px; color: var(--cyan); font-size: 9px; font-style: normal; }
+.signal-groups { display: grid; grid-template-columns: repeat(4,1fr); gap: 7px; }.signal-groups article { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px; padding: 13px; border: 1px solid #172c31; background: rgba(8,19,23,.78); }.signal-groups h3 { width: 100%; margin: 0 0 8px; color: #62797e; font: 7px monospace; letter-spacing: .14em; }.signal-groups button { flex: 1 1 72px; min-height: 35px; padding: 7px; color: #a0b2b5; border: 1px solid #20353a; background: #09161a; font-size: 8px; cursor: pointer; }.signal-groups button:hover { color: var(--cyan); border-color: rgba(95,246,213,.4); }
+.audio-lab-footer { display: flex; justify-content: space-between; max-width: 1280px; margin: 42px auto 0; padding-top: 18px; color: #4f6468; border-top: 1px solid #16292d; font: 7px monospace; letter-spacing: .08em; }.audio-lab-footer p { margin: 0; letter-spacing: 0; }
+@media (max-width: 800px) { .audio-lab { padding: 18px 10px 44px; }.audio-lab-hero { align-items: flex-start; flex-direction: column; gap: 14px; }.audio-lab-hero h1 { font-size: 38px; }.audio-console { grid-template-columns: 1fr; }.audio-master { grid-template-columns: 1fr 90px; }.audio-master .audio-demo, .audio-master label { grid-column: 1/-1; }.weapon-sample-grid, .utility-sample-grid, .signal-groups { grid-template-columns: 1fr; }.weapon-sample-grid article { grid-template-columns: 1fr repeat(3,56px); }.audio-lab-footer { flex-direction: column; gap: 6px; } }
+
 .purchase-armors { grid-template-columns: repeat(4,1fr); }
 .deployment-map, .combat-mini-map { container-type: size; }
 .combat-map-focus { z-index: 4; }
@@ -823,8 +856,47 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .weapon-art-operator > b::before { left: 45px; top: 9px; width: 8px; height: 12px; }
 .weapon-art-operator > b::after { left: 29px; top: -10px; width: 27px; height: 8px; border-radius: 5px; }
 
-.weapon-art.compact { margin: -8px -20px; transform: scale(.42); transform-origin: 50% 50%; }
-.effect-stack i.weapon-drop { width: 34px; height: 18px; overflow: visible; background: rgba(7,18,22,.93); }
+/* Base-shop icon masks: exact weapon proportions, rendered as the requested black silhouettes. */
+.weapon-art {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 96px;
+  height: 34px;
+  margin: 0 0 5px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  filter: brightness(0) saturate(100%) drop-shadow(0 0 1px rgba(229,242,240,.96)) drop-shadow(0 2px 2px rgba(0,0,0,.9));
+}
+.weapon-art::before, .weapon-art::after,
+.weapon-art > i, .weapon-art > b { display: none !important; }
+.weapon-art-classic { width: 54px; height: 34px; }
+.weapon-art-sheriff { width: 64px; height: 34px; }
+.weapon-art-bucky { width: 104px; height: 30px; }
+.weapon-art-spectre { width: 82px; height: 32px; }
+.weapon-art-bulldog { width: 92px; height: 32px; }
+.weapon-art-outlaw { width: 106px; height: 30px; }
+.weapon-art-judge { width: 90px; height: 32px; }
+.weapon-art-phantom { width: 102px; height: 31px; }
+.weapon-art-vandal { width: 98px; height: 32px; }
+.weapon-art-operator { width: 108px; height: 30px; }
+.weapon-art.compact {
+  width: 46px;
+  height: 18px;
+  margin: 0;
+  transform: none;
+  background-size: contain;
+  transform-origin: center;
+}
+.effect-stack i.weapon-drop {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 24px;
+  overflow: hidden;
+  background: rgba(238,244,238,.82);
+}
 .effect-stack i.weapon-drop .weapon-art { pointer-events: none; }
 
 @media (max-height: 760px) {
@@ -835,8 +907,8 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 @media (max-width: 800px) {
   .agent-portrait-frame { width: 32px; height: 32px; }
   .fight-action em { font-size: 7px; }
-  .weapon-art { transform: scale(.9); transform-origin: left center; margin-right: -7px; }
-  .weapon-art.compact { transform: scale(.42); margin: -8px -20px; }
+  .weapon-art { transform: none; transform-origin: left center; margin-right: 0; }
+  .weapon-art.compact { width: 42px; height: 17px; margin: 0; transform: none; }
   .sound-control > button { min-width: 44px; padding-inline: 5px; }
   .sound-popover { position: fixed; top: 65px; right: 8px; width: min(260px, calc(100vw - 16px)); }
   .sound-popover::before { right: 28px; }

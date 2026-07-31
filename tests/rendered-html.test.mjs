@@ -416,18 +416,44 @@ test("AI preserves unused action cards when holding is tactically stronger than 
   assert.match(page, /남은 행동카드는 사용하지 않습니다/);
 });
 
-test("AI clears, flanks, or waits instead of repeatedly entering a guarded recovery region", async () => {
+test("AI commits to a strength-based recovery breach or flank across multiple turns", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function aiRecoveryBlockers/);
   assert.match(page, /function aiGuardedRecoveryObjectives/);
   assert.match(page, /function shortestRecoveryFlankPath/);
-  assert.match(page, /function aiRecoveryFlankDestination/);
+  assert.match(page, /interface AiRecoveryOrder/);
+  assert.match(page, /function aiRecoveryAssaultScore/);
+  assert.match(page, /function aiRecoveryOrderDestination/);
   assert.match(page, /next !== end && \(next === objectiveRegion \|\| blockedRegions\.has\(next\)\)/);
-  assert.match(page, /if \(aiRecoveryBlockers\(game, agent\.team, objective\.region\)\.length\)/);
+  assert.match(page, /committedUntilTeamTurn: game\.teamTurns\[agent\.team\] \+ 2/);
+  assert.match(page, /assaultScore >= 0 \|\| deadlineForcesBreach \? "breach" : "flank"/);
+  assert.match(page, /refreshAiRecoveryOrder\(game, agent, order\)/);
   assert.match(page, /const recoveryBlockerIds = new Set/);
-  assert.match(page, /recoveryFlankDestination === null\) continue/);
-  assert.match(page, /회수를 막는 대기 사격을 피해 측면으로 우회합니다/);
+  assert.match(page, /recoveryDecision\.destination === null\) continue/);
+  assert.match(page, /회수 작전 ·/);
   assert.match(page, /회수는 확인된 대기 사격 때문에 보류하고/);
+});
+
+test("AI keeps prior-turn enemy positions and waits outside the viewer-only last-known UI", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /interface AiEnemyKnowledge/);
+  assert.match(page, /aiEnemyKnowledge: AiEnemyKnowledge\[\]/);
+  assert.match(page, /function refreshAiEnemyKnowledge/);
+  assert.match(page, /observedTeamTurn: game\.teamTurns\[side\]/);
+  assert.match(page, /confidence: Math\.max\(0\.25, 0\.78 - age \* 0\.14\)/);
+  assert.match(page, /const memoryWeight = enemy\.confidence/);
+  assert.match(page, /enemy\.waitDirs\.includes\(region\)/);
+  assert.match(page, /draft\.enemyMemories = \[\]/);
+  assert.doesNotMatch(page, /draft\.aiEnemyKnowledge = \[\]/);
+});
+
+test("hot-reloaded games backfill newly added AI tactical state", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function ensureAiTacticalState\(game: GameState\)/);
+  assert.match(page, /game\.aiEnemyKnowledge \?\?= \[\]/);
+  assert.match(page, /game\.aiRecoveryOrders \?\?= \[\]/);
+  assert.match(page, /const draft = structuredClone\(current\) as GameState;[\s\S]{0,100}ensureAiTacticalState\(draft\)/);
+  assert.match(page, /function refreshAiEnemyKnowledge[\s\S]{0,100}ensureAiTacticalState\(game\)/);
 });
 
 test("attackers configure opening waits at spawn before the first defense turn", async () => {
@@ -618,11 +644,16 @@ test("same-turn multikills animate and persist as a round highlight", async () =
 });
 
 test("weapon silhouettes, highlight portraits, and four-heart combat vitals remain compact", async () => {
-  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /Solid-black silhouettes keep each weapon recognizable even at map-token size/);
-  assert.match(css, /--gun: #020405/);
-  assert.match(css, /\.weapon-art-operator \{ width: 84px/);
-  assert.match(css, /\.weapon-art-classic \{ width: 55px/);
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /backgroundImage: `url\("\/weapon-icons\/\$\{weapon\}\.png"\)`/);
+  assert.match(css, /Base-shop icon masks: exact weapon proportions/);
+  assert.match(css, /filter: brightness\(0\) saturate\(100%\)/);
+  assert.match(css, /\.weapon-art-operator \{ width: 108px; height: 30px/);
+  assert.match(css, /\.weapon-art-classic \{ width: 54px; height: 34px/);
+  assert.match(css, /\.weapon-art\.compact \{[\s\S]{0,120}width: 46px/);
   assert.match(css, /\.highlight-portrait \{[^}]*width: 116px; height: 116px; aspect-ratio: 1/);
   assert.match(css, /\.highlight-portrait\.victim \{ width: 72px; height: 72px/);
   assert.match(css, /\.combat-vital-display \{ display: grid; grid-template-columns: 1fr/);
@@ -663,19 +694,40 @@ test("procedural tactical audio covers combat, utility, objectives, and mobile c
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /configureTacticalAudio/);
-  assert.match(page, /playTacticalSound\(\{ type: "encounter" \}\)/);
+  assert.match(page, /playTacticalSound\(\{ type: "encounter", pan:/);
   assert.match(page, /type: "shot", weapon: fighter\.weapon/);
   assert.match(page, /type: "skill", skillId: skillFx\.skillId/);
   assert.match(page, /type: "spike", status: game\.spike\.status/);
   assert.match(page, /type: "kill", count: killFx\.count/);
   assert.match(page, /type: "round", winner: game\.winner/);
   assert.match(page, /protocol-grid-sound-volume/);
+  assert.match(page, /protocol-grid-audio-profile/);
+  assert.match(page, /audioPanForRegion/);
+  assert.match(page, /HEADSET/);
+  assert.match(page, /SPEAKER/);
   assert.match(audio, /createDynamicsCompressor/);
+  assert.match(audio, /createStereoPanner/);
+  assert.match(audio, /type TacticalAudioProfile = "headset" \| "speakers"/);
   assert.match(audio, /createOscillator/);
   assert.match(audio, /createBufferSource/);
   assert.match(audio, /function shotSound/);
+  assert.match(audio, /Each gun keeps a learnable three-beat identity/);
+  assert.match(audio, /const WEAPON_VOICES/);
+  assert.match(audio, /function mechanicalClick/);
+  assert.match(audio, /function electricArc/);
+  assert.match(audio, /function servoMotion/);
+  assert.match(audio, /function noiseSweep/);
+  assert.match(audio, /case "tailwind":/);
+  assert.match(audio, /case "paint":/);
+  assert.match(audio, /case "turret":/);
+  assert.match(audio, /case "recon":/);
+  assert.match(audio, /case "aftershock":/);
+  assert.match(audio, /case "shadow":/);
   assert.match(audio, /function skillSound/);
   assert.match(audio, /function spikeSound/);
+  assert.match(audio, /const killNotes = \[146\.83, 174\.61, 220, 293\.66\]/);
+  assert.match(audio, /Impact -> lift -> open-fifth resolution/);
   assert.match(css, /\.sound-popover/);
+  assert.match(css, /\.audio-profile-switch/);
   assert.match(css, /width: min\(260px, calc\(100vw - 16px\)\)/);
 });

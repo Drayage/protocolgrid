@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { configureTacticalAudio, playTacticalSound, unlockTacticalAudio } from "./game-audio";
+import { configureTacticalAudio, playTacticalSound, unlockTacticalAudio, type TacticalAudioProfile } from "./game-audio";
 
 type Side = "attack" | "defense";
 type Role = "duelist" | "initiator" | "controller" | "sentinel";
@@ -180,6 +180,30 @@ interface EnemyMemory {
   agentId: string;
   region: number;
   waitDirs: number[];
+}
+
+interface AiRecoveryOrder {
+  side: Side;
+  agentId: string;
+  objectiveKind: "spike" | "weapon";
+  objectiveId: string;
+  objectiveRegion: number;
+  mode: "breach" | "flank";
+  route: number[];
+  progress: number;
+  blockerIds: string[];
+  blockerRegions: Array<{ agentId: string; region: number; waitDirs: number[] }>;
+  createdTeamTurn: number;
+  committedUntilTeamTurn: number;
+  assaultScore: number;
+}
+
+interface AiEnemyKnowledge {
+  observer: Side;
+  agentId: string;
+  region: number;
+  waitDirs: number[];
+  observedTeamTurn: number;
 }
 
 interface VisibilityContext {
@@ -427,6 +451,8 @@ interface GameState {
   groupMovement: GroupMovement | null;
   revealedEnemyIds: string[];
   enemyMemories: EnemyMemory[];
+  aiEnemyKnowledge: AiEnemyKnowledge[];
+  aiRecoveryOrders: AiRecoveryOrder[];
   lastSkillFx: SkillFx | null;
   turnKillCounts: Record<string, number>;
   lastKillFx: KillHighlight | null;
@@ -502,6 +528,12 @@ const REGIONS: Region[] = [
   { id: 16, name: "오른쪽 사이트 후방", x: 94, y: 36, site: "B" },
   { id: 17, name: "오른쪽 수비 연결로", x: 84, y: 61 },
 ];
+
+function audioPanForRegion(regionId: number | null | undefined) {
+  if (regionId === null || regionId === undefined) return 0;
+  const region = REGIONS.find((item) => item.id === regionId);
+  return region ? Math.max(-1, Math.min(1, (region.x - 50) / 44)) : 0;
+}
 
 const EDGES: [number, number][] = [
   [1, 2], [1, 4], [1, 5], [2, 5], [2, 12], [4, 5], [4, 17], [5, 6], [5, 17],
@@ -583,7 +615,13 @@ const skillArtClass = (id: string) => `skill-art skill-art-${id}`;
 const weaponArtClass = (id: WeaponId) => `weapon-art weapon-art-${id}`;
 
 function WeaponSilhouette({ weapon, compact = false }: { weapon: WeaponId; compact?: boolean }) {
-  return <span className={`${weaponArtClass(weapon)} ${compact ? "compact" : ""}`} aria-hidden="true"><i /><b /></span>;
+  return (
+    <span
+      className={`${weaponArtClass(weapon)} ${compact ? "compact" : ""}`}
+      style={{ backgroundImage: `url("/weapon-icons/${weapon}.png")` }}
+      aria-hidden="true"
+    />
+  );
 }
 
 const CARD_DATA: Record<CardKind, { name: string; tag: string; description: string }> = {
@@ -805,6 +843,8 @@ function createInitialGame(
     groupMovement: null,
     revealedEnemyIds: [],
     enemyMemories: [],
+    aiEnemyKnowledge: [],
+    aiRecoveryOrders: [],
     lastSkillFx: null,
     turnKillCounts: {},
     lastKillFx: null,
@@ -946,6 +986,8 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.groupMovement = null;
   game.revealedEnemyIds = [];
   game.enemyMemories = [];
+  game.aiEnemyKnowledge = [];
+  game.aiRecoveryOrders = [];
   game.lastSkillFx = null;
   game.turnKillCounts = {};
   game.lastKillFx = null;
@@ -1289,10 +1331,24 @@ function addTrade(game: GameState, trade: TradeState) {
   game.trade.push(trade);
 }
 
+function ensureAiTacticalState(game: GameState) {
+  game.aiEnemyKnowledge ??= [];
+  game.aiRecoveryOrders ??= [];
+}
+
 function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
   if (!enemy.alive || enemy.team === observer) return;
+  ensureAiTacticalState(game);
   game.enemyMemories = game.enemyMemories.filter((memory) => !(memory.observer === observer && memory.agentId === enemy.id));
   game.enemyMemories.push({ observer, agentId: enemy.id, region: enemy.region, waitDirs: [...enemy.waitDirs] });
+  game.aiEnemyKnowledge = game.aiEnemyKnowledge.filter((memory) => !(memory.observer === observer && memory.agentId === enemy.id));
+  game.aiEnemyKnowledge.push({
+    observer,
+    agentId: enemy.id,
+    region: enemy.region,
+    waitDirs: [...enemy.waitDirs],
+    observedTeamTurn: game.teamTurns[observer],
+  });
   if (!game.revealedEnemyIds.includes(enemy.id)) game.revealedEnemyIds.push(enemy.id);
 }
 
@@ -2107,15 +2163,52 @@ interface AiEnemyIntel {
   agent: Agent;
   region: number;
   exact: boolean;
+  waitDirs: number[];
+  age: number;
+  confidence: number;
 }
 
 function aiEnemyIntel(game: GameState, side: Side): AiEnemyIntel[] {
+  ensureAiTacticalState(game);
   const observed = observedRegions(game, side);
   return game.teams[otherSide(side)].agents.flatMap<AiEnemyIntel>((enemy) => {
     if (!enemy.alive) return [];
-    if (enemy.detected || observed.has(enemy.region)) return [{ agent: enemy, region: enemy.region, exact: true }];
+    if (enemy.detected || observed.has(enemy.region)) return [{ agent: enemy, region: enemy.region, exact: true, waitDirs: [...enemy.waitDirs], age: 0, confidence: 1 }];
     const memory = game.enemyMemories.find((item) => item.observer === side && item.agentId === enemy.id);
-    return memory ? [{ agent: enemy, region: memory.region, exact: false }] : [];
+    if (memory) return [{ agent: enemy, region: memory.region, exact: false, waitDirs: [...memory.waitDirs], age: 0, confidence: 0.8 }];
+    const tacticalMemory = game.aiEnemyKnowledge.find((item) => item.observer === side && item.agentId === enemy.id);
+    if (!tacticalMemory) return [];
+    const age = Math.max(1, game.teamTurns[side] - tacticalMemory.observedTeamTurn);
+    if (age > 4) return [];
+    return [{
+      agent: enemy,
+      region: tacticalMemory.region,
+      exact: false,
+      waitDirs: [...tacticalMemory.waitDirs],
+      age,
+      confidence: Math.max(0.25, 0.78 - age * 0.14),
+    }];
+  });
+}
+
+function refreshAiEnemyKnowledge(game: GameState, side: Side) {
+  ensureAiTacticalState(game);
+  const observed = observedRegions(game, side);
+  const enemies = game.teams[otherSide(side)].agents;
+  game.aiEnemyKnowledge = game.aiEnemyKnowledge.filter((memory) => {
+    const enemy = getAgent(game, memory.agentId);
+    return memory.observer !== side || !!enemy?.alive;
+  });
+  enemies.forEach((enemy) => {
+    if (!enemy.alive || (!enemy.detected && !observed.has(enemy.region))) return;
+    game.aiEnemyKnowledge = game.aiEnemyKnowledge.filter((memory) => !(memory.observer === side && memory.agentId === enemy.id));
+    game.aiEnemyKnowledge.push({
+      observer: side,
+      agentId: enemy.id,
+      region: enemy.region,
+      waitDirs: [...enemy.waitDirs],
+      observedTeamTurn: game.teamTurns[side],
+    });
   });
 }
 
@@ -2131,13 +2224,12 @@ function siteForRegion(region: number): "A" | "B" | null {
 
 function knownThreatScoreAtRegion(game: GameState, side: Side, region: number) {
   return aiEnemyIntel(game, side).reduce((score, enemy) => {
-    const memoryWeight = enemy.exact ? 1 : 0.35;
+    const memoryWeight = enemy.confidence;
     let next = enemy.region === region ? 18 : Math.max(0, 5 - distance(enemy.region, region));
-    if (enemy.exact && enemy.agent.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region)) {
+    if (enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region)) {
       next += WEAPONS[enemy.agent.weapon].type === "sniper" ? 22 : 12;
     } else if (
-      enemy.exact
-      && WEAPONS[enemy.agent.weapon].type === "sniper"
+      WEAPONS[enemy.agent.weapon].type === "sniper"
       && distance(enemy.region, region) <= 2
       && !isWaitPathSmokeBlocked(game, enemy.region, region)
     ) {
@@ -2149,11 +2241,15 @@ function knownThreatScoreAtRegion(game: GameState, side: Side, region: number) {
 
 function attackSiteSituation(game: GameState, site: "A" | "B") {
   const tactical = tacticalRegionsForSite(site);
-  const exactDefenders = aiEnemyIntel(game, "attack").filter((enemy) => enemy.exact && tactical.has(enemy.region));
+  const allDefenders = aiEnemyIntel(game, "attack").filter((enemy) => tactical.has(enemy.region));
+  const exactDefenders = allDefenders.filter((enemy) => enemy.exact);
+  const rememberedDefenders = allDefenders.filter((enemy) => !enemy.exact);
   const defendersOnSite = exactDefenders.filter((enemy) => SITE_REGIONS[site].includes(enemy.region));
   const waitingDefenders = exactDefenders.filter((enemy) =>
-    SITE_REGIONS[site].some((region) => enemy.agent.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region)),
+    SITE_REGIONS[site].some((region) => enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region)),
   );
+  const rememberedWaits = rememberedDefenders.filter((enemy) =>
+    SITE_REGIONS[site].some((region) => enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region)));
   const snipers = exactDefenders.filter((enemy) => WEAPONS[enemy.agent.weapon].type === "sniper");
   const alliesOnSite = game.teams.attack.agents.filter((ally) => ally.alive && SITE_REGIONS[site].includes(ally.region));
   const alliesNearSite = game.teams.attack.agents.filter((ally) =>
@@ -2163,6 +2259,8 @@ function attackSiteSituation(game: GameState, site: "A" | "B") {
     SITE_REGIONS[site].includes(region) || SITE_APPROACH_REGIONS[site].includes(region),
   ).length, 0);
   const danger = exactDefenders.length * 6 + defendersOnSite.length * 10 + waitingDefenders.length * 9 + snipers.length * 8
+    + rememberedDefenders.reduce((total, enemy) => total + 5 * enemy.confidence, 0)
+    + rememberedWaits.reduce((total, enemy) => total + 7 * enemy.confidence, 0)
     - alliesOnSite.length * 5 - Math.max(0, alliesNearSite.length - 1) * 2;
   return { exactDefenders, defendersOnSite, waitingDefenders, snipers, alliesOnSite, alliesNearSite, coveringWaits, danger };
 }
@@ -2269,7 +2367,7 @@ function aiRecoveryBlockers(game: GameState, side: Side, objectiveRegion: number
     const waitRange = WEAPONS[enemy.agent.weapon].type === "sniper" ? 2 : 1;
     return path.length >= 2
       && path.length - 1 <= waitRange
-      && enemy.agent.waitDirs.includes(objectiveRegion)
+      && enemy.waitDirs.includes(objectiveRegion)
       && !isWaitPathSmokeBlocked(game, enemy.region, objectiveRegion);
   });
 }
@@ -2309,7 +2407,7 @@ function shortestRecoveryFlankPath(start: number, end: number, objectiveRegion: 
 function aiRecoveryFlankDestination(game: GameState, agent: Agent, objectiveRegion: number, targets: number[]) {
   const blockers = aiRecoveryBlockers(game, agent.team, objectiveRegion);
   if (!blockers.length) return null;
-  const watchedRegions = new Set(blockers.flatMap((blocker) => blocker.agent.waitDirs));
+  const watchedRegions = new Set(blockers.flatMap((blocker) => blocker.waitDirs));
   const plans = blockers.flatMap((blocker) => {
     const blocked = new Set(watchedRegions);
     blocked.delete(blocker.region);
@@ -2320,6 +2418,209 @@ function aiRecoveryFlankDestination(game: GameState, agent: Agent, objectiveRegi
       : []);
   }).sort((a, b) => a.remaining * 20 + a.threat - (b.remaining * 20 + b.threat));
   return plans[0]?.region ?? null;
+}
+
+interface AiRecoveryObjective {
+  kind: "spike" | "weapon";
+  id: string;
+  region: number;
+}
+
+function aiRecoveryOrderIsValid(game: GameState, order: AiRecoveryOrder) {
+  const agent = getAgent(game, order.agentId);
+  if (!agent?.alive || agent.team !== order.side) return false;
+  if (order.objectiveKind === "spike") {
+    return order.side === "attack"
+      && game.spike.status === "dropped"
+      && game.spike.region === order.objectiveRegion;
+  }
+  return game.droppedWeapons.some((item) =>
+    item.id === order.objectiveId
+    && item.region === order.objectiveRegion
+    && item.knownBy.includes(order.side));
+}
+
+function pruneAiRecoveryOrders(game: GameState) {
+  ensureAiTacticalState(game);
+  game.aiRecoveryOrders = game.aiRecoveryOrders.filter((order) => aiRecoveryOrderIsValid(game, order));
+}
+
+function aiRecoveryOrderForAgent(game: GameState, agent: Agent) {
+  ensureAiTacticalState(game);
+  return game.aiRecoveryOrders.find((order) => order.agentId === agent.id && aiRecoveryOrderIsValid(game, order)) ?? null;
+}
+
+function aiRecoveryObjectiveForAgent(game: GameState, agent: Agent): AiRecoveryObjective | null {
+  const existing = aiRecoveryOrderForAgent(game, agent);
+  if (existing) return { kind: existing.objectiveKind, id: existing.objectiveId, region: existing.objectiveRegion };
+  if (agent.team === "attack" && game.spike.status === "dropped" && game.spike.region !== null) {
+    return { kind: "spike", id: "spike", region: game.spike.region };
+  }
+  const weapon = aiWeaponPickupObjective(game, agent);
+  return weapon ? { kind: "weapon", id: weapon.id, region: weapon.region } : null;
+}
+
+function aiRecoveryUnitReadiness(game: GameState, agent: Agent) {
+  const weapon = WEAPONS[agent.weapon];
+  const stats = finalStats(game, agent);
+  const utility = Object.values(agent.skills).reduce((total, charges) => total + charges, 0);
+  return (agent.hp + agent.armor) * 3
+    + weapon.body * 2
+    + weapon.head
+    + stats.aim * 1.5
+    + stats.move
+    + Math.min(3, utility);
+}
+
+function aiRecoveryAssaultScore(game: GameState, agent: Agent, objectiveRegion: number, blockers: AiEnemyIntel[]) {
+  const aliveBlockers = blockers.filter((blocker) => blocker.agent.alive);
+  if (!aliveBlockers.length) return 99;
+  const nearbyAllies = game.teams[agent.team].agents.filter((ally) =>
+    ally.alive && distance(ally.region, agent.region) <= 1);
+  const knownDefenders = aliveBlockers.map((blocker) => blocker.agent);
+  const strongestBlocker = [...aliveBlockers].sort((a, b) =>
+    aiRecoveryUnitReadiness(game, b.agent) - aiRecoveryUnitReadiness(game, a.agent))[0];
+  const engagementRange = Math.max(0, Math.min(2, distance(strongestBlocker.region, objectiveRegion)));
+  const attackOdds = calculateShotOdds(game, agent, strongestBlocker.agent, engagementRange, false, 0, 0);
+  const holdOdds = calculateShotOdds(game, strongestBlocker.agent, agent, engagementRange, true, 0, 0);
+  const friendlyPower = nearbyAllies.reduce((total, ally) => total + aiRecoveryUnitReadiness(game, ally), 0);
+  const defenderPower = knownDefenders.reduce((total, defender) => total + aiRecoveryUnitReadiness(game, defender), 0);
+  const tradePressure = Math.max(0, nearbyAllies.length - 1) * 5;
+  const waitPressure = aliveBlockers.length * 5
+    + (WEAPONS[strongestBlocker.agent.weapon].type === "sniper" ? 7 : 0);
+  return friendlyPower - defenderPower
+    + (attackOdds.expectedDamage - holdOdds.expectedDamage) * 5
+    + tradePressure
+    - waitPressure;
+}
+
+function aiRecoveryStoredBlockers(game: GameState, order: AiRecoveryOrder): AiEnemyIntel[] {
+  return order.blockerRegions.flatMap<AiEnemyIntel>((memory) => {
+    const agent = getAgent(game, memory.agentId);
+    return agent?.alive ? [{
+      agent,
+      region: memory.region,
+      exact: false,
+      waitDirs: [...memory.waitDirs],
+      age: Math.max(1, game.teamTurns[order.side] - order.createdTeamTurn),
+      confidence: 0.72,
+    }] : [];
+  });
+}
+
+function aiRecoveryFlankRoute(game: GameState, agent: Agent, objectiveRegion: number, blockers: AiEnemyIntel[]) {
+  const watchedRegions = new Set(blockers.flatMap((blocker) => blocker.waitDirs));
+  return blockers.map((blocker) => {
+    const blocked = new Set(watchedRegions);
+    blocked.delete(blocker.region);
+    const route = shortestRecoveryFlankPath(agent.region, blocker.region, objectiveRegion, blocked);
+    const danger = route.reduce((total, region) => total + knownThreatScoreAtRegion(game, agent.team, region), 0);
+    return { route, score: route.length * 18 + danger };
+  }).filter((plan) => plan.route.length > 1)
+    .sort((a, b) => a.score - b.score)[0]?.route ?? [];
+}
+
+function setAiRecoveryOrderRoute(game: GameState, agent: Agent, order: AiRecoveryOrder, mode: AiRecoveryOrder["mode"], blockers: AiEnemyIntel[]) {
+  order.mode = mode;
+  order.progress = 0;
+  order.route = mode === "breach"
+    ? shortestPath(agent.region, order.objectiveRegion)
+    : aiRecoveryFlankRoute(game, agent, order.objectiveRegion, blockers);
+  if (!order.route.length) order.route = [agent.region];
+}
+
+function createAiRecoveryOrder(game: GameState, agent: Agent, objective: AiRecoveryObjective, blockers: AiEnemyIntel[]) {
+  const assaultScore = aiRecoveryAssaultScore(game, agent, objective.region, blockers);
+  const directDistance = distance(agent.region, objective.region);
+  const attackTurnsRemaining = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
+  const deadlineForcesBreach = objective.kind === "spike"
+    && agent.team === "attack"
+    && attackTurnsRemaining <= directDistance + 1;
+  let mode: AiRecoveryOrder["mode"] = assaultScore >= 0 || deadlineForcesBreach ? "breach" : "flank";
+  const order: AiRecoveryOrder = {
+    side: agent.team,
+    agentId: agent.id,
+    objectiveKind: objective.kind,
+    objectiveId: objective.id,
+    objectiveRegion: objective.region,
+    mode,
+    route: [],
+    progress: 0,
+    blockerIds: blockers.map((blocker) => blocker.agent.id),
+    blockerRegions: blockers.map((blocker) => ({ agentId: blocker.agent.id, region: blocker.region, waitDirs: [...blocker.waitDirs] })),
+    createdTeamTurn: game.teamTurns[agent.team],
+    committedUntilTeamTurn: game.teamTurns[agent.team] + 2,
+    assaultScore,
+  };
+  setAiRecoveryOrderRoute(game, agent, order, mode, blockers);
+  if (mode === "flank" && order.route.length < 2 && deadlineForcesBreach) {
+    mode = "breach";
+    setAiRecoveryOrderRoute(game, agent, order, mode, blockers);
+  }
+  game.aiRecoveryOrders = game.aiRecoveryOrders.filter((existing) => existing.agentId !== agent.id);
+  game.aiRecoveryOrders.push(order);
+  return order;
+}
+
+function refreshAiRecoveryOrder(game: GameState, agent: Agent, order: AiRecoveryOrder) {
+  const exactIntel = new Map(aiEnemyIntel(game, agent.team)
+    .filter((enemy) => enemy.exact)
+    .map((enemy) => [enemy.agent.id, enemy.region]));
+  order.blockerRegions.forEach((memory) => {
+    const exactRegion = exactIntel.get(memory.agentId);
+    if (exactRegion !== undefined) {
+      memory.region = exactRegion;
+      memory.waitDirs = [...(getAgent(game, memory.agentId)?.waitDirs ?? [])];
+    }
+  });
+  const blockers = aiRecoveryStoredBlockers(game, order);
+  if (!blockers.length) {
+    setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
+    order.assaultScore = 99;
+    return;
+  }
+  if (game.teamTurns[agent.team] <= order.committedUntilTeamTurn) return;
+  const nextScore = aiRecoveryAssaultScore(game, agent, order.objectiveRegion, blockers);
+  const shouldBreach = nextScore >= 6;
+  const shouldFlank = nextScore <= -6;
+  if (order.mode === "breach" && shouldFlank) setAiRecoveryOrderRoute(game, agent, order, "flank", blockers);
+  else if (order.mode === "flank" && shouldBreach) setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
+  order.assaultScore = nextScore;
+}
+
+function aiRecoveryOrderDestination(game: GameState, agent: Agent, objective: AiRecoveryObjective, targets: number[]) {
+  let order = aiRecoveryOrderForAgent(game, agent);
+  const currentBlockers = aiRecoveryBlockers(game, agent.team, objective.region);
+  if (!order) {
+    if (!currentBlockers.length) return null;
+    order = createAiRecoveryOrder(game, agent, objective, currentBlockers);
+  } else refreshAiRecoveryOrder(game, agent, order);
+
+  let currentIndex = -1;
+  for (let index = order.route.length - 1; index >= order.progress; index -= 1) {
+    if (order.route[index] === agent.region) {
+      currentIndex = index;
+      break;
+    }
+  }
+  if (currentIndex >= 0) order.progress = currentIndex;
+  else {
+    const blockers = aiRecoveryStoredBlockers(game, order);
+    setAiRecoveryOrderRoute(game, agent, order, order.mode, blockers);
+  }
+
+  if (order.mode === "flank" && order.progress >= order.route.length - 1) {
+    setAiRecoveryOrderRoute(game, agent, order, "breach", aiRecoveryStoredBlockers(game, order));
+  }
+  for (let index = order.route.length - 1; index > order.progress; index -= 1) {
+    if (targets.includes(order.route[index])) return { order, destination: order.route[index] };
+  }
+  const nextWaypoint = order.route[order.progress + 1];
+  if (nextWaypoint === undefined) return { order, destination: null };
+  const rejoin = [...targets].sort((a, b) =>
+    distance(a, nextWaypoint) + knownThreatScoreAtRegion(game, agent.team, a)
+    - (distance(b, nextWaypoint) + knownThreatScoreAtRegion(game, agent.team, b)))[0];
+  return { order, destination: rejoin ?? null };
 }
 
 function aiWeaponDestination(game: GameState, agent: Agent, targets: number[]) {
@@ -2349,6 +2650,7 @@ function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
   const { agent, item } = candidates;
   const priorWeapon = agent.weapon;
   game.droppedWeapons = game.droppedWeapons.filter((dropped) => dropped.id !== item.id);
+  game.aiRecoveryOrders = game.aiRecoveryOrders.filter((order) => order.objectiveId !== item.id);
   if (priorWeapon !== "classic") {
     game.droppedWeapons.push({ id: `ai-swap-${Date.now()}-${agent.id}`, region: agent.region, weapon: priorWeapon, knownBy: [side] });
   }
@@ -2870,7 +3172,7 @@ function aiSmokeEdge(game: GameState, agent: Agent, skillId: "smoke" | "dark", i
         const enemyPath = shortestPath(enemy.region, objective);
         const enemyEdges = enemyPath.slice(0, -1).map((region, index) => edgeKey(region, enemyPath[index + 1]));
         if (enemyEdges.includes(edgeKey(a, b))) score += 6;
-        if (enemy.exact && (enemy.agent.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.agent.weapon].type === "sniper")) {
+        if (enemy.confidence >= 0.5 && (enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.agent.weapon].type === "sniper")) {
           const holdPaths = SITE_REGIONS[targetSite].flatMap((region) => {
             const path = shortestPath(enemy.region, region);
             return path.slice(0, -1).map((pathRegion, index) => edgeKey(pathRegion, path[index + 1]));
@@ -3156,8 +3458,8 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
             .filter((ally) => ally.alive && !isAttackLurker(game, ally))
             .flatMap((ally) => SITE_REGIONS[targetSite].map((region) => distance(ally.region, region))));
           const knownHold = intel.some((enemy) =>
-            enemy.exact
-            && (enemy.agent.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.agent.weapon].type === "sniper"),
+            enemy.confidence >= 0.5
+            && (enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.agent.weapon].type === "sniper"),
           );
           if (mainBodyDistance > 2 && !knownHold) continue;
         }
@@ -3879,11 +4181,13 @@ export default function Home() {
   const [showShop, setShowShop] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem("protocol-grid-sound-enabled") !== "false");
   const [soundVolume, setSoundVolume] = useState(() => {
-    if (typeof window === "undefined") return 0.56;
+    if (typeof window === "undefined") return 0.5;
     const stored = window.localStorage.getItem("protocol-grid-sound-volume");
     const parsed = stored === null ? Number.NaN : Number(stored);
-    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.56;
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.5;
   });
+  const [audioProfile, setAudioProfile] = useState<TacticalAudioProfile>(() =>
+    typeof window === "undefined" || window.localStorage.getItem("protocol-grid-audio-profile") !== "speakers" ? "headset" : "speakers");
   const [showSound, setShowSound] = useState(false);
   const combatTurnRef = useRef<HTMLDivElement | null>(null);
   const combatStageRef = useRef<HTMLDivElement | null>(null);
@@ -3936,10 +4240,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    configureTacticalAudio(soundEnabled, soundVolume);
+    configureTacticalAudio(soundEnabled, soundVolume, audioProfile);
     window.localStorage.setItem("protocol-grid-sound-enabled", String(soundEnabled));
     window.localStorage.setItem("protocol-grid-sound-volume", String(soundVolume));
-  }, [soundEnabled, soundVolume]);
+    window.localStorage.setItem("protocol-grid-audio-profile", audioProfile);
+  }, [soundEnabled, soundVolume, audioProfile]);
 
   useEffect(() => {
     if (stage !== "play") return;
@@ -3947,7 +4252,7 @@ export default function Home() {
     const scene = game.combatQueue[0];
     if (scene && scene.id !== audio.encounterId) {
       audio.encounterId = scene.id;
-      playTacticalSound({ type: "encounter" });
+      playTacticalSound({ type: "encounter", pan: (audioPanForRegion(scene.mover.region) + audioPanForRegion(scene.holder.region)) / 2 });
     }
     if (scene) {
       ([scene.mover, scene.holder] as CombatFighterView[]).forEach((fighter) => {
@@ -3955,13 +4260,13 @@ export default function Home() {
         const shotKey = `${scene.id}:${scene.round}:${fighter.id}:${fighter.shot.aimRoll}:${fighter.shot.moveRoll}:${fighter.shot.damage}:${fighter.shot.head}`;
         if (audio.shots.has(shotKey)) return;
         audio.shots.add(shotKey);
-        playTacticalSound({ type: "shot", weapon: fighter.weapon, hit: fighter.shot.hit, head: fighter.shot.head, turret: fighter.kind === "turret" });
+        playTacticalSound({ type: "shot", weapon: fighter.weapon, hit: fighter.shot.hit, head: fighter.shot.head, turret: fighter.kind === "turret", pan: audioPanForRegion(fighter.region) });
       });
     }
     const skillFx = game.lastSkillFx;
     if (skillFx && skillFx.id !== audio.skillId && (spectatorMode || skillFx.owner === viewerSide || observed.has(skillFx.targetRegion))) {
       audio.skillId = skillFx.id;
-      playTacticalSound({ type: "skill", skillId: skillFx.skillId, kind: skillFx.kind });
+      playTacticalSound({ type: "skill", skillId: skillFx.skillId, kind: skillFx.kind, pan: audioPanForRegion(skillFx.targetRegion) });
     }
     const killFx = game.lastKillFx;
     if (killFx && killFx.id !== audio.killId) {
@@ -3971,7 +4276,7 @@ export default function Home() {
     if (!audio.spikeStatus) audio.spikeStatus = game.spike.status;
     else if (game.spike.status !== audio.spikeStatus) {
       audio.spikeStatus = game.spike.status;
-      if (spectatorMode || spikeVisibleTo(game, viewerSide, false)) playTacticalSound({ type: "spike", status: game.spike.status });
+      if (spectatorMode || spikeVisibleTo(game, viewerSide, false)) playTacticalSound({ type: "spike", status: game.spike.status, pan: audioPanForRegion(game.spike.region) });
     }
     if (game.winner && audio.winner !== `${game.matchRound}:${game.winner}`) {
       audio.winner = `${game.matchRound}:${game.winner}`;
@@ -4041,6 +4346,7 @@ export default function Home() {
   const mutate = (recipe: (draft: GameState) => void) => {
     setGame((current) => {
       const draft = structuredClone(current) as GameState;
+      ensureAiTacticalState(draft);
       recipe(draft);
       return draft;
     });
@@ -4864,6 +5170,18 @@ export default function Home() {
     if (agent.id === scene.mover.id) scene.moverRetreated = true;
     const opponentId = agent.id === scene.mover.id ? scene.holder.id : scene.mover.id;
     const opponent = getAgent(draft, opponentId);
+    const recoveryOrder = aiRecoveryOrderForAgent(draft, agent);
+    if (recoveryOrder) {
+      if (opponent?.alive && !recoveryOrder.blockerIds.includes(opponent.id)) {
+        recoveryOrder.blockerIds.push(opponent.id);
+        recoveryOrder.blockerRegions.push({ agentId: opponent.id, region: opponent.region, waitDirs: [...opponent.waitDirs] });
+      }
+      const blockers = aiRecoveryStoredBlockers(draft, recoveryOrder);
+      recoveryOrder.assaultScore = aiRecoveryAssaultScore(draft, agent, recoveryOrder.objectiveRegion, blockers);
+      recoveryOrder.committedUntilTeamTurn = draft.teamTurns[agent.team] + 2;
+      setAiRecoveryOrderRoute(draft, agent, recoveryOrder, "flank", blockers);
+      addLog(draft, `${agent.name} 회수 돌파 실패 · 다음 턴에도 유지할 우회 경로로 작전을 전환합니다.`);
+    }
     addTrade(draft, { enemyId: opponentId, team: agent.team, sourceId: agent.id });
     triggerHazards(draft, agent, from, region);
     const enemyToRemember = agent.team === draft.turnSide ? opponent : agent;
@@ -5136,6 +5454,8 @@ export default function Home() {
       continueGroupMovement(draft);
       return;
     }
+    refreshAiEnemyKnowledge(draft, side);
+    pruneAiRecoveryOrders(draft);
     if (side === "attack") {
       updateAttackLurkerPlan(draft);
       adaptAttackPlan(draft);
@@ -5206,6 +5526,7 @@ export default function Home() {
         draft.spike.carrierId = retriever.id;
         draft.spike.region = null;
         draft.spikeKnownByDefense = false;
+        draft.aiRecoveryOrders = draft.aiRecoveryOrders.filter((order) => order.objectiveKind !== "spike");
         draft.attackPlan.lurkerMode = "regroup";
         addLog(draft, `공격팀 AI가 ${retriever.name}으로 스파이크를 회수하고 본대 호위 진형으로 전환했습니다.`);
         addAnalyticsEvent(draft, "attack", "objective", `${retriever.name} 스파이크 회수 완료`);
@@ -5284,6 +5605,8 @@ export default function Home() {
         return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
       };
       const strategicBias = (agent: Agent) => {
+        const recoveryOrder = aiRecoveryOrderForAgent(draft, agent);
+        if (recoveryOrder) return -64;
         const weaponObjective = aiWeaponPickupObjective(draft, agent);
         if (weaponObjective && agent.weapon === "classic") return -48;
         if (side === "attack" && draft.spike.status === "dropped" && draft.spike.region !== null) return -40 + distance(agent.region, draft.spike.region) * 5;
@@ -5311,14 +5634,11 @@ export default function Home() {
         }
         const targets = cardTargets(draft, agent, card).filter((region) => region !== agent.region);
         if (!targets.length) continue;
-        const weaponObjective = aiWeaponPickupObjective(draft, agent);
-        const spikeRecoveryRegion = side === "attack" && draft.spike.status === "dropped" ? draft.spike.region : null;
-        const recoveryRegion = spikeRecoveryRegion ?? weaponObjective?.region ?? null;
-        const recoveryBlocked = recoveryRegion !== null && aiRecoveryBlockers(draft, side, recoveryRegion).length > 0;
-        const recoveryFlankDestination = recoveryBlocked
-          ? aiRecoveryFlankDestination(draft, agent, recoveryRegion!, targets)
+        const recoveryObjective = aiRecoveryObjectiveForAgent(draft, agent);
+        const recoveryDecision = recoveryObjective
+          ? aiRecoveryOrderDestination(draft, agent, recoveryObjective, targets)
           : null;
-        if (recoveryBlocked && recoveryFlankDestination === null) continue;
+        if (recoveryDecision?.order && recoveryDecision.destination === null) continue;
         const objectiveRegion = side === "defense" && ["planted", "half", "defusing"].includes(draft.spike.status) ? draft.spike.region : null;
         const destination = [...targets].sort((a, b) => side === "attack"
           ? 0
@@ -5331,16 +5651,21 @@ export default function Home() {
         const priorityDestination = agent.weapon === "classic"
           ? weaponDestination ?? escortDestination
           : escortDestination ?? weaponDestination;
-        const safePriorityDestination = recoveryFlankDestination ?? priorityDestination;
+        const safePriorityDestination = recoveryDecision?.destination ?? priorityDestination;
         const tacticalDestination = safePriorityDestination ?? recoveryEscortDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
           : objectiveRegion === null
             ? aiDefenseDestination(draft, agent, targets)
             : destination);
         if (tacticalDestination === null || tacticalDestination === undefined) continue;
-        if (recoveryFlankDestination !== null) {
-          addLog(draft, `${SIDE_LABEL[side]} AI · ${agent.name}이 ${regionName(recoveryRegion!)} 회수를 막는 대기 사격을 피해 측면으로 우회합니다.`);
-          addAnalyticsEvent(draft, side, "objective", `${agent.name} 회수 저지선 측면 우회`);
+        if (recoveryDecision?.order) {
+          const order = recoveryDecision.order;
+          const continuing = draft.teamTurns[side] > order.createdTeamTurn;
+          const decisionLabel = order.mode === "breach"
+            ? `전력 판정 ${order.assaultScore >= 0 ? "+" : ""}${Math.round(order.assaultScore)} · 정면 돌파`
+            : `전력 판정 ${Math.round(order.assaultScore)} · 측면 우회`;
+          addLog(draft, `${SIDE_LABEL[side]} AI · ${agent.name} ${regionName(order.objectiveRegion)} 회수 작전 · ${decisionLabel}${continuing ? " 유지" : " 선택"}.`);
+          addAnalyticsEvent(draft, side, "objective", `${agent.name} 회수 ${order.mode === "breach" ? "돌파" : "우회"} 판단${continuing ? " 유지" : " 확정"}`);
         }
         draft.selectedAgentId = agent.id;
         playCard(draft, card, agent);
@@ -5437,11 +5762,15 @@ export default function Home() {
         <div className="header-actions">
           <div className="sound-control">
             <button className={soundEnabled ? "sound-on" : "sound-off"} aria-label="효과음 설정" aria-expanded={showSound} onClick={() => { unlockTacticalAudio(); playTacticalSound({ type: "ui" }); setShowSound((value) => !value); }}>{soundEnabled ? "SFX ON" : "SFX OFF"}</button>
-            {showSound && <div className="sound-popover" role="group" aria-label="효과음 볼륨">
+            {showSound && <div className="sound-popover" role="group" aria-label="효과음 설정">
               <header><span>TACTICAL AUDIO</span><b>{Math.round(soundVolume * 100)}%</b></header>
               <input aria-label="효과음 볼륨" type="range" min="0" max="100" step="1" value={Math.round(soundVolume * 100)} onChange={(event) => setSoundVolume(Number(event.target.value) / 100)} />
-              <button onClick={() => { const next = !soundEnabled; configureTacticalAudio(next, soundVolume); setSoundEnabled(next); if (next) playTacticalSound({ type: "ui" }); }}>{soundEnabled ? "음소거" : "소리 켜기"}</button>
-              <small>독자 제작 전술 FPS 효과음</small>
+              <div className="audio-profile-switch" aria-label="출력 환경">
+                <button className={audioProfile === "headset" ? "active" : ""} onClick={() => setAudioProfile("headset")}><b>HEADSET</b><small>좌우 전장 방향 강조</small></button>
+                <button className={audioProfile === "speakers" ? "active" : ""} onClick={() => setAudioProfile("speakers")}><b>SPEAKER</b><small>중역 신호·작은 볼륨 보강</small></button>
+              </div>
+              <button onClick={() => { const next = !soundEnabled; configureTacticalAudio(next, soundVolume, audioProfile); setSoundEnabled(next); if (next) playTacticalSound({ type: "ui" }); }}>{soundEnabled ? "음소거" : "소리 켜기"}</button>
+              <small>중요 전투 신호를 장식음보다 우선하는 전술 믹스</small>
             </div>}
           </div>
           {spectatorMode && <div className="spectator-controls" aria-label="AI 관전 제어">
