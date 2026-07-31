@@ -220,7 +220,7 @@ test("AI compares real combat odds and lets an isolated shotgun close distance t
   assert.match(page, /const retreatMoveDelta = Math\.min\(-1, actor\.status\.moveBonus\) - actor\.status\.moveBonus/);
   assert.match(page, /const closeSurvival = Math\.max\(0, 100 - closeReturnFire\.killChance\)/);
   assert.match(page, /closeValue >= currentValue \+ 8 \? opponent\.region : null/);
-  assert.match(page, /const oddsFavorRetreat = dangerValue >= attackValue \+ 20/);
+  assert.match(page, /const oddsFavorRetreat = dangerValue \+ operatorRetreatBias >= attackValue \+ 20/);
   assert.match(page, /const decision = aiCombatDecision\(props\.game, scene, actor, retreatOptions\)/);
 });
 
@@ -490,6 +490,28 @@ test("map movement follows the graph while attack AI avoids rear holds and misti
   assert.match(page, /function aiHasFollowupMovementCard/);
   assert.match(page, /needsFollowupTeamAction && game\.actionsUsed >= 3/);
   assert.match(page, /agent\.status\.moveRangeBonus > 0 \|\| agent\.status\.highGear/);
+});
+
+test("AI identifies known Operators and avoids unsupported head-on lanes", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function knownOperatorThreatAtRegion/);
+  assert.match(page, /weapon\?: WeaponId/);
+  assert.match(page, /weapon: tacticalMemory\.weapon \?\? enemy\.weapon/);
+  assert.match(page, /weapon: enemy\.weapon,[\s\S]{0,80}observedTeamTurn/);
+  assert.match(page, /enemy\.weapon !== "operator" \|\| enemy\.confidence < 0\.35/);
+  assert.match(page, /waitingOnRegion[\s\S]{0,180}enemy\.exact \? 52 : 38/);
+  assert.match(page, /function aiOperatorRoutePenalty/);
+  assert.match(page, /nearbyAllies >= 2 \? 0\.55/);
+  assert.match(page, /urgentObjective \? 0\.35 : 1/);
+  assert.match(page, /knownOperatorThreatAtRegion\(game, agent\.team, region\)/);
+  assert.match(page, /const operatorPressure = operators\.reduce/);
+  assert.match(page, /operatorPressure/);
+  assert.match(page, /attackPlanRushDestination[\s\S]{0,700}aiOperatorRoutePenalty/);
+  assert.match(page, /function aiAttackDestination[\s\S]{0,2600}const operatorA = aiOperatorRoutePenalty/);
+  assert.match(page, /function aiDefenseDestination[\s\S]{0,1800}const operatorA = aiOperatorRoutePenalty/);
+  assert.match(page, /const operatorHeadOn = opponent\.weapon === "operator"/);
+  assert.match(page, /const operatorRetreatBias = operatorHeadOn && !urgentObjective \? 35 : 0/);
+  assert.match(page, /return operatorDisengage \|\| oddsFavorRetreat \|\| shouldAiRetreat/);
 });
 
 test("combat retreat closes the result scene before replaying movement on the tactical map", async () => {

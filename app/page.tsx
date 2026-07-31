@@ -180,6 +180,7 @@ interface EnemyMemory {
   agentId: string;
   region: number;
   waitDirs: number[];
+  weapon?: WeaponId;
 }
 
 interface AiRecoveryOrder {
@@ -192,7 +193,7 @@ interface AiRecoveryOrder {
   route: number[];
   progress: number;
   blockerIds: string[];
-  blockerRegions: Array<{ agentId: string; region: number; waitDirs: number[] }>;
+  blockerRegions: Array<{ agentId: string; region: number; waitDirs: number[]; weapon?: WeaponId }>;
   createdTeamTurn: number;
   committedUntilTeamTurn: number;
   assaultScore: number;
@@ -203,6 +204,7 @@ interface AiEnemyKnowledge {
   agentId: string;
   region: number;
   waitDirs: number[];
+  weapon?: WeaponId;
   observedTeamTurn: number;
 }
 
@@ -1212,7 +1214,9 @@ function attackCarrierEscortAgents(game: GameState) {
 function aiSpikeEscortDestination(game: GameState, agent: Agent, targets: number[]) {
   const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
   if (!carrier?.alive || !attackCarrierEscortAgents(game).some((escort) => escort.id === agent.id) || distance(agent.region, carrier.region) <= 1) return null;
-  const destination = [...targets].sort((a, b) => distance(a, carrier.region) - distance(b, carrier.region))[0];
+  const destination = [...targets].sort((a, b) =>
+    distance(a, carrier.region) * 5 + aiOperatorRoutePenalty(game, agent, a)
+    - (distance(b, carrier.region) * 5 + aiOperatorRoutePenalty(game, agent, b)))[0];
   if (destination === undefined || distance(destination, carrier.region) >= distance(agent.region, carrier.region)) return null;
   return destination;
 }
@@ -1319,7 +1323,12 @@ function attackPlanRushDestination(game: GameState, origin: number) {
       ? 4
       : 5;
   if (game.cycle !== 1) return null;
-  return [...(GRAPH.get(origin) ?? [])].sort((a, b) => distance(a, rushLane) - distance(b, rushLane))[0] ?? null;
+  const runner = game.teams.attack.agents.find((agent) => agent.alive && agent.region === origin);
+  return [...(GRAPH.get(origin) ?? [])].sort((a, b) => {
+    const operatorA = runner ? aiOperatorRoutePenalty(game, runner, a) : 0;
+    const operatorB = runner ? aiOperatorRoutePenalty(game, runner, b) : 0;
+    return distance(a, rushLane) * 6 + operatorA - (distance(b, rushLane) * 6 + operatorB);
+  })[0] ?? null;
 }
 
 function isSmokeBlocked(game: GameState, a: number, b: number) {
@@ -1370,13 +1379,14 @@ function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
   if (!enemy.alive || enemy.team === observer) return;
   ensureAiTacticalState(game);
   game.enemyMemories = game.enemyMemories.filter((memory) => !(memory.observer === observer && memory.agentId === enemy.id));
-  game.enemyMemories.push({ observer, agentId: enemy.id, region: enemy.region, waitDirs: [...enemy.waitDirs] });
+  game.enemyMemories.push({ observer, agentId: enemy.id, region: enemy.region, waitDirs: [...enemy.waitDirs], weapon: enemy.weapon });
   game.aiEnemyKnowledge = game.aiEnemyKnowledge.filter((memory) => !(memory.observer === observer && memory.agentId === enemy.id));
   game.aiEnemyKnowledge.push({
     observer,
     agentId: enemy.id,
     region: enemy.region,
     waitDirs: [...enemy.waitDirs],
+    weapon: enemy.weapon,
     observedTeamTurn: game.teamTurns[observer],
   });
   if (!game.revealedEnemyIds.includes(enemy.id)) game.revealedEnemyIds.push(enemy.id);
@@ -2228,6 +2238,7 @@ interface AiEnemyIntel {
   region: number;
   exact: boolean;
   waitDirs: number[];
+  weapon: WeaponId;
   age: number;
   confidence: number;
 }
@@ -2237,9 +2248,9 @@ function aiEnemyIntel(game: GameState, side: Side): AiEnemyIntel[] {
   const observed = observedRegions(game, side);
   return game.teams[otherSide(side)].agents.flatMap<AiEnemyIntel>((enemy) => {
     if (!enemy.alive) return [];
-    if (enemy.detected || observed.has(enemy.region)) return [{ agent: enemy, region: enemy.region, exact: true, waitDirs: [...enemy.waitDirs], age: 0, confidence: 1 }];
+    if (enemy.detected || observed.has(enemy.region)) return [{ agent: enemy, region: enemy.region, exact: true, waitDirs: [...enemy.waitDirs], weapon: enemy.weapon, age: 0, confidence: 1 }];
     const memory = game.enemyMemories.find((item) => item.observer === side && item.agentId === enemy.id);
-    if (memory) return [{ agent: enemy, region: memory.region, exact: false, waitDirs: [...memory.waitDirs], age: 0, confidence: 0.8 }];
+    if (memory) return [{ agent: enemy, region: memory.region, exact: false, waitDirs: [...memory.waitDirs], weapon: memory.weapon ?? enemy.weapon, age: 0, confidence: 0.8 }];
     const tacticalMemory = game.aiEnemyKnowledge.find((item) => item.observer === side && item.agentId === enemy.id);
     if (!tacticalMemory) return [];
     const age = Math.max(1, game.teamTurns[side] - tacticalMemory.observedTeamTurn);
@@ -2249,6 +2260,7 @@ function aiEnemyIntel(game: GameState, side: Side): AiEnemyIntel[] {
       region: tacticalMemory.region,
       exact: false,
       waitDirs: [...tacticalMemory.waitDirs],
+      weapon: tacticalMemory.weapon ?? enemy.weapon,
       age,
       confidence: Math.max(0.25, 0.78 - age * 0.14),
     }];
@@ -2271,6 +2283,7 @@ function refreshAiEnemyKnowledge(game: GameState, side: Side) {
       agentId: enemy.id,
       region: enemy.region,
       waitDirs: [...enemy.waitDirs],
+      weapon: enemy.weapon,
       observedTeamTurn: game.teamTurns[side],
     });
   });
@@ -2286,14 +2299,48 @@ function siteForRegion(region: number): "A" | "B" | null {
   return null;
 }
 
-function knownThreatScoreAtRegion(game: GameState, side: Side, region: number) {
+function knownOperatorThreatAtRegion(game: GameState, side: Side, region: number) {
   return aiEnemyIntel(game, side).reduce((score, enemy) => {
+    if (enemy.weapon !== "operator" || enemy.confidence < 0.35) return score;
+    const range = distance(enemy.region, region);
+    if (range > 2 || isWaitPathSmokeBlocked(game, enemy.region, region)) return score;
+    const timedAimPenalty = game.statusEffects
+      .filter((effect) => effect.targetId === enemy.agent.id)
+      .reduce((total, effect) => total + (effect.aimPenalty ?? 0), 0);
+    const disruptedMultiplier = enemy.agent.status.aimPenalty + timedAimPenalty >= 2 ? 0.35 : 1;
+    const waitingOnRegion = range > 0 && enemy.waitDirs.includes(region);
+    const baseThreat = waitingOnRegion
+      ? enemy.exact ? 52 : 38
+      : enemy.region === region
+        ? enemy.exact ? 30 : 20
+        : enemy.exact ? 14 : 8;
+    return score + baseThreat * enemy.confidence * disruptedMultiplier;
+  }, 0);
+}
+
+function aiOperatorRoutePenalty(game: GameState, agent: Agent, target: number) {
+  const path = shortestPath(agent.region, target).slice(1);
+  if (!path.length) return 0;
+  const routeThreat = path.reduce((total, region, index) =>
+    total + knownOperatorThreatAtRegion(game, agent.team, region) * (index === 0 ? 1 : 0.75), 0);
+  const nearbyAllies = game.teams[agent.team].agents.filter((ally) =>
+    ally.alive && ally.id !== agent.id && distance(ally.region, agent.region) <= 1).length;
+  const urgentObjective = aiRetreatReentryIsUrgent(game, agent);
+  const mobileEntry = agent.status.evadeReady || agent.status.highGear || agent.status.ignoreGround;
+  const supportMultiplier = nearbyAllies >= 2 ? 0.55 : nearbyAllies === 1 ? 0.75 : 1;
+  const urgencyMultiplier = urgentObjective ? 0.35 : 1;
+  const mobilityMultiplier = mobileEntry ? 0.55 : 1;
+  return routeThreat * supportMultiplier * urgencyMultiplier * mobilityMultiplier;
+}
+
+function knownThreatScoreAtRegion(game: GameState, side: Side, region: number) {
+  const generalThreat = aiEnemyIntel(game, side).reduce((score, enemy) => {
     const memoryWeight = enemy.confidence;
     let next = enemy.region === region ? 18 : Math.max(0, 5 - distance(enemy.region, region));
     if (enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region)) {
-      next += WEAPONS[enemy.agent.weapon].type === "sniper" ? 22 : 12;
+      next += WEAPONS[enemy.weapon].type === "sniper" ? 22 : 12;
     } else if (
-      WEAPONS[enemy.agent.weapon].type === "sniper"
+      WEAPONS[enemy.weapon].type === "sniper"
       && distance(enemy.region, region) <= 2
       && !isWaitPathSmokeBlocked(game, enemy.region, region)
     ) {
@@ -2301,6 +2348,7 @@ function knownThreatScoreAtRegion(game: GameState, side: Side, region: number) {
     }
     return score + next * memoryWeight;
   }, 0);
+  return generalThreat + knownOperatorThreatAtRegion(game, side, region);
 }
 
 function attackSiteSituation(game: GameState, site: "A" | "B") {
@@ -2314,7 +2362,13 @@ function attackSiteSituation(game: GameState, site: "A" | "B") {
   );
   const rememberedWaits = rememberedDefenders.filter((enemy) =>
     SITE_REGIONS[site].some((region) => enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region)));
-  const snipers = exactDefenders.filter((enemy) => WEAPONS[enemy.agent.weapon].type === "sniper");
+  const snipers = exactDefenders.filter((enemy) => WEAPONS[enemy.weapon].type === "sniper");
+  const operators = allDefenders.filter((enemy) => enemy.weapon === "operator");
+  const operatorPressure = operators.reduce((total, enemy) => {
+    const holdingSite = SITE_REGIONS[site].some((region) =>
+      enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region));
+    return total + (holdingSite ? 26 : 12) * enemy.confidence;
+  }, 0);
   const alliesOnSite = game.teams.attack.agents.filter((ally) => ally.alive && SITE_REGIONS[site].includes(ally.region));
   const alliesNearSite = game.teams.attack.agents.filter((ally) =>
     ally.alive && Math.min(...SITE_REGIONS[site].map((region) => distance(ally.region, region))) <= 1,
@@ -2322,11 +2376,11 @@ function attackSiteSituation(game: GameState, site: "A" | "B") {
   const coveringWaits = alliesNearSite.reduce((count, ally) => count + ally.waitDirs.filter((region) =>
     SITE_REGIONS[site].includes(region) || SITE_APPROACH_REGIONS[site].includes(region),
   ).length, 0);
-  const danger = exactDefenders.length * 6 + defendersOnSite.length * 10 + waitingDefenders.length * 9 + snipers.length * 8
+  const danger = exactDefenders.length * 6 + defendersOnSite.length * 10 + waitingDefenders.length * 9 + snipers.length * 8 + operatorPressure
     + rememberedDefenders.reduce((total, enemy) => total + 5 * enemy.confidence, 0)
     + rememberedWaits.reduce((total, enemy) => total + 7 * enemy.confidence, 0)
     - alliesOnSite.length * 5 - Math.max(0, alliesNearSite.length - 1) * 2;
-  return { exactDefenders, defendersOnSite, waitingDefenders, snipers, alliesOnSite, alliesNearSite, coveringWaits, danger };
+  return { exactDefenders, defendersOnSite, waitingDefenders, snipers, operators, alliesOnSite, alliesNearSite, coveringWaits, danger };
 }
 
 function attackEntryIsOpen(game: GameState, site: "A" | "B") {
@@ -2466,7 +2520,7 @@ function aiRecoveryBlockers(game: GameState, side: Side, objectiveRegion: number
   return aiEnemyIntel(game, side).filter((enemy) => {
     if (enemy.region === objectiveRegion) return true;
     const path = shortestPath(enemy.region, objectiveRegion);
-    const waitRange = WEAPONS[enemy.agent.weapon].type === "sniper" ? 2 : 1;
+    const waitRange = WEAPONS[enemy.weapon].type === "sniper" ? 2 : 1;
     return path.length >= 2
       && path.length - 1 <= waitRange
       && enemy.waitDirs.includes(objectiveRegion)
@@ -2616,17 +2670,18 @@ function aiRecoveryAssaultScore(game: GameState, agent: Agent, objectiveRegion: 
   if (!aliveBlockers.length) return 99;
   const nearbyAllies = game.teams[agent.team].agents.filter((ally) =>
     ally.alive && distance(ally.region, agent.region) <= 1);
-  const knownDefenders = aliveBlockers.map((blocker) => blocker.agent);
+  const knownDefenders = aliveBlockers.map((blocker) => ({ ...blocker.agent, weapon: blocker.weapon }));
   const strongestBlocker = [...aliveBlockers].sort((a, b) =>
-    aiRecoveryUnitReadiness(game, b.agent) - aiRecoveryUnitReadiness(game, a.agent))[0];
+    aiRecoveryUnitReadiness(game, { ...b.agent, weapon: b.weapon }) - aiRecoveryUnitReadiness(game, { ...a.agent, weapon: a.weapon }))[0];
+  const knownStrongestBlocker = { ...strongestBlocker.agent, weapon: strongestBlocker.weapon };
   const engagementRange = Math.max(0, Math.min(2, distance(strongestBlocker.region, objectiveRegion)));
-  const attackOdds = calculateShotOdds(game, agent, strongestBlocker.agent, engagementRange, false, 0, 0);
-  const holdOdds = calculateShotOdds(game, strongestBlocker.agent, agent, engagementRange, true, 0, 0);
+  const attackOdds = calculateShotOdds(game, agent, knownStrongestBlocker, engagementRange, false, 0, 0);
+  const holdOdds = calculateShotOdds(game, knownStrongestBlocker, agent, engagementRange, true, 0, 0);
   const friendlyPower = nearbyAllies.reduce((total, ally) => total + aiRecoveryUnitReadiness(game, ally), 0);
   const defenderPower = knownDefenders.reduce((total, defender) => total + aiRecoveryUnitReadiness(game, defender), 0);
   const tradePressure = Math.max(0, nearbyAllies.length - 1) * 5;
   const waitPressure = aliveBlockers.length * 5
-    + (WEAPONS[strongestBlocker.agent.weapon].type === "sniper" ? 7 : 0);
+    + (WEAPONS[strongestBlocker.weapon].type === "sniper" ? 7 : 0);
   return friendlyPower - defenderPower
     + (attackOdds.expectedDamage - holdOdds.expectedDamage) * 5
     + tradePressure
@@ -2641,6 +2696,7 @@ function aiRecoveryStoredBlockers(game: GameState, order: AiRecoveryOrder): AiEn
       region: memory.region,
       exact: false,
       waitDirs: [...memory.waitDirs],
+      weapon: memory.weapon ?? agent.weapon,
       age: Math.max(1, game.teamTurns[order.side] - order.createdTeamTurn),
       confidence: 0.72,
     }] : [];
@@ -2686,7 +2742,7 @@ function createAiRecoveryOrder(game: GameState, agent: Agent, objective: AiRecov
     route: [],
     progress: 0,
     blockerIds: blockers.map((blocker) => blocker.agent.id),
-    blockerRegions: blockers.map((blocker) => ({ agentId: blocker.agent.id, region: blocker.region, waitDirs: [...blocker.waitDirs] })),
+    blockerRegions: blockers.map((blocker) => ({ agentId: blocker.agent.id, region: blocker.region, waitDirs: [...blocker.waitDirs], weapon: blocker.weapon })),
     createdTeamTurn: game.teamTurns[agent.team],
     committedUntilTeamTurn: game.teamTurns[agent.team] + 2,
     assaultScore,
@@ -2704,12 +2760,13 @@ function createAiRecoveryOrder(game: GameState, agent: Agent, objective: AiRecov
 function refreshAiRecoveryOrder(game: GameState, agent: Agent, order: AiRecoveryOrder) {
   const exactIntel = new Map(aiEnemyIntel(game, agent.team)
     .filter((enemy) => enemy.exact)
-    .map((enemy) => [enemy.agent.id, enemy.region]));
+    .map((enemy) => [enemy.agent.id, { region: enemy.region, waitDirs: enemy.waitDirs, weapon: enemy.weapon }]));
   order.blockerRegions.forEach((memory) => {
-    const exactRegion = exactIntel.get(memory.agentId);
-    if (exactRegion !== undefined) {
-      memory.region = exactRegion;
-      memory.waitDirs = [...(getAgent(game, memory.agentId)?.waitDirs ?? [])];
+    const exact = exactIntel.get(memory.agentId);
+    if (exact) {
+      memory.region = exact.region;
+      memory.waitDirs = [...exact.waitDirs];
+      memory.weapon = exact.weapon;
     }
   });
   const blockers = aiRecoveryStoredBlockers(game, order);
@@ -3037,7 +3094,9 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
   const destination = [...safeTargets].sort((a, b) => {
     const occupiedA = game.teams.defense.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
     const occupiedB = game.teams.defense.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
-    return routeDistance(a) * 4 + occupiedA * 2 - (routeDistance(b) * 4 + occupiedB * 2);
+    const operatorA = aiOperatorRoutePenalty(game, agent, a);
+    const operatorB = aiOperatorRoutePenalty(game, agent, b);
+    return routeDistance(a) * 4 + occupiedA * 2 + operatorA - (routeDistance(b) * 4 + occupiedB * 2 + operatorB);
   })[0] ?? null;
   if (destination === null) return null;
   if (!flanking && routeDistance(destination) > routeDistance(agent.region)) return null;
@@ -3215,7 +3274,9 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
       const distanceB = distance(b, game.spike.region!);
       const occupiedA = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
       const occupiedB = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
-      return distanceA * 5 + occupiedA - (distanceB * 5 + occupiedB);
+      const operatorA = aiOperatorRoutePenalty(game, agent, a);
+      const operatorB = aiOperatorRoutePenalty(game, agent, b);
+      return distanceA * 5 + occupiedA + operatorA - (distanceB * 5 + occupiedB + operatorB);
     })[0];
     if (destination === undefined || distance(destination, game.spike.region) >= distance(agent.region, game.spike.region)) return null;
     return destination;
@@ -3238,7 +3299,9 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
     const occupiedB = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
     const dangerA = knownThreatScoreAtRegion(game, "attack", a);
     const dangerB = knownThreatScoreAtRegion(game, "attack", b);
-    return routeA * 4 + occupiedA * 2 + dangerA - (routeB * 4 + occupiedB * 2 + dangerB);
+    const operatorA = aiOperatorRoutePenalty(game, agent, a);
+    const operatorB = aiOperatorRoutePenalty(game, agent, b);
+    return routeA * 4 + occupiedA * 2 + dangerA + operatorA - (routeB * 4 + occupiedB * 2 + dangerB + operatorB);
   })[0] ?? null;
   if (destination === null) return null;
   if (phase !== "execute" && phase !== "postplant" && routeDistance(destination) > routeDistance(agent.region)) return null;
@@ -3326,8 +3389,19 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
   const opponentDurability = Math.max(1, opponent.hp + opponent.armor);
   const attackValue = attackOdds.killChance * 1.35 + attackOdds.expectedDamage / opponentDurability * 55;
   const dangerValue = returnFire.killChance * 1.15 + returnFire.expectedDamage / actorDurability * 48;
-  const oddsFavorRetreat = dangerValue >= attackValue + 20 || (attackOdds.hitChance <= 25 && returnFire.hitChance >= attackOdds.hitChance + 25);
-  return oddsFavorRetreat || shouldAiRetreat(game, actor, retreatRegion)
+  const operatorHeadOn = opponent.weapon === "operator"
+    && opponent.id === scene.holder.id
+    && scene.waiting
+    && !isWaitPathSmokeBlocked(game, opponent.region, actor.region);
+  const urgentObjective = aiRetreatReentryIsUrgent(game, actor);
+  const operatorRetreatBias = operatorHeadOn && !urgentObjective ? 35 : 0;
+  const operatorDisengage = operatorHeadOn
+    && !urgentObjective
+    && returnFire.killChance >= 40
+    && attackOdds.killChance < 65;
+  const oddsFavorRetreat = dangerValue + operatorRetreatBias >= attackValue + 20
+    || (attackOdds.hitChance <= 25 && returnFire.hitChance >= attackOdds.hitChance + 25);
+  return operatorDisengage || oddsFavorRetreat || shouldAiRetreat(game, actor, retreatRegion)
     ? { type: "retreat" as const, region: retreatRegion, approach: false }
     : { type: "attack" as const };
 }
@@ -3371,7 +3445,7 @@ function attackAiSkillWindowOpen(game: GameState, agent: Agent, skillId: string,
   if (["smoke", "dark"].includes(skillId)) {
     const knownHold = intel.some((enemy) => enemy.confidence >= 0.5 && (
       enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region))
-      || WEAPONS[enemy.agent.weapon].type === "sniper"
+      || WEAPONS[enemy.weapon].type === "sniper"
     ));
     return knownHold && distanceToSite <= 3;
   }
@@ -3485,7 +3559,7 @@ function aiSmokeEdge(game: GameState, agent: Agent, skillId: "smoke" | "dark", i
         const enemyPath = shortestPath(enemy.region, objective);
         const enemyEdges = enemyPath.slice(0, -1).map((region, index) => edgeKey(region, enemyPath[index + 1]));
         if (enemyEdges.includes(edgeKey(a, b))) score += 6;
-        if (enemy.confidence >= 0.5 && (enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.agent.weapon].type === "sniper")) {
+        if (enemy.confidence >= 0.5 && (enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.weapon].type === "sniper")) {
           const holdPaths = SITE_REGIONS[targetSite].flatMap((region) => {
             const path = shortestPath(enemy.region, region);
             return path.slice(0, -1).map((pathRegion, index) => edgeKey(pathRegion, path[index + 1]));
@@ -3784,7 +3858,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
             .flatMap((ally) => SITE_REGIONS[targetSite].map((region) => distance(ally.region, region))));
           const knownHold = intel.some((enemy) =>
             enemy.confidence >= 0.5
-            && (enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.agent.weapon].type === "sniper"),
+            && (enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.weapon].type === "sniper"),
           );
           if (mainBodyDistance > 2 && !knownHold) continue;
         }
