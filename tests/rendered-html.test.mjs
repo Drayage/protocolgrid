@@ -196,7 +196,7 @@ test("defense AI holds the site perimeter, spreads cards, and retreats when heav
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /const DEFENSE_OPERATING_REGIONS = new Set/);
   assert.match(page, /function aiDefenseDestination/);
-  assert.match(page, /safeTargets = guardingDroppedSpike \|\| flanking \? targets : targets\.filter\(\(region\) => DEFENSE_OPERATING_REGIONS\.has\(region\)\)/);
+  assert.match(page, /safeTargets = guardingDroppedSpike \|\| flanking \|\| urgentRetake \? targets : targets\.filter\(\(region\) => DEFENSE_OPERATING_REGIONS\.has\(region\)\)/);
   assert.match(page, /const cardsUsedByAgent = \(agent: Agent\)/);
   assert.match(page, /cardsUsedByAgent\(a\) \* 20 \+ rotationRank\(a\)/);
   assert.match(page, /function shouldAiRetreat/);
@@ -421,6 +421,39 @@ test("AI preserves unused action cards when holding is tactically stronger than 
   assert.match(page, /draft\.aiTurnComplete = true/);
   assert.match(page, /props\.game\.actionsUsed >= 3 \|\| props\.game\.aiTurnComplete/);
   assert.match(page, /남은 행동카드는 사용하지 않습니다/);
+});
+
+test("map movement follows the graph while attack AI avoids rear holds and mistimed utility", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /interface MovementFx/);
+  assert.match(page, /function showMovementFx\(game: GameState, agent: Agent, path: number\[\]\)/);
+  assert.match(page, /movement\.path\.slice\(0, movement\.nextIndex\)/);
+  assert.match(page, /className="movement-route-line"/);
+  assert.match(page, /className=\{`movement-runner/);
+  assert.match(css, /@keyframes mapUnitTravel/);
+  assert.match(css, /@keyframes movementRoutePulse/);
+  assert.match(page, /const optionsWithoutFriendlyStack = rawOptions\.filter/);
+  assert.match(page, /const forwardDirections = options\.filter/);
+  assert.doesNotMatch(page, /preferred !== undefined && legalTargets\.includes\(preferred\) \? preferred : legalTargets\[0\]/);
+  assert.match(page, /function attackAiSkillWindowOpen/);
+  assert.match(page, /function aiHasFollowupMovementCard/);
+  assert.match(page, /needsFollowupTeamAction && game\.actionsUsed >= 3/);
+  assert.match(page, /agent\.status\.moveRangeBonus > 0 \|\| agent\.status\.highGear/);
+});
+
+test("defense retake deadline forces a paired trade entry before two-stage defuse expires", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function defenseRetakeMustAdvance/);
+  assert.match(page, /const interactionTurns = game\.spike\.status === "planted" \? 2 : 1/);
+  assert.match(page, /game\.spike\.explosion <= travelTurns \+ interactionTurns/);
+  assert.match(page, /function defenseRetakePair/);
+  assert.match(page, /alive\.length !== 2/);
+  assert.match(page, /pairSeparated && agent\.id === pair\.leader\.id && game\.spike\.explosion > 2/);
+  assert.match(page, /distance\(a, pair\.leader\.region\) \* 8/);
+  assert.match(page, /separated && agent\.id === retakePair\.escort\.id/);
 });
 
 test("AI commits to a strength-based recovery breach or flank across multiple turns", async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { configureTacticalAudio, playTacticalSound, unlockTacticalAudio, type TacticalAudioProfile } from "./game-audio";
 
 type Side = "attack" | "defense";
@@ -221,6 +221,14 @@ interface SkillFx {
   fromRegion: number;
   targetRegion: number;
   kind: "throw" | "burst" | "scan" | "smoke" | "deploy" | "teleport" | "self";
+}
+
+interface MovementFx {
+  id: string;
+  agentId: string;
+  agentName: string;
+  team: Side;
+  path: number[];
 }
 
 interface KillHighlight {
@@ -454,6 +462,7 @@ interface GameState {
   aiEnemyKnowledge: AiEnemyKnowledge[];
   aiRecoveryOrders: AiRecoveryOrder[];
   lastSkillFx: SkillFx | null;
+  lastMovementFx: MovementFx | null;
   turnKillCounts: Record<string, number>;
   lastKillFx: KillHighlight | null;
   roundKillHighlights: KillHighlight[];
@@ -846,6 +855,7 @@ function createInitialGame(
     aiEnemyKnowledge: [],
     aiRecoveryOrders: [],
     lastSkillFx: null,
+    lastMovementFx: null,
     turnKillCounts: {},
     lastKillFx: null,
     roundKillHighlights: [],
@@ -989,6 +999,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.aiEnemyKnowledge = [];
   game.aiRecoveryOrders = [];
   game.lastSkillFx = null;
+  game.lastMovementFx = null;
   game.turnKillCounts = {};
   game.lastKillFx = null;
   game.roundKillHighlights = [];
@@ -1334,6 +1345,7 @@ function addTrade(game: GameState, trade: TradeState) {
 function ensureAiTacticalState(game: GameState) {
   game.aiEnemyKnowledge ??= [];
   game.aiRecoveryOrders ??= [];
+  game.lastMovementFx ??= null;
 }
 
 function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
@@ -1936,6 +1948,17 @@ function declinePendingContact(game: GameState) {
   resumeAfterSkippedContact(game, contact);
 }
 
+function showMovementFx(game: GameState, agent: Agent, path: number[]) {
+  if (path.length < 2) return;
+  game.lastMovementFx = {
+    id: `move-${Date.now()}-${agent.id}-${path.join("-")}`,
+    agentId: agent.id,
+    agentName: agent.name,
+    team: agent.team,
+    path: [...path],
+  };
+}
+
 function finishMovement(game: GameState, agent: Agent, origin: number, stopped = false) {
   game.pendingMovement = null;
   agent.status.moveBonus = 0;
@@ -1961,6 +1984,7 @@ function continuePendingMovement(game: GameState) {
     const from = agent.region;
     agent.region = movement.path[movement.nextIndex];
     movement.nextIndex += 1;
+    showMovementFx(game, agent, movement.path.slice(0, movement.nextIndex));
     const combatCountBeforeHazards = game.combatQueue.length;
     const stopped = triggerHazards(game, agent, from, agent.region);
     if (!agent.alive) {
@@ -2700,9 +2724,20 @@ function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiE
 
 function aiStrategicWaitDirections(game: GameState, agent: Agent, count: number) {
   const intel = aiEnemyIntel(game, agent.team);
-  const options = count === 1
+  const rawOptions = count === 1
     ? waitTargetsFor(agent)
     : controlWaitTargetsFor(game, agent);
+  const optionsWithoutFriendlyStack = rawOptions.filter((region) =>
+    !game.teams[agent.team].agents.some((ally) => ally.alive && ally.id !== agent.id && ally.region === region));
+  let options = optionsWithoutFriendlyStack;
+  if (agent.team === "attack" && attackPlanPhase(game) !== "postplant") {
+    const objective = aiObjectiveRegion(game, "attack", agent.region, intel);
+    const currentDistance = distance(agent.region, objective);
+    const knownThreatDirections = options.filter((region) => intel.some((enemy) =>
+      enemy.region === region || enemy.waitDirs.includes(region)));
+    const forwardDirections = options.filter((region) => distance(region, objective) < currentDistance);
+    options = [...new Set([...knownThreatDirections, ...forwardDirections])];
+  }
   const attackWaypoints = agent.team === "attack" ? attackPlanWaypoints(game, agent) : [];
   return [...options].sort((a, b) => {
     if (agent.team === "attack") {
@@ -2787,8 +2822,30 @@ function defenseFlankWaypoint(game: GameState, agent: Agent, threat: "A" | "B") 
   return nextRouteWaypoint(agent.region, route);
 }
 
+function defenseRetakeIsActive(game: GameState) {
+  return game.spike.region !== null && ["planted", "half", "defusing"].includes(game.spike.status);
+}
+
+function defenseRetakeMustAdvance(game: GameState, agent: Agent) {
+  if (!defenseRetakeIsActive(game) || game.spike.region === null) return false;
+  const travelTurns = distance(agent.region, game.spike.region);
+  const interactionTurns = game.spike.status === "planted" ? 2 : 1;
+  return game.spike.explosion <= travelTurns + interactionTurns;
+}
+
+function defenseRetakePair(game: GameState) {
+  if (!defenseRetakeIsActive(game) || game.spike.region === null) return null;
+  const alive = game.teams.defense.agents.filter((agent) => agent.alive);
+  if (alive.length !== 2) return null;
+  const ordered = [...alive].sort((a, b) =>
+    distance(a.region, game.spike.region!) - distance(b.region, game.spike.region!)
+    || aiRecoveryUnitReadiness(game, b) - aiRecoveryUnitReadiness(game, a));
+  return { leader: ordered[0], escort: ordered[1] };
+}
+
 function defenseShouldFlank(game: GameState, agent: Agent, threat: "A" | "B" | null) {
   if (!threat) return false;
+  if (defenseRetakeMustAdvance(game, agent)) return false;
   const lane = defenseAssignedLane(game, agent);
   if (lane === "MID" || lane === threat) return false;
   const laneAgents = defenseLaneAgents(game, lane);
@@ -2829,6 +2886,7 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
   if (game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
     return [game.spike.region, ...(GRAPH.get(game.spike.region) ?? [])];
   }
+  if (defenseRetakeMustAdvance(game, agent) && game.spike.region !== null) return [game.spike.region];
   const lane = defenseAssignedLane(game, agent);
   const threat = defenseThreatSite(game);
   if (!threat) return defenseLaneAnchors(lane);
@@ -2859,9 +2917,22 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
 function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) {
   const guardingDroppedSpike = game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null;
   const threat = defenseThreatSite(game);
-  const flanking = !guardingDroppedSpike && defenseShouldFlank(game, agent, threat);
-  const safeTargets = guardingDroppedSpike || flanking ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
+  const urgentRetake = defenseRetakeMustAdvance(game, agent);
+  const pair = defenseRetakePair(game);
+  const pairSeparated = !!pair && distance(pair.leader.region, pair.escort.region) > 1;
+  const flanking = !guardingDroppedSpike && !urgentRetake && defenseShouldFlank(game, agent, threat);
+  const safeTargets = guardingDroppedSpike || flanking || urgentRetake ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
   if (!safeTargets.length) return null;
+  if (pair && pairSeparated && agent.id === pair.leader.id && game.spike.explosion > 2) return null;
+  if (pair && agent.id === pair.escort.id) {
+    const escortTargets = safeTargets.filter((region) => distance(region, pair.leader.region) <= 1);
+    if (game.spike.region !== null) {
+      const escortPool = escortTargets.length ? escortTargets : safeTargets;
+      return [...escortPool].sort((a, b) =>
+        distance(a, pair.leader.region) * 8 + distance(a, game.spike.region!)
+        - (distance(b, pair.leader.region) * 8 + distance(b, game.spike.region!)))[0];
+    }
+  }
   const waypoints = defensePlanWaypoints(game, agent);
   const routeDistance = (region: number) => Math.min(...waypoints.map((waypoint) => distance(region, waypoint)));
   const destination = [...safeTargets].sort((a, b) => {
@@ -3122,6 +3193,35 @@ function aiSkillPriority(game: GameState, side: Side, skillId: string) {
   return index < 0 ? order.length : index;
 }
 
+function attackAiSkillWindowOpen(game: GameState, agent: Agent, skillId: string, intel: AiEnemyIntel[], recoveryBlockerIds: Set<string>) {
+  if (agent.team !== "attack" || ["planting", "planted", "half", "defusing"].includes(game.spike.status)) return true;
+  if (skillId === "hot" && agent.hp < AGENT_MAX_HP) return true;
+  if (intel.some((enemy) => enemy.exact && distance(agent.region, enemy.region) <= 2)) return true;
+  if (intel.some((enemy) => recoveryBlockerIds.has(enemy.agent.id))) return true;
+
+  const targetSite = game.attackPlan.targetSite;
+  const distanceToSite = Math.min(...SITE_REGIONS[targetSite].map((region) => distance(agent.region, region)));
+  const phase = attackPlanPhase(game);
+  if (phase === "execute") return distanceToSite <= 2;
+  if (skillId === "recon") return game.cycle >= 2 && distanceToSite <= 3;
+  if (["smoke", "dark"].includes(skillId)) {
+    const knownHold = intel.some((enemy) => enemy.confidence >= 0.5 && (
+      enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region))
+      || WEAPONS[enemy.agent.weapon].type === "sniper"
+    ));
+    return knownHold && distanceToSite <= 3;
+  }
+  return false;
+}
+
+function aiHasFollowupMovementCard(game: GameState, agent: Agent) {
+  if (game.actionsUsed >= 3) return false;
+  return game.teams[agent.team].hand.some((card) =>
+    !card.used
+    && canUseCard(card, agent)
+    && cardTargets(game, agent, card).some((region) => region !== agent.region));
+}
+
 function aiWatchDirection(game: GameState, agent: Agent, intel: AiEnemyIntel[], kind: "trip" | "turret") {
   const objective = aiObjectiveRegion(game, agent.team, agent.region, intel);
   const options = (GRAPH.get(agent.region) ?? []).filter((region) => !game.deployables.some((item) => item.owner === agent.team && item.kind === kind && item.region === agent.region && item.to === region));
@@ -3280,6 +3380,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       .filter((definition) => (agent.skills[definition.id] ?? 0) > 0)
       .sort((a, b) => aiSkillPriority(game, side, a.id) - aiSkillPriority(game, side, b.id));
     for (const definition of definitions) {
+      if (!attackAiSkillWindowOpen(game, agent, definition.id, intel, recoveryBlockerIds)) continue;
+      const needsFollowupTeamAction = ["tailwind", "updraft", "gear", "curve", "relay", "flash", "recon", "smoke", "dark", "stim"].includes(definition.id);
+      if (needsFollowupTeamAction && game.actionsUsed >= 3) continue;
       const from = agent.region;
       const begin = () => applyActionStartFire(game, agent);
       const finish = (target = agent.region) => completeAiSkill(game, agent, definition, from, target);
@@ -3288,7 +3391,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       const objective = aiObjectiveRegion(game, side, agent.region, intel);
 
       if (definition.id === "tailwind") {
-        if (agent.status.evadeReady || !intel.some((item) => distance(agent.region, item.region) <= 2)) continue;
+        if (agent.status.evadeReady || !aiHasFollowupMovementCard(game, agent) || !intel.some((item) => distance(agent.region, item.region) <= 2)) continue;
         if (!begin()) return true;
         agent.status.evadeReady = true;
         finish();
@@ -3296,7 +3399,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "updraft" || definition.id === "gear") {
-        if (game.actionsUsed >= 3 || agent.status.moveRangeBonus > 0 || distance(agent.region, objective) < 1) continue;
+        if (!aiHasFollowupMovementCard(game, agent) || agent.status.moveRangeBonus > 0 || distance(agent.region, objective) < 1) continue;
         if (!begin()) return true;
         agent.status.moveBonus += 1;
         agent.status.moveRangeBonus += 1;
@@ -3518,7 +3621,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         clearWait(agent);
         cancelProgress(game, agent);
+        const shadowFrom = agent.region;
         agent.region = destination;
+        showMovementFx(game, agent, [shadowFrom, destination]);
         triggerHazards(game, agent, destination, destination);
         if (agent.alive) queueCurrentEncounter(game, agent, 4, true, 0, true, "movement");
         finish(destination);
@@ -4994,6 +5099,7 @@ export default function Home() {
       draft.pendingContact = null;
       draft.turnStartContactQueue = [];
       draft.groupMovement = null;
+      draft.lastMovementFx = null;
       draft.turnKillCounts = {};
 
       if (endingSide === "defense") {
@@ -5189,6 +5295,7 @@ export default function Home() {
     cancelProgress(draft, agent);
     if (draft.pendingMovement?.agentId === agent.id) draft.pendingMovement = null;
     agent.region = region;
+    showMovementFx(draft, agent, [from, region]);
     agent.status.aimPenalty = Math.max(1, agent.status.aimPenalty);
     agent.status.moveBonus = Math.min(-1, agent.status.moveBonus);
     if (agent.id === scene.mover.id) scene.moverRetreated = true;
@@ -5382,6 +5489,7 @@ export default function Home() {
     cancelProgress(draft, agent);
     agent.status.evadeReady = false;
     agent.region = region;
+    showMovementFx(draft, agent, [from, region]);
     triggerHazards(draft, agent, from, region);
     if (draft.pendingMovement?.agentId === agent.id) {
       const newPath = shortestPath(agent.region, draft.pendingMovement.target);
@@ -5503,8 +5611,9 @@ export default function Home() {
       if (agent?.alive) {
         const preferred = aiStrategicWaitDirections(draft, agent, 1)[0];
         const legalTargets = waitTargetsFor(agent);
-        const target = preferred !== undefined && legalTargets.includes(preferred) ? preferred : legalTargets[0];
+        const target = preferred !== undefined && legalTargets.includes(preferred) ? preferred : undefined;
         if (target !== undefined) startWaitAttempt(draft, agent, target);
+        else addLog(draft, `${agent.name} AI · 후방 아군이 확보한 구역 대신 대기를 생략하고 전진 행동을 유지합니다.`);
       }
       if (!draft.combatQueue.length) draft.pendingWait = null;
       return;
@@ -5629,6 +5738,15 @@ export default function Home() {
         return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
       };
       const strategicBias = (agent: Agent) => {
+        if (agent.status.moveRangeBonus > 0 || agent.status.highGear || agent.status.ignoreGround || agent.status.evadeReady) return -58;
+        const retakePair = side === "defense" ? defenseRetakePair(draft) : null;
+        if (retakePair) {
+          const separated = distance(retakePair.leader.region, retakePair.escort.region) > 1;
+          if (separated && agent.id === retakePair.escort.id) return -42;
+          if (separated && agent.id === retakePair.leader.id && draft.spike.explosion > 2) return 28;
+          if (agent.id === retakePair.leader.id) return -28;
+          if (agent.id === retakePair.escort.id) return -16;
+        }
         const recoveryOrder = aiRecoveryOrderForAgent(draft, agent);
         if (recoveryOrder) return -64;
         const weaponObjective = aiWeaponPickupObjective(draft, agent);
@@ -5773,6 +5891,14 @@ export default function Home() {
     return best;
   }, null);
   const accolades = roundAccolades(game);
+  const movementFx = game.lastMovementFx;
+  const movementVisible = !!movementFx && (
+    spectatorMode
+    || movementFx.team === viewerSide
+    || movementFx.path.every((region) => observed.has(region))
+  );
+  const movementArrivalDelay = movementFx ? Math.max(360, (movementFx.path.length - 2) * 240 + 360) : 0;
+  const movementArrivalStyle = { "--move-arrival-delay": `${movementArrivalDelay}ms` } as CSSProperties;
 
   return (
     <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""}`}>
@@ -5878,6 +6004,24 @@ export default function Home() {
                 <span className="skill-fx-impact" style={{ left: `${target.x}%`, top: `${target.y}%` }}><i className={skillArtClass(fx.skillId)} /><b>{fx.label}</b></span>
               </div>;
             })()}
+            {movementFx && movementVisible && <div key={movementFx.id} className={`movement-path-fx team-${movementFx.team}`} aria-label={`${movementFx.agentName} 이동 경로`}>
+              {movementFx.path.slice(1).map((toRegion, index) => {
+                const fromRegion = movementFx.path[index];
+                const from = REGIONS.find((region) => region.id === fromRegion)!;
+                const to = REGIONS.find((region) => region.id === toRegion)!;
+                const style = {
+                  "--move-from-x": `${from.x}%`,
+                  "--move-from-y": `${from.y}%`,
+                  "--move-to-x": `${to.x}%`,
+                  "--move-to-y": `${to.y}%`,
+                  "--move-delay": `${index * 240}ms`,
+                } as CSSProperties;
+                return <span key={`${movementFx.id}-${fromRegion}-${toRegion}`} className="movement-fx-segment" style={style}>
+                  <b className="movement-route-line" style={connectionStyle(fromRegion, toRegion)} />
+                  <i className={`movement-runner role-${getAgent(game, movementFx.agentId)?.role ?? "duelist"} ${agentArtClass(movementFx.agentName)}`} />
+                </span>;
+              })}
+            </div>}
             {REGIONS.map((region) => {
               const allies = viewerTeam.agents.filter((agent) => agent.alive && agent.region === region.id);
                const enemies = game.teams[otherSide(viewerSide)].agents.filter((agent) => agent.alive && agent.region === region.id);
@@ -5902,6 +6046,7 @@ export default function Home() {
                  || carriedSpikeHere
                  || droppedSpikeHere);
                const knownWeapons = game.droppedWeapons.filter((item) => item.region === region.id && observedNow);
+               const arrivingAgentId = movementFx?.path.at(-1) === region.id && movementVisible ? movementFx.agentId : null;
               return (
                 <button
                   key={region.id}
@@ -5913,10 +6058,10 @@ export default function Home() {
                   <span className="node-core">{region.id}</span>
                   <span className="node-label">{region.site && <b>{region.site}</b>}{region.name}</span>
                   <span className="unit-stack ally-stack">
-                    {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${agentArtClass(agent.name)} ${game.selectedAgentId === agent.id ? "selected" : ""}`} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`} aria-label={`${agent.name} 지도 토큰`}><AgentStatusBadges game={game} agent={agent} compact /></i>)}
+                    {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${agentArtClass(agent.name)} ${game.selectedAgentId === agent.id ? "selected" : ""} ${arrivingAgentId === agent.id ? "movement-arriving" : ""}`} style={arrivingAgentId === agent.id ? movementArrivalStyle : undefined} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`} aria-label={`${agent.name} 지도 토큰`}><AgentStatusBadges game={game} agent={agent} compact /></i>)}
                   </span>
                   <span className="unit-stack enemy-stack">
-                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""}`} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <AgentStatusBadges game={game} agent={agent} compact />}{lastKnown && <small>잔상</small>}</i>; })}
+                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); const arriving = arrivingAgentId === agent.id; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""} ${arriving ? "movement-arriving" : ""}`} style={arriving ? movementArrivalStyle : undefined} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <AgentStatusBadges game={game} agent={agent} compact />}{lastKnown && <small>잔상</small>}</i>; })}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}
                   {(devices.length > 0 || fire || stim || hasSpike || knownWeapons.length > 0) && <span className="effect-stack">
