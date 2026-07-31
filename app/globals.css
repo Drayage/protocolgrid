@@ -371,8 +371,8 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .accolade-stack article > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.accolade-stack article b { color: var(--chip-color); font-size: 8px; letter-spacing: .08em; }.accolade-stack article small { color: #657c81; font-size: 6px; line-height: 1.35; }
 .round-highlight { --kill-color: var(--blue); margin-top: 18px; color: var(--text); border: 1px solid color-mix(in srgb, var(--kill-color), transparent 48%); background: linear-gradient(112deg, color-mix(in srgb, var(--kill-color) 11%, #061014), #061014 58%); box-shadow: inset 3px 0 var(--kill-color), 0 16px 38px rgba(0,0,0,.26); overflow: hidden; text-align: left; }
 .round-highlight > header { display: flex; justify-content: space-between; align-items: center; padding: 8px 11px; border-bottom: 1px solid color-mix(in srgb, var(--kill-color), transparent 72%); background: color-mix(in srgb, var(--kill-color) 7%, transparent); }.round-highlight > header span { color: var(--kill-color); font: 7px monospace; letter-spacing: .12em; }.round-highlight > header b { color: #fff; font-size: 9px; letter-spacing: .08em; }
-.highlight-scene { min-height: 116px; display: grid; grid-template-columns: 108px 1fr 78px; align-items: stretch; }
-.highlight-portrait { display: block; width: 100%; height: 116px; background-color: #0a171b; background-repeat: no-repeat; filter: saturate(.85) contrast(1.06); }.highlight-portrait.killer { border-right: 1px solid color-mix(in srgb, var(--kill-color), transparent 58%); box-shadow: 18px 0 38px color-mix(in srgb, var(--kill-color), transparent 82%); }.highlight-portrait.victim { height: 72px; opacity: .48; filter: grayscale(.8) contrast(1.12); }
+.highlight-scene { min-height: 116px; display: grid; grid-template-columns: 116px 1fr 86px; align-items: center; }
+.highlight-portrait { display: block; width: 116px; height: 116px; aspect-ratio: 1; align-self: center; background-color: #0a171b; background-repeat: no-repeat; filter: saturate(.85) contrast(1.06); }.highlight-portrait.killer { border-right: 1px solid color-mix(in srgb, var(--kill-color), transparent 58%); box-shadow: 18px 0 38px color-mix(in srgb, var(--kill-color), transparent 82%); }.highlight-portrait.victim { width: 72px; height: 72px; margin-inline: auto; opacity: .48; filter: grayscale(.8) contrast(1.12); }
 .highlight-center { position: relative; z-index: 2; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 12px 14px; }.highlight-center > span { color: var(--kill-color); font: 7px monospace; letter-spacing: .12em; }.highlight-center > strong { margin-top: 3px; font-size: 20px; }.highlight-center .kill-pips { margin-top: 7px; gap: 5px; font-size: 8px; }
 .highlight-weapon { display: flex; align-items: center; gap: 6px; margin-top: 5px; color: #81979b; }.highlight-weapon .weapon-silhouette { width: 43px; }.highlight-weapon b { font-size: 7px; }
 .highlight-victim { display: flex; flex-direction: column; align-items: stretch; justify-content: center; padding-right: 8px; text-align: center; }.highlight-victim > span { margin-bottom: 3px; color: #50666b; font: 5px monospace; }.highlight-victim > b { margin-top: 3px; color: #82979b; font-size: 7px; }
@@ -444,7 +444,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .encounter-intro { position: relative; display: grid; grid-template-columns: 94px 1fr 94px; align-items: center; gap: 16px; min-height: 108px; margin: 0 0 10px; padding: 10px 24px; overflow: hidden; border: 1px solid rgba(255,82,103,.55); background: linear-gradient(90deg, rgba(95,246,213,.12), rgba(7,15,18,.96) 42%, rgba(255,82,103,.14)); box-shadow: inset 0 0 46px rgba(255,82,103,.06); animation: encounterReveal .72s cubic-bezier(.2,.82,.2,1); }.encounter-intro::after { content: ""; position: absolute; left: 50%; top: -30%; width: 2px; height: 160%; background: linear-gradient(transparent,#fff,transparent); box-shadow: 0 0 20px var(--red); transform: rotate(22deg); animation: contactSlash .75s ease-out forwards; }.encounter-intro > div:nth-child(2) { z-index: 2; text-align: center; }.encounter-intro > div:nth-child(2) span { display: block; color: var(--red); font: 8px monospace; letter-spacing: .26em; }.encounter-intro > div:nth-child(2) strong { display: block; margin-top: 4px; color: #f5fbfa; font-size: 22px; }.encounter-intro > div:nth-child(2) small { display: block; margin-top: 5px; color: #80979b; font-size: 8px; }.encounter-portrait { position: relative; width: 86px; height: 86px; border: 2px solid var(--cyan); box-shadow: 0 0 24px rgba(95,246,213,.28); }.encounter-portrait.hostile { border-color: var(--red); box-shadow: 0 0 24px rgba(255,82,103,.34); }.encounter-portrait > span { position: absolute; left: 50%; bottom: -1px; min-width: 70px; padding: 3px 6px; transform: translateX(-50%); color: #e5f1ef; background: rgba(2,8,10,.9); font-size: 8px; text-align: center; }
 .combat-map-overview { margin-bottom: 10px; padding: 9px; border: 1px solid rgba(95,246,213,.13); background: rgba(2,8,10,.8); }.combat-map-overview > header { display: flex; align-items: flex-end; justify-content: space-between; padding: 0 2px 7px; }.combat-map-overview > header div { display: flex; flex-direction: column; gap: 2px; }.combat-map-overview > header span { color: var(--cyan); font: 6px monospace; letter-spacing: .15em; }.combat-map-overview > header strong { font-size: 11px; }.combat-map-overview > header small { color: #61787d; font-size: 7px; }.combat-mini-map { position: relative; height: 285px; overflow: hidden; isolation: isolate; border: 1px solid rgba(255,255,255,.055); background: #03090b; }.combat-mini-map-image { position: absolute; inset: 2%; z-index: -2; background: url('/tactical-map.jpg') center/contain no-repeat; opacity: .34; filter: saturate(.5) hue-rotate(120deg) contrast(1.18); }.combat-mini-map .map-edge { z-index: -1; }.combat-map-node { position: absolute; z-index: 3; width: 23px; height: 23px; display: grid; place-items: center; transform: translate(-50%,-50%); color: #6f8589; border: 1px solid #385057; border-radius: 50%; background: rgba(5,15,18,.92); font: 7px monospace; }.combat-map-node.site { color: var(--amber); border-color: rgba(243,183,91,.55); }.combat-map-node.engaged { z-index: 7; color: #fff; border-color: var(--red); box-shadow: 0 0 0 6px rgba(255,82,103,.11),0 0 20px rgba(255,82,103,.65); animation: combatNodePulse .75s ease-in-out infinite alternate; }.combat-map-node > small { position: absolute; right: -4px; top: -7px; color: var(--amber); font-size: 6px; }.combat-map-units { position: absolute; z-index: 9; left: 18px; top: -5px; display: flex; gap: 2px; font-style: normal; }.mini-face { width: 28px; height: 28px; flex: 0 0 auto; border: 2px solid var(--cyan); border-radius: 50%; background-color: #091519; box-shadow: 0 3px 8px #000; }.mini-face.hostile { border-color: var(--red); }.mini-face.ghost { opacity: .4; border-style: dashed; filter: saturate(.55); }.combat-map-focus { position: absolute; left: 10px; bottom: 9px; display: flex; align-items: center; gap: 7px; padding: 5px 7px; color: #82989c; border: 1px solid rgba(255,82,103,.3); background: rgba(16,4,7,.86); font: 6px monospace; }.combat-map-focus span { color: var(--red); }.combat-map-focus b { color: #ffe2e6; }
 .combat-fighter { overflow: visible; z-index: 2; }.combat-fighter.fired .combat-avatar::after { display: none; }.combat-fighter.fired::after { content: ""; position: absolute; z-index: 8; top: 34%; width: calc(100% + 86px); height: 4px; background: linear-gradient(90deg, #fff, #ffe073 18%, rgba(243,183,91,.45) 68%, transparent); box-shadow: 0 0 15px #ffdc70; pointer-events: none; animation: tracerShot .52s ease-out forwards; }.combat-fighter.mover.fired::after { left: 52%; transform-origin: left; }.combat-fighter.holder.fired::after { right: 52%; transform: rotate(180deg); transform-origin: right; }.combat-fighter.landed::before { content: ""; position: absolute; z-index: 10; left: 50%; top: 32%; width: 64px; height: 64px; border-radius: 50%; background: radial-gradient(circle,#fff 0,#ffdc70 12%,rgba(255,82,103,.68) 27%,transparent 68%); transform: translate(-50%,-50%); animation: hitBurst .58s ease-out forwards; pointer-events: none; }.combat-continue.encounter-start { color: #fff; background: linear-gradient(90deg,#d9324d,var(--red)); box-shadow: 0 0 24px rgba(255,82,103,.24); }
-.combat-vital-display { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 5px; }.combat-vital-display > span { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px; min-width: 0; padding: 6px 7px; border: 1px solid rgba(255,255,255,.06); background: rgba(0,0,0,.14); }.combat-vital-display small { color: #698087; font: 6px monospace; }.combat-vital-slots { display: flex; justify-content: flex-end; gap: 4px; }.combat-vital-slots i { font-style: normal; font-size: 14px; line-height: 1; transition: color .2s, opacity .2s, transform .2s; }.combat-vital-slots.hp i.filled { color: #ff5267; text-shadow: 0 0 8px rgba(255,82,103,.55); }.combat-vital-slots.armor i.filled { color: #65cfff; text-shadow: 0 0 8px rgba(101,207,255,.55); }.combat-vital-slots i.empty { color: #263b41; opacity: .7; }.combat-vital-slots i.lost { color: #ff9d62; animation: vitalLost .7s ease-out forwards; }
+.combat-vital-display { display: grid; grid-template-columns: 1fr; gap: 3px; margin-top: 5px; }.combat-vital-display > span { display: grid; grid-template-columns: 34px minmax(0,1fr); align-items: center; gap: 4px; min-width: 0; overflow: hidden; padding: 5px 6px; border: 1px solid rgba(255,255,255,.06); background: rgba(0,0,0,.14); }.combat-vital-display small { color: #698087; font: 6px monospace; }.combat-vital-slots { min-width: 0; display: flex; justify-content: flex-end; gap: 2px; white-space: nowrap; }.combat-vital-slots i { flex: 0 0 auto; font-style: normal; font-size: 11px; line-height: 1; transition: color .2s, opacity .2s, transform .2s; }.combat-vital-slots.hp i.filled { color: #ff5267; text-shadow: 0 0 7px rgba(255,82,103,.5); }.combat-vital-slots.armor i.filled { color: #65cfff; text-shadow: 0 0 7px rgba(101,207,255,.5); }.combat-vital-slots i.empty { color: #263b41; opacity: .7; }.combat-vital-slots i.lost { color: #ff9d62; animation: vitalLost .7s ease-out forwards; }
 .combat-live-stats.applied span, .combat-live-stats span { position: relative; }.combat-live-stats span > small { display: block; min-height: 8px; margin-top: 2px; color: #637b80; font: 6px monospace; white-space: nowrap; }.combat-live-stats span.buff { border-color: rgba(92,242,155,.25); background: rgba(92,242,155,.06); }.combat-live-stats span.buff b, .combat-live-stats span.buff small { color: #5cf29b; }.combat-live-stats span.nerf { border-color: rgba(255,82,103,.28); background: rgba(255,82,103,.065); }.combat-live-stats span.nerf b, .combat-live-stats span.nerf small { color: #ff5267; }.combat-live-stats span.neutral b { color: #d5e4e2; }
 .combat-fighter.missed-shot::after { background: linear-gradient(90deg,#d7fbff,#62dff0 18%,rgba(98,223,240,.22) 68%,transparent); box-shadow: 0 0 10px rgba(98,223,240,.55); }.combat-roll.miss { border-color: rgba(98,223,240,.3); background: rgba(98,223,240,.07); }.combat-roll.miss strong, .combat-roll.miss small { color: #62dff0; }.combat-fighter.incoming-miss .combat-avatar { box-shadow: 0 0 0 1px rgba(98,223,240,.22); }
 .combat-fighter.incoming-headshot::before { width: 92px; height: 92px; background: radial-gradient(circle,#fff 0,#ffde72 8%,#ff324f 22%,rgba(255,22,58,.68) 38%,transparent 70%); animation: headshotBurst .72s ease-out forwards; }.combat-fighter.incoming-headshot::after { content: "HEADSHOT"; position: absolute; z-index: 12; top: 24%; left: 50%; width: auto; height: auto; padding: 3px 7px; color: #fff; border: 1px solid rgba(255,255,255,.5); background: #d81738; box-shadow: 0 0 20px rgba(255,28,66,.8); font: 900 8px monospace; letter-spacing: .14em; transform: translate(-50%,-50%); animation: headshotLabel .75s ease-out forwards; pointer-events: none; }.combat-fighter.incoming-headshot .combat-avatar { border-color: #ff324f; box-shadow: 0 0 0 3px rgba(255,50,79,.24),0 0 28px rgba(255,28,66,.5); animation: headshotImpact .48s ease-out; }.combat-roll.headshot { box-shadow: inset 0 0 25px rgba(255,30,65,.11),0 0 14px rgba(255,30,65,.11); }
@@ -511,7 +511,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   .modal-backdrop { padding: 8px; align-items: center; }.combat-modal { width: 100%; max-height: 96dvh; padding: 10px; clip-path: none; }.combat-modal-head h2 { font-size: 17px; }.combat-turn-banner { grid-template-columns: 1fr auto; gap: 7px; padding: 9px 10px; }.combat-turn-banner > i { display: none; }.combat-actor-turn { grid-column: 1; padding-top: 7px; border-top: 1px solid rgba(255,255,255,.07); }.combat-actor-turn strong { font-size: 17px; }.combat-turn-banner > em { grid-column: 2; grid-row: 1/3; }.combat-location { flex-wrap: wrap; gap: 6px; }.combat-stage { grid-template-columns: 1fr 38px 1fr; gap: 5px; }.combat-fighter { padding: 24px 5px 8px; }.acting-ribbon { font-size: 7px; }.combat-avatar { width: 52px; height: 52px; font-size: 21px; }.combat-fighter h3 { font-size: 14px; }.combat-live-stats { grid-template-columns: repeat(2,1fr); }.combat-roll { min-height: 60px; display: flex; flex-wrap: wrap; justify-content: center; }.dice { width: 42px; height: 42px; }.combat-situation > header { align-items: flex-start; flex-direction: column; }.combat-context-grid { grid-template-columns: 1fr 1fr; }.combat-intel-grid { grid-template-columns: 1fr; }.combat-result { grid-template-columns: 1fr; }.revealed-hold { min-width: 0; }.combat-actions, .combat-actions:has(.advance-action), .tailwind-actions { grid-template-columns: 1fr; }.retreat-actions { grid-template-columns: auto repeat(2,1fr); }.choice-grid { grid-template-columns: 1fr 1fr; }.victory-card { width: 100%; padding: 24px 12px; clip-path: none; }.victory-card h1 { font-size: 30px; }.round-economy, .victory-actions, .analysis-teams { grid-template-columns: 1fr; }.victory-actions button.secondary { grid-column: auto; }.spectator-victory .match-analysis { padding: 9px; }.analysis-team dl { grid-template-columns: repeat(6,1fr); }
   .multikill-fx { top: 64px; width: 240px; transform: translateX(-50%) scale(.86); transform-origin: top center; }.multikill-fx > strong { font-size: 18px; }.kill-emblem { width: 76px; height: 76px; }.kill-emblem::before { font-size: 37px; }
   .round-accolade-splash { min-height: 196px; padding: 14px 9px 11px; }.round-accolade-splash > strong { font-size: 24px; }.round-accolade-splash > p { max-width: 260px; line-height: 1.45; }.accolade-emblem { width: 54px; height: 54px; }.accolade-stack { grid-template-columns: 1fr; }
-  .highlight-scene { min-height: 102px; grid-template-columns: 86px 1fr 64px; }.highlight-portrait { height: 102px; }.highlight-portrait.victim { height: 62px; }.highlight-center { padding: 9px; }.highlight-center > strong { font-size: 16px; }.round-highlight > footer { grid-template-columns: auto 1fr auto; }.round-highlight > footer b { display: none; }
+  .highlight-scene { min-height: 102px; grid-template-columns: 86px 1fr 64px; }.highlight-portrait { width: 86px; height: 86px; }.highlight-portrait.victim { width: 62px; height: 62px; }.highlight-center { padding: 9px; }.highlight-center > strong { font-size: 16px; }.round-highlight > footer { grid-template-columns: auto 1fr auto; }.round-highlight > footer b { display: none; }
   .weapon-grid { grid-template-columns: repeat(2,1fr); }.rules-grid { grid-template-columns: 1fr; }
 }
 
@@ -697,6 +697,121 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .weapon-art-operator > b { left: 0; top: 9px; width: 23px; height: 10px; }
 .weapon-art-operator > b::before { left: 39px; top: 8px; width: 9px; height: 12px; }
 .weapon-art-operator > b::after { left: 27px; top: -9px; width: 25px; height: 7px; border-width: 2px; }
+
+/* Solid-black silhouettes keep each weapon recognizable even at map-token size. */
+.weapon-art {
+  --gun: #020405;
+  --gun-dark: #020405;
+  --gun-accent: #020405;
+  width: 80px;
+  height: 28px;
+  filter: drop-shadow(0 0 1px rgba(224,238,235,.9)) drop-shadow(0 2px 2px rgba(0,0,0,.88));
+}
+.weapon-art::before, .weapon-art::after, .weapon-art > i, .weapon-art > i::before, .weapon-art > i::after,
+.weapon-art > b, .weapon-art > b::before, .weapon-art > b::after {
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: var(--gun);
+}
+.weapon-art::before { left: 24px; top: 8px; width: 31px; height: 10px; clip-path: polygon(0 18%,82% 0,100% 34%,92% 100%,8% 100%); }
+.weapon-art::after { left: 41px; top: 16px; width: 8px; height: 12px; transform: skew(-11deg); clip-path: polygon(0 0,100% 0,78% 100%,18% 100%); }
+.weapon-art > i { left: 53px; top: 10px; width: 25px; height: 4px; clip-path: none; }
+.weapon-art > i::before { right: -3px; top: -1px; width: 4px; height: 6px; }
+.weapon-art > i::after { left: -18px; top: 6px; width: 25px; height: 3px; }
+.weapon-art > b { left: 3px; top: 9px; width: 23px; height: 10px; transform: none; clip-path: polygon(0 48%,32% 0,100% 10%,100% 100%,28% 84%); }
+.weapon-art > b::before { left: 35px; top: 8px; width: 8px; height: 12px; transform: skew(-10deg); clip-path: polygon(0 0,100% 0,78% 100%,18% 100%); }
+.weapon-art > b::after { left: 29px; top: -6px; width: 16px; height: 5px; border-radius: 3px 3px 1px 1px; }
+
+.weapon-art-classic { width: 55px; }
+.weapon-art-classic::before { left: 14px; top: 8px; width: 24px; height: 8px; clip-path: polygon(0 0,100% 0,91% 100%,7% 100%); }
+.weapon-art-classic::after { left: 24px; top: 14px; width: 8px; height: 13px; transform: skew(-10deg); }
+.weapon-art-classic > i { left: 37px; top: 9px; width: 15px; height: 4px; }
+.weapon-art-classic > i::before { display: block; width: 3px; height: 5px; }
+.weapon-art-classic > i::after { display: none; }
+.weapon-art-classic > b { left: 7px; top: 10px; width: 9px; height: 6px; clip-path: polygon(0 20%,100% 0,100% 100%,20% 80%); }
+.weapon-art-classic > b::before, .weapon-art-classic > b::after { display: none; }
+
+.weapon-art-sheriff { width: 60px; }
+.weapon-art-sheriff::before { left: 17px; top: 8px; width: 22px; height: 10px; border-radius: 45%; clip-path: none; }
+.weapon-art-sheriff::after { left: 26px; top: 16px; width: 9px; height: 12px; transform: skew(-8deg); }
+.weapon-art-sheriff > i { left: 37px; top: 9px; width: 21px; height: 5px; }
+.weapon-art-sheriff > i::after { display: block; left: -16px; top: 6px; width: 13px; height: 4px; border-radius: 50%; }
+.weapon-art-sheriff > b { left: 9px; top: 10px; width: 9px; height: 7px; border-radius: 50%; clip-path: none; }
+.weapon-art-sheriff > b::before, .weapon-art-sheriff > b::after { display: none; }
+
+.weapon-art-bucky { width: 80px; }
+.weapon-art-bucky::before { left: 24px; top: 8px; width: 30px; height: 10px; clip-path: polygon(0 18%,100% 0,94% 100%,5% 100%); }
+.weapon-art-bucky::after { left: 42px; top: 16px; width: 8px; height: 11px; }
+.weapon-art-bucky > i { left: 52px; top: 9px; width: 26px; height: 5px; }
+.weapon-art-bucky > i::after { display: block; left: -23px; top: 6px; width: 32px; height: 4px; }
+.weapon-art-bucky > b { left: 1px; top: 10px; width: 25px; height: 10px; clip-path: polygon(0 48%,35% 0,100% 12%,100% 100%,28% 82%); }
+.weapon-art-bucky > b::before { left: 37px; top: 7px; width: 7px; height: 7px; clip-path: polygon(0 0,100% 0,55% 100%); }
+.weapon-art-bucky > b::after { display: none; }
+
+.weapon-art-spectre { width: 70px; }
+.weapon-art-spectre::before { left: 18px; top: 7px; width: 32px; height: 12px; clip-path: polygon(0 15%,88% 0,100% 35%,91% 100%,5% 100%); }
+.weapon-art-spectre::after { left: 34px; top: 17px; width: 8px; height: 10px; }
+.weapon-art-spectre > i { left: 48px; top: 10px; width: 19px; height: 4px; }
+.weapon-art-spectre > i::after { display: none; }
+.weapon-art-spectre > b { left: 4px; top: 10px; width: 16px; height: 8px; }
+.weapon-art-spectre > b::before { left: 31px; top: 8px; width: 9px; height: 12px; transform: skew(-15deg); }
+.weapon-art-spectre > b::after { left: 17px; top: -5px; width: 10px; height: 3px; }
+
+.weapon-art-bulldog { width: 80px; }
+.weapon-art-bulldog::before { left: 22px; top: 7px; width: 34px; height: 12px; clip-path: polygon(0 32%,18% 0,100% 0,91% 100%,6% 100%); }
+.weapon-art-bulldog::after { left: 41px; top: 17px; width: 8px; height: 11px; }
+.weapon-art-bulldog > i { left: 54px; top: 10px; width: 23px; height: 4px; }
+.weapon-art-bulldog > i::after { display: none; }
+.weapon-art-bulldog > b { left: 3px; top: 8px; width: 21px; height: 12px; clip-path: polygon(0 50%,44% 0,100% 20%,100% 100%,34% 84%); }
+.weapon-art-bulldog > b::before { left: 36px; top: 8px; width: 9px; height: 12px; }
+.weapon-art-bulldog > b::after { left: 29px; top: -5px; width: 14px; height: 4px; }
+
+.weapon-art-outlaw { width: 82px; }
+.weapon-art-outlaw::before { left: 24px; top: 10px; width: 30px; height: 7px; clip-path: polygon(0 12%,100% 0,94% 100%,5% 100%); }
+.weapon-art-outlaw::after { left: 43px; top: 16px; width: 7px; height: 11px; }
+.weapon-art-outlaw > i { left: 52px; top: 11px; width: 29px; height: 3px; }
+.weapon-art-outlaw > i::after { display: block; left: -5px; top: 5px; width: 8px; height: 10px; transform: skew(-18deg); clip-path: polygon(0 0,35% 0,100% 100%,65% 100%); }
+.weapon-art-outlaw > b { left: 0; top: 10px; width: 26px; height: 9px; }
+.weapon-art-outlaw > b::before { left: 40px; top: 6px; width: 7px; height: 10px; }
+.weapon-art-outlaw > b::after { left: 28px; top: -8px; width: 22px; height: 6px; border-radius: 4px; }
+
+.weapon-art-judge { width: 72px; }
+.weapon-art-judge::before { left: 17px; top: 6px; width: 37px; height: 14px; clip-path: polygon(0 24%,15% 0,100% 12%,92% 100%,7% 100%); }
+.weapon-art-judge::after { left: 35px; top: 18px; width: 9px; height: 10px; }
+.weapon-art-judge > i { left: 52px; top: 9px; width: 18px; height: 7px; }
+.weapon-art-judge > i::after { display: block; left: -20px; top: 8px; width: 28px; height: 4px; }
+.weapon-art-judge > b { left: 3px; top: 10px; width: 16px; height: 9px; }
+.weapon-art-judge > b::before { left: 30px; top: 10px; width: 13px; height: 10px; border-radius: 0 0 50% 50%; transform: none; clip-path: none; }
+.weapon-art-judge > b::after { display: none; }
+
+.weapon-art-phantom { width: 82px; }
+.weapon-art-phantom::before { left: 22px; top: 8px; width: 34px; height: 10px; clip-path: polygon(0 18%,90% 0,100% 30%,94% 100%,5% 100%); }
+.weapon-art-phantom::after { left: 43px; top: 17px; width: 8px; height: 11px; }
+.weapon-art-phantom > i { left: 54px; top: 10px; width: 25px; height: 5px; }
+.weapon-art-phantom > i::before { display: block; right: -4px; top: -1px; width: 10px; height: 7px; border-radius: 2px; }
+.weapon-art-phantom > i::after { display: none; }
+.weapon-art-phantom > b { left: 2px; top: 9px; width: 22px; height: 10px; }
+.weapon-art-phantom > b::before { left: 38px; top: 8px; width: 8px; height: 12px; }
+.weapon-art-phantom > b::after { left: 31px; top: -5px; width: 14px; height: 4px; }
+
+.weapon-art-vandal { width: 82px; }
+.weapon-art-vandal::before { left: 22px; top: 6px; width: 35px; height: 13px; clip-path: polygon(0 18%,23% 0,100% 17%,88% 100%,7% 82%); }
+.weapon-art-vandal::after { left: 42px; top: 18px; width: 8px; height: 10px; }
+.weapon-art-vandal > i { left: 55px; top: 9px; width: 25px; height: 4px; }
+.weapon-art-vandal > i::after { display: none; }
+.weapon-art-vandal > b { left: 0; top: 8px; width: 24px; height: 12px; clip-path: polygon(0 50%,34% 0,100% 12%,100% 100%,29% 82%); }
+.weapon-art-vandal > b::before { left: 38px; top: 9px; width: 9px; height: 14px; transform: skew(-16deg); clip-path: polygon(0 0,100% 0,76% 100%,9% 84%); }
+.weapon-art-vandal > b::after { left: 31px; top: -5px; width: 12px; height: 4px; }
+
+.weapon-art-operator { width: 84px; }
+.weapon-art-operator::before { left: 22px; top: 9px; width: 38px; height: 10px; clip-path: polygon(0 12%,92% 0,100% 28%,93% 100%,4% 100%); }
+.weapon-art-operator::after { left: 46px; top: 18px; width: 8px; height: 10px; }
+.weapon-art-operator > i { left: 58px; top: 11px; width: 25px; height: 5px; }
+.weapon-art-operator > i::after { display: block; left: -7px; top: 7px; width: 11px; height: 10px; transform: skew(-18deg); clip-path: polygon(0 0,30% 0,100% 100%,68% 100%); }
+.weapon-art-operator > b { left: 0; top: 9px; width: 24px; height: 11px; }
+.weapon-art-operator > b::before { left: 45px; top: 9px; width: 8px; height: 12px; }
+.weapon-art-operator > b::after { left: 29px; top: -10px; width: 27px; height: 8px; border-radius: 5px; }
 
 .weapon-art.compact { margin: -8px -20px; transform: scale(.42); transform-origin: 50% 50%; }
 .effect-stack i.weapon-drop { width: 34px; height: 18px; overflow: visible; background: rgba(7,18,22,.93); }

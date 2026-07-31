@@ -617,6 +617,19 @@ test("same-turn multikills animate and persist as a round highlight", async () =
   assert.match(css, /@keyframes killPipPop/);
 });
 
+test("weapon silhouettes, highlight portraits, and four-heart combat vitals remain compact", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /Solid-black silhouettes keep each weapon recognizable even at map-token size/);
+  assert.match(css, /--gun: #020405/);
+  assert.match(css, /\.weapon-art-operator \{ width: 84px/);
+  assert.match(css, /\.weapon-art-classic \{ width: 55px/);
+  assert.match(css, /\.highlight-portrait \{[^}]*width: 116px; height: 116px; aspect-ratio: 1/);
+  assert.match(css, /\.highlight-portrait\.victim \{ width: 72px; height: 72px/);
+  assert.match(css, /\.combat-vital-display \{ display: grid; grid-template-columns: 1fr/);
+  assert.match(css, /\.combat-vital-display > span \{[^}]*overflow: hidden/);
+  assert.match(css, /\.combat-vital-slots i \{[^}]*font-size: 11px/);
+});
+
 test("round-end accolades use distinct ace, clutch, team ace, flawless, and thrifty rules", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
