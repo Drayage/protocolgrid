@@ -655,3 +655,27 @@ test("round-end accolades use distinct ace, clutch, team ace, flawless, and thri
   assert.match(css, /\.accolade-stack/);
   assert.match(css, /@keyframes accoladeReveal/);
 });
+
+test("procedural tactical audio covers combat, utility, objectives, and mobile controls", async () => {
+  const [page, audio, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game-audio.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /configureTacticalAudio/);
+  assert.match(page, /playTacticalSound\(\{ type: "encounter" \}\)/);
+  assert.match(page, /type: "shot", weapon: fighter\.weapon/);
+  assert.match(page, /type: "skill", skillId: skillFx\.skillId/);
+  assert.match(page, /type: "spike", status: game\.spike\.status/);
+  assert.match(page, /type: "kill", count: killFx\.count/);
+  assert.match(page, /type: "round", winner: game\.winner/);
+  assert.match(page, /protocol-grid-sound-volume/);
+  assert.match(audio, /createDynamicsCompressor/);
+  assert.match(audio, /createOscillator/);
+  assert.match(audio, /createBufferSource/);
+  assert.match(audio, /function shotSound/);
+  assert.match(audio, /function skillSound/);
+  assert.match(audio, /function spikeSound/);
+  assert.match(css, /\.sound-popover/);
+  assert.match(css, /width: min\(260px, calc\(100vw - 16px\)\)/);
+});

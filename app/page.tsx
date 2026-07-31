@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { configureTacticalAudio, playTacticalSound, unlockTacticalAudio } from "./game-audio";
 
 type Side = "attack" | "defense";
 type Role = "duelist" | "initiator" | "controller" | "sentinel";
@@ -3876,8 +3877,25 @@ export default function Home() {
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [showHelp, setShowHelp] = useState(false);
   const [showShop, setShowShop] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem("protocol-grid-sound-enabled") !== "false");
+  const [soundVolume, setSoundVolume] = useState(() => {
+    if (typeof window === "undefined") return 0.56;
+    const stored = window.localStorage.getItem("protocol-grid-sound-volume");
+    const parsed = stored === null ? Number.NaN : Number(stored);
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.56;
+  });
+  const [showSound, setShowSound] = useState(false);
   const combatTurnRef = useRef<HTMLDivElement | null>(null);
   const combatStageRef = useRef<HTMLDivElement | null>(null);
+  const audioEventRef = useRef({
+    encounterId: "",
+    shots: new Set<string>(),
+    skillId: "",
+    killId: "",
+    spikeStatus: "",
+    winner: "",
+    turnSerial: -1,
+  });
 
   const aiSide: Side | null = playMode === "vs-ai" ? "attack" : null;
   const spectatorMode = playMode === "ai-vs-ai";
@@ -3910,6 +3928,61 @@ export default function Home() {
     const timer = window.setTimeout(() => setShowShop(false), 0);
     return () => window.clearTimeout(timer);
   }, [isAiControlledTurn]);
+
+  useEffect(() => {
+    const unlock = () => unlockTacticalAudio();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
+
+  useEffect(() => {
+    configureTacticalAudio(soundEnabled, soundVolume);
+    window.localStorage.setItem("protocol-grid-sound-enabled", String(soundEnabled));
+    window.localStorage.setItem("protocol-grid-sound-volume", String(soundVolume));
+  }, [soundEnabled, soundVolume]);
+
+  useEffect(() => {
+    if (stage !== "play") return;
+    const audio = audioEventRef.current;
+    const scene = game.combatQueue[0];
+    if (scene && scene.id !== audio.encounterId) {
+      audio.encounterId = scene.id;
+      playTacticalSound({ type: "encounter" });
+    }
+    if (scene) {
+      ([scene.mover, scene.holder] as CombatFighterView[]).forEach((fighter) => {
+        if (!fighter.shot) return;
+        const shotKey = `${scene.id}:${scene.round}:${fighter.id}:${fighter.shot.aimRoll}:${fighter.shot.moveRoll}:${fighter.shot.damage}:${fighter.shot.head}`;
+        if (audio.shots.has(shotKey)) return;
+        audio.shots.add(shotKey);
+        playTacticalSound({ type: "shot", weapon: fighter.weapon, hit: fighter.shot.hit, head: fighter.shot.head, turret: fighter.kind === "turret" });
+      });
+    }
+    const skillFx = game.lastSkillFx;
+    if (skillFx && skillFx.id !== audio.skillId && (spectatorMode || skillFx.owner === viewerSide || observed.has(skillFx.targetRegion))) {
+      audio.skillId = skillFx.id;
+      playTacticalSound({ type: "skill", skillId: skillFx.skillId, kind: skillFx.kind });
+    }
+    const killFx = game.lastKillFx;
+    if (killFx && killFx.id !== audio.killId) {
+      audio.killId = killFx.id;
+      playTacticalSound({ type: "kill", count: killFx.count });
+    }
+    if (!audio.spikeStatus) audio.spikeStatus = game.spike.status;
+    else if (game.spike.status !== audio.spikeStatus) {
+      audio.spikeStatus = game.spike.status;
+      if (spectatorMode || spikeVisibleTo(game, viewerSide, false)) playTacticalSound({ type: "spike", status: game.spike.status });
+    }
+    if (game.winner && audio.winner !== `${game.matchRound}:${game.winner}`) {
+      audio.winner = `${game.matchRound}:${game.winner}`;
+      playTacticalSound({ type: "round", winner: game.winner });
+    }
+    if (audio.turnSerial < 0) audio.turnSerial = game.turnSerial;
+    else if (audio.turnSerial !== game.turnSerial) {
+      audio.turnSerial = game.turnSerial;
+      playTacticalSound({ type: "turn", side: game.turnSide });
+    }
+  }, [stage, game, observed, spectatorMode, viewerSide]);
 
   const activeKillFxId = game.lastKillFx?.id ?? null;
   useEffect(() => {
@@ -5362,6 +5435,15 @@ export default function Home() {
           <span className="side-name attack-name"><b>{game.teams.attack.score}</b> ATK</span>
         </div>
         <div className="header-actions">
+          <div className="sound-control">
+            <button className={soundEnabled ? "sound-on" : "sound-off"} aria-label="효과음 설정" aria-expanded={showSound} onClick={() => { unlockTacticalAudio(); playTacticalSound({ type: "ui" }); setShowSound((value) => !value); }}>{soundEnabled ? "SFX ON" : "SFX OFF"}</button>
+            {showSound && <div className="sound-popover" role="group" aria-label="효과음 볼륨">
+              <header><span>TACTICAL AUDIO</span><b>{Math.round(soundVolume * 100)}%</b></header>
+              <input aria-label="효과음 볼륨" type="range" min="0" max="100" step="1" value={Math.round(soundVolume * 100)} onChange={(event) => setSoundVolume(Number(event.target.value) / 100)} />
+              <button onClick={() => { const next = !soundEnabled; configureTacticalAudio(next, soundVolume); setSoundEnabled(next); if (next) playTacticalSound({ type: "ui" }); }}>{soundEnabled ? "음소거" : "소리 켜기"}</button>
+              <small>독자 제작 전술 FPS 효과음</small>
+            </div>}
+          </div>
           {spectatorMode && <div className="spectator-controls" aria-label="AI 관전 제어">
             <button className={spectatorPaused ? "paused" : ""} onClick={() => setSpectatorPaused((value) => !value)}>{spectatorPaused ? "▶ 재생" : "Ⅱ 일시정지"}</button>
             <button onClick={() => setSpectatorSpeed((speed) => speed === 1 ? 2 : speed === 2 ? 4 : 1)}>×{spectatorSpeed} 속도</button>
