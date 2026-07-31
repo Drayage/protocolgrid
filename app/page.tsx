@@ -512,13 +512,13 @@ const skill = (id: string, name: string, price: string, target: SkillTarget, des
 });
 
 const AGENTS: Record<string, AgentTemplate> = {
-  "제트": { name: "제트", role: "duelist", skills: [skill("tailwind", "순풍", "2원 · 1회", "self", "다음 최초 교전의 공격을 회피합니다."), skill("updraft", "상승 기류", "1원 · 2회", "self", "다음 이동 거리와 무빙이 1 증가합니다.")] },
+  "제트": { name: "제트", role: "duelist", skills: [skill("tailwind", "순풍", "2원 · 1회", "self", "다음 최초 교전의 총격 전에 인접 구역으로 이동합니다."), skill("updraft", "상승 기류", "1원 · 2회", "self", "다음 이동 거리와 무빙이 1 증가합니다.")] },
   "레이즈": { name: "레이즈", role: "duelist", skills: [skill("paint", "페인트탄", "2원 · 1회", "adjacent", "인접 구역의 적 모두에게 피해 1, 설치물을 파괴합니다."), skill("blast", "폭발 팩", "1원 · 2회", "adjacent", "인접 구역으로 강제 이동하며 대기를 해제합니다.")] },
-  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", "구역에 다음 턴까지 피해 1의 불길을 만듭니다.")] },
+  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", "구역에 다음 턴까지 피해 1의 불길을 만듭니다.")] },
   "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "구역 적의 우선도 숫자를 1 높입니다.")] },
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "1원 · 2회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
-  "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역의 적을 탐지합니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", "거리 2 구역의 적 또는 설치물에 피해 1을 줍니다.")] },
+  "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", "거리 2 구역의 보이는 적을 선택합니다. 보이지 않으면 무작위 적 또는 설치물에 피해 1을 줍니다.")] },
   "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "adjacent", "인접 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "adjacent", "인접 구역의 적에게 피해 2, 진행 행동을 취소합니다.")] },
   "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "목표 방향의 첫 연결을 다음 턴까지 차단합니다."), skill("stim", "전투 자극제", "2원 · 1회", "self", "현재 구역 아군의 에임과 우선도를 강화합니다.")] },
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
@@ -1884,6 +1884,12 @@ function waitConeViews(game: GameState, context: VisibilityContext): WaitConeVie
   return cones;
 }
 
+function reconArrowWatcher(game: GameState, scanningSide: Side, targetRegion: number) {
+  return game.teams[otherSide(scanningSide)].agents
+    .filter((enemy) => enemy.alive && enemy.waitDirs.includes(targetRegion))
+    .sort((a, b) => (a.waitOrders[targetRegion] ?? a.waitStamp) - (b.waitOrders[targetRegion] ?? b.waitStamp))[0] ?? null;
+}
+
 function connectionStyle(fromId: number, toId: number) {
   const from = REGIONS.find((region) => region.id === fromId)!;
   const to = REGIONS.find((region) => region.id === toId)!;
@@ -2931,9 +2937,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         }).sort((a, b) => b.score - a.score)[0];
         if (!target) continue;
         if (!begin()) return true;
-        const waitingEnemy = game.teams[otherSide(side)].agents
-          .filter((enemy) => enemy.alive && enemy.waitDirs.includes(target.region))
-          .sort((a, b) => (a.waitOrders[target.region] ?? a.waitStamp) - (b.waitOrders[target.region] ?? b.waitStamp))[0];
+        const waitingEnemy = reconArrowWatcher(game, side, target.region);
         if (waitingEnemy) {
           addTrade(game, { enemyId: waitingEnemy.id, team: side, sourceId: agent.id });
           rememberEnemy(game, side, waitingEnemy);
@@ -4005,11 +4009,10 @@ export default function Home() {
           break;
         case "recon": {
           const scanned = new Set([region, ...(GRAPH.get(region) ?? [])]);
-          const waitingEnemy = enemies
-            .filter((enemy) => enemy.waitDirs.includes(region))
-            .sort((a, b) => (a.waitOrders[region] ?? a.waitStamp) - (b.waitOrders[region] ?? b.waitStamp))[0];
+          const waitingEnemy = reconArrowWatcher(draft, agent.team, region);
           if (waitingEnemy) {
             addTrade(draft, { enemyId: waitingEnemy.id, team: agent.team, sourceId: agent.id });
+            rememberEnemy(draft, agent.team, waitingEnemy);
             addLog(draft, `${waitingEnemy.name}이 정찰 화살을 파괴했습니다. 총기 ${WEAPONS[waitingEnemy.weapon].name} 확인 / 트레이드 표식.`);
           } else {
             draft.teams[otherSide(agent.team)].agents.filter((enemy) => scanned.has(enemy.region)).forEach((enemy) => { enemy.detected = true; });
@@ -4019,14 +4022,15 @@ export default function Home() {
         }
         case "shock": {
           const devices = draft.deployables.filter((item) => item.region === region && item.owner !== agent.team);
-          const visibleEnemies = enemies.filter((enemy) => enemy.detected || draft.revealedEnemyIds.includes(enemy.id));
+          const observedByCaster = observedRegions(draft, agent.team);
+          const visibleEnemies = enemies.filter((enemy) => observedByCaster.has(enemy.region) || enemy.detected || draft.revealedEnemyIds.includes(enemy.id));
           if (visibleEnemies.length + devices.length > 1) {
             targeting.candidateAgentIds = visibleEnemies.map((target) => target.id);
             targeting.candidateDeployableIds = devices.map((target) => target.id);
             addLog(draft, `충격 화살의 목표를 선택하세요.`);
             return;
           }
-          const target = visibleEnemies[0] ?? (enemies.length ? enemies[Math.floor(Math.random() * enemies.length)] : null);
+          const target = visibleEnemies[0] ?? (!devices.length && enemies.length ? enemies[Math.floor(Math.random() * enemies.length)] : null);
           if (target) applyDamage(draft, agent, target, 1, "충격 화살");
           else if (devices[0]) draft.deployables = draft.deployables.filter((item) => item.id !== devices[0].id);
           break;
@@ -4697,6 +4701,7 @@ export default function Home() {
     const scene = draft.combatQueue[0];
     const agent = getAgent(draft, scene?.tailwindActorId);
     if (!scene || scene.phase !== "tailwind" || !agent?.alive || !(GRAPH.get(agent.region) ?? []).includes(region)) return;
+    const avoidedShot = !!scene.pendingShotActorId;
     const from = agent.region;
     clearWait(agent);
     cancelProgress(draft, agent);
@@ -4710,13 +4715,15 @@ export default function Home() {
     } else if (agent.alive) {
       draft.pendingReengagements.push({ agentId: agent.id, priority: agent.id === scene.mover.id ? scene.moverPriorityBase : 3, canAttack: true, moveBonus: 0 });
     }
-    scene.evaded = true;
+    scene.evaded = avoidedShot;
     scene.resolved = true;
     scene.phase = "result";
     scene.pendingNextActorId = null;
     scene.tailwindActorId = null;
     scene.pendingShotActorId = null;
-    scene.result = `${agent.name}이 순풍으로 ${regionName(region)}에 이동해 공격을 피했습니다.`;
+    scene.result = avoidedShot
+      ? `${agent.name}이 순풍으로 ${regionName(region)}에 이동해 공격을 피했습니다.`
+      : `${agent.name}이 첫 총격 전에 순풍으로 ${regionName(region)}에 이동했습니다.`;
     refreshCombatView(scene, agent, null, { hp: agent.hp, armor: agent.armor });
   });
 
@@ -4726,6 +4733,15 @@ export default function Home() {
     if (scene.phase === "encounter") {
       if (scene.kind === "turret") {
         performTurretShot(draft, scene);
+        return;
+      }
+      const openingTailwind = [getAgent(draft, scene.mover.id), getAgent(draft, scene.holder.id)]
+        .find((agent) => agent?.alive && agent.team === draft.turnSide && agent.status.evadeReady && (GRAPH.get(agent.region)?.length ?? 0) > 0);
+      if (openingTailwind) {
+        scene.phase = "tailwind";
+        scene.tailwindActorId = openingTailwind.id;
+        scene.pendingShotActorId = null;
+        scene.result = `${openingTailwind.name}이 첫 총격 전에 순풍 이동 구역을 선택합니다.`;
         return;
       }
       scene.phase = "choice";
