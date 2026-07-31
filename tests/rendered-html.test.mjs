@@ -309,7 +309,12 @@ test("mid-round AI replans, plants secured sites, and uses utility for entry and
   assert.match(page, /const DEFENDER_BACK_EDGES:/);
   assert.match(page, /function aiPlantAssessment/);
   assert.match(page, /plantAssessment\?\.shouldPlant/);
-  assert.match(page, /사이트 안전 확인 · 주변 아군/);
+  assert.match(page, /사이트 설치 판단 · 주변 아군/);
+  assert.match(page, /const sameRegionThreats = visibleThreats\.filter/);
+  assert.match(page, /bodyguards\.length >= visibleThreats\.length/);
+  assert.match(page, /const forced = game\.cycle >= PRE_PLANT_CYCLE_LIMIT - 2/);
+  assert.match(page, /const plantingReserveCarrierId =/);
+  assert.match(page, /const reservedPlantCarrierId =/);
   assert.match(page, /function aiEntryUtilityRegion/);
   assert.match(page, /entryRegion = aiEntryUtilityRegion\(game, agent, currentAndAdjacent\)/);
   assert.match(page, /definition\.id === "flash" \? aiEntryUtilityRegion/);
@@ -370,6 +375,8 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /const priorityDestination = agent\.weapon === "classic"/);
   assert.match(page, /className="weapon-drop"/);
   assert.match(css, /\.effect-stack i\.weapon-drop/);
+  assert.match(css, /\.weapon-art\.compact \{[\s\S]{0,80}width: 24px/);
+  assert.match(css, /\.effect-stack i\.weapon-drop \{[\s\S]{0,100}width: 27px/);
 });
 
 test("losing AI uses recovery packages, hard eco escorts, and keeps the original income model", async () => {
@@ -439,6 +446,8 @@ test("AI keeps prior-turn enemy positions and waits outside the viewer-only last
   assert.match(page, /interface AiEnemyKnowledge/);
   assert.match(page, /aiEnemyKnowledge: AiEnemyKnowledge\[\]/);
   assert.match(page, /function refreshAiEnemyKnowledge/);
+  assert.match(page, /game\.aiEnemyKnowledge = \(game\.aiEnemyKnowledge \?\? \[\]\)\.filter\(\(memory\) => memory\.agentId !== defender\.id\)/);
+  assert.match(page, /order\.blockerRegions = order\.blockerRegions\.filter\(\(memory\) => memory\.agentId !== defender\.id\)/);
   assert.match(page, /observedTeamTurn: game\.teamTurns\[side\]/);
   assert.match(page, /confidence: Math\.max\(0\.25, 0\.78 - age \* 0\.14\)/);
   assert.match(page, /const memoryWeight = enemy\.confidence/);
@@ -653,7 +662,7 @@ test("weapon silhouettes, highlight portraits, and four-heart combat vitals rema
   assert.match(css, /filter: brightness\(0\) saturate\(100%\)/);
   assert.match(css, /\.weapon-art-operator \{ width: 108px; height: 30px/);
   assert.match(css, /\.weapon-art-classic \{ width: 54px; height: 34px/);
-  assert.match(css, /\.weapon-art\.compact \{[\s\S]{0,120}width: 46px/);
+  assert.match(css, /\.weapon-art\.compact \{[\s\S]{0,120}width: 24px/);
   assert.match(css, /\.highlight-portrait \{[^}]*width: 116px; height: 116px; aspect-ratio: 1/);
   assert.match(css, /\.highlight-portrait\.victim \{ width: 72px; height: 72px/);
   assert.match(css, /\.combat-vital-display \{ display: grid; grid-template-columns: 1fr/);

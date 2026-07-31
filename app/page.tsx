@@ -1533,6 +1533,13 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   if (defender.hp > 0) return;
   defender.hp = 0;
   defender.alive = false;
+  // Death is public, final information. Remove stale tactical memories immediately so
+  // neither AI side keeps routing around a blocker that no longer exists.
+  game.aiEnemyKnowledge = (game.aiEnemyKnowledge ?? []).filter((memory) => memory.agentId !== defender.id);
+  (game.aiRecoveryOrders ??= []).forEach((order) => {
+    order.blockerIds = order.blockerIds.filter((agentId) => agentId !== defender.id);
+    order.blockerRegions = order.blockerRegions.filter((memory) => memory.agentId !== defender.id);
+  });
   recordRoundDeath(game, defender);
   clearWait(defender);
   if (game.selectedAgentId === defender.id) {
@@ -2274,22 +2281,31 @@ function attackEntryIsOpen(game: GameState, site: "A" | "B") {
 
 function aiPlantAssessment(game: GameState, carrier: Agent) {
   const site = REGIONS.find((region) => region.id === carrier.region)?.site;
-  if (!site) return { shouldPlant: false, site: null as "A" | "B" | null, allies: 0, coveringWaits: 0 };
-  const visibleEnemies = aiEnemyIntel(game, "attack").filter((enemy) =>
+  if (!site) return { shouldPlant: false, site: null as "A" | "B" | null, allies: 0, coveringWaits: 0, visibleThreats: 0, forced: false };
+  const visibleThreats = aiEnemyIntel(game, "attack").filter((enemy) =>
     enemy.exact
     && distance(carrier.region, enemy.region) <= 1
     && !isWaitPathSmokeBlocked(game, carrier.region, enemy.region),
   );
   const nearbyAllies = game.teams.attack.agents.filter((ally) => ally.alive && distance(ally.region, carrier.region) <= 1);
+  const bodyguards = nearbyAllies.filter((ally) => ally.id !== carrier.id && !isChanneling(game, ally));
   const coveringWaits = nearbyAllies.reduce((count, ally) => count + ally.waitDirs.filter((region) =>
     SITE_APPROACH_REGIONS[site].includes(region)
     || DEFENDER_BACK_EDGES[site].some(([a, b]) => region === a || region === b),
   ).length, 0);
+  const sameRegionThreats = visibleThreats.filter((enemy) => enemy.region === carrier.region);
+  const forced = game.cycle >= PRE_PLANT_CYCLE_LIMIT - 2;
+  const secured = visibleThreats.length === 0
+    || bodyguards.length >= visibleThreats.length
+    || coveringWaits > 0
+    || forced;
   return {
-    shouldPlant: visibleEnemies.length === 0,
+    shouldPlant: sameRegionThreats.length === 0 && secured,
     site,
-    allies: Math.max(0, nearbyAllies.length - 1),
+    allies: bodyguards.length,
     coveringWaits,
+    visibleThreats: visibleThreats.length,
+    forced,
   };
 }
 
@@ -3240,7 +3256,15 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
   const recoveryBlockerIds = new Set(aiGuardedRecoveryObjectives(game, side)
     .flatMap((objective) => objective.blockers.map((blocker) => blocker.agent.id)));
 
-  for (const agent of game.teams[side].agents.filter((item) => item.alive && item.extraActions > 0 && !isChanneling(game, item))) {
+  const plantingReserveCarrierId = side === "attack" && game.spike.status === "carried"
+    ? game.spike.carrierId
+    : null;
+  for (const agent of game.teams[side].agents.filter((item) => {
+    const reservingPlantAction = item.id === plantingReserveCarrierId
+      && item.extraActions === 1
+      && !!REGIONS.find((region) => region.id === item.region)?.site;
+    return item.alive && item.extraActions > 0 && !isChanneling(game, item) && !reservingPlantAction;
+  })) {
     const camera = agent.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === side && item.ownerAgentId === agent.id) : null;
     const cameraTarget = camera ? game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && !enemy.detected && [camera.region, ...(GRAPH.get(camera.region) ?? [])].includes(enemy.region)) : null;
     if (cameraTarget) {
@@ -5541,7 +5565,7 @@ export default function Home() {
         clearWait(carrier);
         carrier.extraActions -= 1;
         draft.spike = { ...draft.spike, status: "planting", region: carrier.region, actorId: carrier.id, startCycle: draft.cycle };
-        addLog(draft, `공격팀 AI · ${carrierRegion.site} 사이트 안전 확인 · 주변 아군 ${plantAssessment.allies}명 · 커버 대기 ${plantAssessment.coveringWaits}개 · 즉시 설치 시작.`);
+        addLog(draft, `공격팀 AI · ${carrierRegion.site} 사이트 설치 판단 · 주변 아군 ${plantAssessment.allies}명 · 인접 위협 ${plantAssessment.visibleThreats}명 · 커버 대기 ${plantAssessment.coveringWaits}개${plantAssessment.forced ? " · 제한시간 임박" : ""} · 즉시 설치 시작.`);
         addAnalyticsEvent(draft, "attack", "objective", `${carrier.name} ${carrierRegion.site} 설치 시작`);
         return;
       }
@@ -5620,8 +5644,16 @@ export default function Home() {
         if (aiRecoveryEscortLeader(draft, agent)) return 16;
         return side === "attack" && isAttackLurker(draft, agent) && draft.attackPlan.lurkerMode === "probe" ? -6 : 0;
       };
+      const reservedPlantCarrierId = side === "attack" && draft.spike.status === "carried"
+        ? draft.spike.carrierId
+        : null;
       const candidates = team.agents
-        .filter((agent) => agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent))
+        .filter((agent) => {
+          const holdingPlantSite = agent.id === reservedPlantCarrierId
+            && agent.extraActions > 0
+            && !!REGIONS.find((region) => region.id === agent.region)?.site;
+          return agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent) && !holdingPlantSite;
+        })
         .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
       for (const agent of candidates) {
         if (card.kind === "control") {

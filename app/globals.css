@@ -882,8 +882,8 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .weapon-art-vandal { width: 98px; height: 32px; }
 .weapon-art-operator { width: 108px; height: 30px; }
 .weapon-art.compact {
-  width: 46px;
-  height: 18px;
+  width: 24px;
+  height: 10px;
   margin: 0;
   transform: none;
   background-size: contain;
@@ -892,8 +892,8 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .effect-stack i.weapon-drop {
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 24px;
+  width: 27px;
+  height: 14px;
   overflow: hidden;
   background: rgba(238,244,238,.82);
 }
@@ -908,7 +908,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   .agent-portrait-frame { width: 32px; height: 32px; }
   .fight-action em { font-size: 7px; }
   .weapon-art { transform: none; transform-origin: left center; margin-right: 0; }
-  .weapon-art.compact { width: 42px; height: 17px; margin: 0; transform: none; }
+  .weapon-art.compact { width: 22px; height: 9px; margin: 0; transform: none; }
   .sound-control > button { min-width: 44px; padding-inline: 5px; }
   .sound-popover { position: fixed; top: 65px; right: 8px; width: min(260px, calc(100vw - 16px)); }
   .sound-popover::before { right: 28px; }
