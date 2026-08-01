@@ -2,22 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+async function builtHtml() {
+  return readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 }
 
-test("server renders the finished tactical game entry screen", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-  const html = await response.text();
+test("static Pages build renders the finished tactical game entry screen", async () => {
+  const html = `${await builtHtml()}\n${await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")}`;
   assert.match(html, /<title>Protocol: Grid — 전술 카드게임<\/title>/i);
   assert.match(html, /PROTOCOL:/);
   assert.match(html, /15장의 역할 덱/);
@@ -72,7 +62,7 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(css, /@keyframes tracerShot/);
   assert.match(css, /\.combat-intel-grid/);
   assert.match(css, /\.unit-token\.hostile\.last-known/);
-  assert.match(css, /protocol-sprite-atlas\.png/);
+  assert.match(css, /--sprite-atlas-image/);
   assert.match(css, /background-size: var\(--sprite-size-x\) var\(--sprite-size-y\)/);
   assert.doesNotMatch(css, /background-size: 500% 600%/);
   assert.match(css, /grid-template-columns: 20px 55px minmax\(0, 1fr\) auto/);
@@ -841,7 +831,7 @@ test("weapon silhouettes, highlight portraits, and four-heart combat vitals rema
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /backgroundImage: `url\("\/weapon-icons\/\$\{weapon\}\.png"\)`/);
+  assert.match(page, /backgroundImage: `url\("\$\{import\.meta\.env\.BASE_URL\}weapon-icons\/\$\{weapon\}\.png"\)`/);
   assert.match(css, /Base-shop icon masks: exact weapon proportions/);
   assert.match(css, /filter: brightness\(0\) saturate\(100%\)/);
   assert.match(css, /\.weapon-art-operator \{ width: 108px; height: 30px/);

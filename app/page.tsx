@@ -646,7 +646,7 @@ function WeaponSilhouette({ weapon, compact = false }: { weapon: WeaponId; compa
   return (
     <span
       className={`${weaponArtClass(weapon)} ${compact ? "compact" : ""}`}
-      style={{ backgroundImage: `url("/weapon-icons/${weapon}.png")` }}
+      style={{ backgroundImage: `url("${import.meta.env.BASE_URL}weapon-icons/${weapon}.png")` }}
       aria-hidden="true"
     />
   );
@@ -4132,7 +4132,7 @@ function TitleScreen({ onStart }: { onStart: () => void }) {
       <div className="title-noise" />
       <section className="title-hero">
         <div className="title-kicker"><span /> 5 VS 5 TACTICAL CARD GAME</div>
-        <div className="title-lockup"><span className="title-v">V</span><div><h1>PROTOCOL:<br /><b>GRID</b></h1><p>발로란트식 전술 카드게임</p></div></div>
+        <div className="title-lockup"><span className="title-v">V</span><div><h1>PROTOCOL:<br /><b>GRID</b></h1><p>5대5 구역 전술 카드게임</p></div></div>
         <p className="title-copy">요원을 고르고, 15장의 역할 덱을 완성하고, 정보를 교환하며 두 개의 사이트를 두고 싸우세요.</p>
         <button className="primary-cta" onClick={onStart}><span>새 작전</span><b>게임 시작</b></button>
         <div className="title-roadmap"><span><i className="ready" /> PC 핫시트 플레이</span><span><i className="ready" /> 모바일 반응형 UI</span><span><i className="ready" /> AI 대전 · AI vs AI 분석</span></div>
