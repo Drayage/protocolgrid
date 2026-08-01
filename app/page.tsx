@@ -12,6 +12,7 @@ type AttackPlanPhase = "spread" | "pressure" | "rotate" | "execute" | "postplant
 type AttackTempo = "fast" | "standard" | "slow";
 type AttackFormation = "five" | "four-one";
 type LurkerMode = "probe" | "rotate-call" | "deep-flank" | "regroup";
+type OperatorResponseMode = "none" | "avoid" | "breach";
 type TacticalLane = "A" | "MID" | "B";
 type DefensePlanKind = "stack-a" | "stack-b" | "balanced-212" | "mid-131" | "heavy-a-401" | "heavy-b-401" | "heavy-a-311" | "heavy-b-311";
 type WeaponId =
@@ -431,6 +432,10 @@ interface AttackPlan {
   lurkerName: string | null;
   lurkerProbeSite: "A" | "B";
   lurkerMode: LurkerMode;
+  operatorMode: OperatorResponseMode;
+  operatorTargetRegion: number | null;
+  operatorTargetIds: string[];
+  operatorCommitUntilCycle: number;
 }
 
 interface DefensePlan {
@@ -742,6 +747,10 @@ function createAttackPlan(matchRound: number, names: string[], strategySeed: num
     lurkerName: formation === "four-one" ? names[names.length - 1] ?? null : null,
     lurkerProbeSite: targetSite === "A" ? "B" : "A",
     lurkerMode: formation === "four-one" ? "probe" : "regroup",
+    operatorMode: "none",
+    operatorTargetRegion: null,
+    operatorTargetIds: [],
+    operatorCommitUntilCycle: 0,
   };
 }
 
@@ -1411,6 +1420,10 @@ function ensureAiTacticalState(game: GameState) {
   game.aiRetreatMemories ??= [];
   game.lastMovementFx ??= null;
   game.postCombatMovementFxQueue ??= [];
+  game.attackPlan.operatorMode ??= "none";
+  game.attackPlan.operatorTargetRegion ??= null;
+  game.attackPlan.operatorTargetIds ??= [];
+  game.attackPlan.operatorCommitUntilCycle ??= 0;
 }
 
 function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
@@ -2092,8 +2105,8 @@ function continuePendingMovement(game: GameState) {
   finishMovement(game, agent, origin);
 }
 
-function moveAgent(game: GameState, agent: Agent, target: number, kind: CardKind | "shadow" | "special" | "forced") {
-  const path = shortestPath(agent.region, target);
+function moveAgent(game: GameState, agent: Agent, target: number, kind: CardKind | "shadow" | "special" | "forced", pathOverride?: number[]) {
+  const path = pathOverride?.length ? pathOverride : shortestPath(agent.region, target);
   if (path.length < 2) return;
   clearWait(agent);
   cancelProgress(game, agent);
@@ -2337,6 +2350,158 @@ function siteForRegion(region: number): "A" | "B" | null {
   return null;
 }
 
+function knownOperatorHolds(game: GameState, side: Side) {
+  return aiEnemyIntel(game, side).filter((enemy) =>
+    enemy.weapon === "operator"
+    && enemy.confidence >= 0.35
+    && enemy.waitDirs.length > 0);
+}
+
+function operatorSiteAssessment(game: GameState, site: "A" | "B") {
+  const tactical = tacticalRegionsForSite(site);
+  const origins = game.teams.attack.agents.filter((agent) => agent.alive).map((agent) => agent.region);
+  const routeRegions = new Set(origins.flatMap((origin) =>
+    SITE_REGIONS[site].flatMap((siteRegion) => shortestPath(origin, siteRegion).slice(1))));
+  const holds = knownOperatorHolds(game, "attack").flatMap((enemy) => {
+    const heldRegions = enemy.waitDirs.filter((region) =>
+      (tactical.has(region) || routeRegions.has(region))
+      && !isWaitPathSmokeBlocked(game, enemy.region, region));
+    return heldRegions.length ? [{ enemy, heldRegions }] : [];
+  });
+  const coveredRegions = new Set(holds.flatMap((hold) => hold.heldRegions));
+  const pressure = holds.reduce((total, hold) =>
+    total + (hold.enemy.exact ? 34 : 24) * hold.enemy.confidence + hold.heldRegions.length * 6, 0);
+  return { site, holds, coveredRegions, pressure };
+}
+
+function attackHasOperatorBreachUtility(game: GameState) {
+  const breachSkills = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark", "stim", "tailwind"]);
+  return game.teams.attack.agents.some((ally) =>
+    ally.alive && AGENTS[ally.name].skills.some((skillDefinition) =>
+      breachSkills.has(skillDefinition.id) && (ally.skills[skillDefinition.id] ?? 0) > 0));
+}
+
+function attackOperatorBreachActive(game: GameState, opponentId?: string) {
+  const plan = game.attackPlan;
+  return plan.operatorMode === "breach"
+    && game.cycle <= plan.operatorCommitUntilCycle
+    && (opponentId === undefined || plan.operatorTargetIds.includes(opponentId));
+}
+
+function refreshAttackOperatorResponse(game: GameState) {
+  ensureAiTacticalState(game);
+  const plan = game.attackPlan;
+  const spikeActive = ["planting", "planted", "half", "defusing", "defused", "exploded"].includes(game.spike.status);
+  if (spikeActive) {
+    plan.operatorMode = "none";
+    plan.operatorTargetRegion = null;
+    plan.operatorTargetIds = [];
+    plan.operatorCommitUntilCycle = 0;
+    return;
+  }
+
+  const assessments = {
+    A: operatorSiteAssessment(game, "A"),
+    B: operatorSiteAssessment(game, "B"),
+  };
+  const current = assessments[plan.targetSite];
+  const otherSite = plan.targetSite === "A" ? "B" : "A";
+  const alternative = assessments[otherSite];
+
+  if (attackOperatorBreachActive(game) && current.holds.length) {
+    plan.operatorTargetIds = current.holds.map((hold) => hold.enemy.agent.id);
+    plan.operatorTargetRegion = [...current.holds].sort((a, b) =>
+      distance(a.enemy.region, plan.operatorTargetRegion ?? a.enemy.region)
+      - distance(b.enemy.region, plan.operatorTargetRegion ?? b.enemy.region))[0]?.enemy.region ?? null;
+    return;
+  }
+
+  const allKnownHolds = [...assessments.A.holds, ...assessments.B.holds];
+  if (!allKnownHolds.length) {
+    plan.operatorMode = "none";
+    plan.operatorTargetRegion = null;
+    plan.operatorTargetIds = [];
+    plan.operatorCommitUntilCycle = 0;
+    return;
+  }
+
+  const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
+  const carrierCommitted = !!carrier && SITE_REGIONS[plan.targetSite].includes(carrier.region);
+  const turnsRemaining = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
+  const alternativeTravel = carrier
+    ? Math.min(...SITE_REGIONS[otherSite].map((region) => distance(carrier.region, region)))
+    : 99;
+  const canStillRotate = turnsRemaining > alternativeTravel + 1;
+  const safeAlternative = current.holds.length > 0
+    && alternative.holds.length === 0
+    && !carrierCommitted
+    && canStillRotate;
+
+  if (safeAlternative) {
+    const priorSite = plan.targetSite;
+    plan.targetSite = otherSite;
+    plan.operatorMode = "avoid";
+    plan.operatorTargetRegion = current.holds[0]?.enemy.region ?? null;
+    plan.operatorTargetIds = current.holds.map((hold) => hold.enemy.agent.id);
+    plan.operatorCommitUntilCycle = 0;
+    plan.adapted = true;
+    const nextReadout = `${priorSite} 오퍼레이터 대기 확인 · 안전한 ${otherSite} 진입로로 전환`;
+    if (plan.readout !== nextReadout) {
+      plan.readout = nextReadout;
+      addAnalyticsEvent(game, "attack", "objective", nextReadout);
+    }
+    return;
+  }
+
+  if (!current.holds.length && alternative.holds.length) {
+    plan.operatorMode = "avoid";
+    plan.operatorTargetRegion = alternative.holds[0]?.enemy.region ?? null;
+    plan.operatorTargetIds = alternative.holds.map((hold) => hold.enemy.agent.id);
+    plan.operatorCommitUntilCycle = 0;
+    return;
+  }
+
+  const bothSitesHeld = assessments.A.holds.length > 0 && assessments.B.holds.length > 0;
+  const deadlineForcesFight = attackForcedPlantMode(game) || !canStillRotate;
+  if (!bothSitesHeld && !deadlineForcesFight && current.holds.length) return;
+
+  const aliveAttackers = game.teams.attack.agents.filter((agent) => agent.alive);
+  const hasUtility = attackHasOperatorBreachUtility(game);
+  const breachChoices = (["A", "B"] as const)
+    .map((site) => {
+      const assessment = assessments[site];
+      if (!assessment.holds.length) return null;
+      const alliesNear = aliveAttackers.filter((ally) =>
+        Math.min(...SITE_REGIONS[site].map((region) => distance(ally.region, region))) <= 1).length;
+      const origin = carrier?.region ?? aliveAttackers[0]?.region ?? 1;
+      const travel = Math.min(...SITE_REGIONS[site].map((region) => distance(origin, region)));
+      const score = assessment.pressure + travel * 7 - alliesNear * 10 - (hasUtility ? 12 : 0);
+      return { site, assessment, score };
+    })
+    .filter((choice): choice is NonNullable<typeof choice> => !!choice)
+    .sort((a, b) => a.score - b.score);
+  const chosen = breachChoices[0];
+  if (!chosen) return;
+
+  const target = [...chosen.assessment.holds].sort((a, b) =>
+    b.enemy.confidence - a.enemy.confidence
+    || distance(a.enemy.region, carrier?.region ?? 1) - distance(b.enemy.region, carrier?.region ?? 1))[0];
+  plan.targetSite = chosen.site;
+  plan.operatorMode = "breach";
+  plan.operatorTargetRegion = target?.enemy.region ?? null;
+  plan.operatorTargetIds = chosen.assessment.holds.map((hold) => hold.enemy.agent.id);
+  plan.operatorCommitUntilCycle = Math.min(PRE_PLANT_CYCLE_LIMIT, Math.max(game.cycle + 2, plan.commitCycle));
+  plan.formation = "five";
+  plan.lurkerMode = "regroup";
+  plan.adapted = true;
+  plan.commitCycle = Math.min(plan.commitCycle, game.cycle);
+  const nextReadout = `${chosen.site} 오퍼레이터 봉쇄 돌파 · ${hasUtility ? "연막·정찰·섬광 선사용" : "다수 인원 트레이드"} · ${plan.operatorCommitUntilCycle}턴까지 전술 유지`;
+  if (plan.readout !== nextReadout) {
+    plan.readout = nextReadout;
+    addAnalyticsEvent(game, "attack", "objective", nextReadout);
+  }
+}
+
 function knownOperatorThreatAtRegion(game: GameState, side: Side, region: number) {
   return aiEnemyIntel(game, side).reduce((score, enemy) => {
     if (enemy.weapon !== "operator" || enemy.confidence < 0.35) return score;
@@ -2368,7 +2533,15 @@ function aiOperatorRoutePenalty(game: GameState, agent: Agent, target: number) {
   const supportMultiplier = nearbyAllies >= 2 ? 0.55 : nearbyAllies === 1 ? 0.75 : 1;
   const urgencyMultiplier = urgentObjective ? 0.35 : 1;
   const mobilityMultiplier = mobileEntry ? 0.55 : 1;
-  return routeThreat * supportMultiplier * urgencyMultiplier * mobilityMultiplier;
+  const coordinatedBreach = agent.team === "attack"
+    && attackOperatorBreachActive(game)
+    && path.some((region) => tacticalRegionsForSite(game.attackPlan.targetSite).has(region));
+  const breachMultiplier = coordinatedBreach ? 0.18 : 1;
+  const unsupportedBreachPenalty = coordinatedBreach
+    ? nearbyAllies >= 2 ? 0 : nearbyAllies === 1 ? 10 : mobileEntry ? 14 : 32
+    : 0;
+  return routeThreat * supportMultiplier * urgencyMultiplier * mobilityMultiplier * breachMultiplier
+    + unsupportedBreachPenalty;
 }
 
 function knownThreatScoreAtRegion(game: GameState, side: Side, region: number) {
@@ -2387,6 +2560,39 @@ function knownThreatScoreAtRegion(game: GameState, side: Side, region: number) {
     return score + next * memoryWeight;
   }, 0);
   return generalThreat + knownOperatorThreatAtRegion(game, side, region);
+}
+
+function shortestAiMovementPath(game: GameState, agent: Agent, target: number) {
+  const routeLength = distance(agent.region, target);
+  if (routeLength >= 99) return [];
+  const routes: number[][] = [];
+  const visit = (path: number[]) => {
+    const current = path[path.length - 1];
+    if (current === target) {
+      routes.push(path);
+      return;
+    }
+    const remaining = routeLength - (path.length - 1);
+    if (remaining <= 0) return;
+    for (const next of GRAPH.get(current) ?? []) {
+      if (path.includes(next) || distance(next, target) !== remaining - 1) continue;
+      visit([...path, next]);
+    }
+  };
+  visit([agent.region]);
+  const breachSite = agent.team === "attack" && attackOperatorBreachActive(game)
+    ? tacticalRegionsForSite(game.attackPlan.targetSite)
+    : null;
+  return routes.sort((a, b) => {
+    const score = (route: number[]) => route.slice(1).reduce((total, region, index) => {
+      const breachStep = !!breachSite?.has(region);
+      const threat = knownThreatScoreAtRegion(game, agent.team, region) * (breachStep ? 0.24 : 1);
+      const support = game.teams[agent.team].agents.filter((ally) =>
+        ally.alive && ally.id !== agent.id && distance(ally.region, region) <= 1).length;
+      return total + threat * (index === 0 ? 1 : 0.75) - support * (breachStep ? 6 : 2);
+    }, 0);
+    return score(a) - score(b);
+  })[0] ?? shortestPath(agent.region, target);
 }
 
 function attackSiteSituation(game: GameState, site: "A" | "B") {
@@ -3277,6 +3483,7 @@ function updateAttackLurkerPlan(game: GameState) {
 function adaptAttackPlan(game: GameState) {
   const plan = game.attackPlan;
   if (attackPlanPhase(game) === "postplant") return;
+  if (attackOperatorBreachActive(game)) return;
   const occupiedSite = (["A", "B"] as const).find((site) => attackSiteSituation(game, site).alliesOnSite.length > 0);
   if (occupiedSite) {
     const situation = attackSiteSituation(game, occupiedSite);
@@ -3348,14 +3555,21 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
     const routeB = Math.min(...waypoints.map((region) => distance(b, region)));
     const occupiedA = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
     const occupiedB = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
-    const dangerA = knownThreatScoreAtRegion(game, "attack", a);
-    const dangerB = knownThreatScoreAtRegion(game, "attack", b);
+    const breachTactical = attackOperatorBreachActive(game)
+      ? tacticalRegionsForSite(game.attackPlan.targetSite)
+      : null;
+    const breachA = !!breachTactical?.has(a);
+    const breachB = !!breachTactical?.has(b);
+    const dangerA = knownThreatScoreAtRegion(game, "attack", a) * (breachA ? 0.24 : 1);
+    const dangerB = knownThreatScoreAtRegion(game, "attack", b) * (breachB ? 0.24 : 1);
     const operatorA = aiOperatorRoutePenalty(game, agent, a);
     const operatorB = aiOperatorRoutePenalty(game, agent, b);
     const carrierSupportA = aiCarrierAdvanceSupportPenalty(game, agent, a);
     const carrierSupportB = aiCarrierAdvanceSupportPenalty(game, agent, b);
-    return routeA * 4 + occupiedA * 2 + dangerA + operatorA + carrierSupportA
-      - (routeB * 4 + occupiedB * 2 + dangerB + operatorB + carrierSupportB);
+    const breachSupportA = breachA ? Math.max(0, 2 - occupiedA) * 12 : 0;
+    const breachSupportB = breachB ? Math.max(0, 2 - occupiedB) * 12 : 0;
+    return routeA * 4 + occupiedA * 2 + dangerA + operatorA + carrierSupportA + breachSupportA
+      - (routeB * 4 + occupiedB * 2 + dangerB + operatorB + carrierSupportB + breachSupportB);
   })[0] ?? null;
   if (destination === null) return null;
   if (phase !== "execute" && phase !== "postplant" && routeDistance(destination) > routeDistance(agent.region)) return null;
@@ -3575,7 +3789,10 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
     && scene.waiting
     && !isWaitPathSmokeBlocked(game, opponent.region, actor.region);
   const urgentObjective = aiRetreatReentryIsUrgent(game, actor);
-  const objectiveCommit = urgentObjective || retreatPlan.objectiveMustBreak;
+  const operatorBreachCommit = actor.team === "attack"
+    && operatorHeadOn
+    && attackOperatorBreachActive(game, opponent.id);
+  const objectiveCommit = urgentObjective || retreatPlan.objectiveMustBreak || operatorBreachCommit;
   const strongerTradeExit = retreatPlan.tradeFollowup.stronger;
   const weakTradeFollowup = retreatPlan.tradeFollowup.allyId !== null && !strongerTradeExit;
   const tacticalResetAvailable = retreatPlan.utilityDisruption || !!retreatPlan.flankPlan || strongerTradeExit;
@@ -3741,6 +3958,22 @@ function aiSmokeEdge(game: GameState, agent: Agent, skillId: "smoke" | "dark", i
       if (recoveryEdge) return recoveryEdge;
     }
   }
+  if (agent.team === "attack" && attackOperatorBreachActive(game)) {
+    const targetIds = new Set(game.attackPlan.operatorTargetIds);
+    const breachHolds = operatorSiteAssessment(game, game.attackPlan.targetSite).holds
+      .filter((hold) => targetIds.has(hold.enemy.agent.id));
+    for (const hold of breachHolds) {
+      for (const heldRegion of hold.heldRegions) {
+        const holdPath = shortestPath(hold.enemy.region, heldRegion);
+        const holdEdge = holdPath.slice(0, -1)
+          .map((region, index) => [region, holdPath[index + 1]] as [number, number])
+          .find(([a, b]) =>
+            !isSmokeBlocked(game, a, b)
+            && (skillId === "dark" || distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2));
+        if (holdEdge) return holdEdge;
+      }
+    }
+  }
   const objective = aiObjectiveRegion(game, agent.team, agent.region, intel);
   const ownPath = shortestPath(agent.region, objective);
   const ownPathEdges = new Set(ownPath.slice(0, -1).map((region, index) => edgeKey(region, ownPath[index + 1])));
@@ -3835,8 +4068,11 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
   const intel = aiEnemyIntel(game, side);
   const observed = observedRegions(game, side);
   const enemyDeployables = game.deployables.filter((item) => item.owner !== side && observed.has(item.region));
-  const recoveryBlockerIds = new Set(aiGuardedRecoveryObjectives(game, side)
-    .flatMap((objective) => objective.blockers.map((blocker) => blocker.agent.id)));
+  const recoveryBlockerIds = new Set([
+    ...aiGuardedRecoveryObjectives(game, side)
+      .flatMap((objective) => objective.blockers.map((blocker) => blocker.agent.id)),
+    ...(side === "attack" && attackOperatorBreachActive(game) ? game.attackPlan.operatorTargetIds : []),
+  ]);
 
   const plantingReserveCarrierId = side === "attack" && game.spike.status === "carried"
     ? game.spike.carrierId
@@ -3938,7 +4174,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           region,
           targets: exactIntel.filter((item) => item.region === region || item.agent.waitDirs.includes(region)),
           entryScore: entryRegion === region ? 1 : 0,
-        })).sort((a, b) => b.targets.length * 5 + b.entryScore - (a.targets.length * 5 + a.entryScore))[0];
+          breachScore: exactIntel.filter((item) =>
+            recoveryBlockerIds.has(item.agent.id) && (item.region === region || item.agent.waitDirs.includes(region))).length * 8,
+        })).sort((a, b) => b.targets.length * 5 + b.entryScore + b.breachScore - (a.targets.length * 5 + a.entryScore + a.breachScore))[0];
         if (!target || (!target.targets.length && !target.entryScore)) continue;
         if (!begin()) return true;
         game.teams[otherSide(side)].agents
@@ -6134,6 +6372,7 @@ export default function Home() {
       updateAttackLurkerPlan(draft);
       adaptAttackPlan(draft);
       enforceAttackForcedPlantPlan(draft);
+      refreshAttackOperatorResponse(draft);
     } else updateDefensePlanReadout(draft);
     rememberObservedDroppedWeapons(draft, side);
     const pendingShock = draft.aftershocks
@@ -6292,6 +6531,17 @@ export default function Home() {
           memory.plan === "trade"
           && memory.agentId === agent.id
           && draft.trade.some((trade) => trade.team === agent.team && trade.sourceId === memory.agentId))) return 54;
+        if (side === "attack" && attackOperatorBreachActive(draft)) {
+          const breachSkillIds = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark", "stim", "tailwind"]);
+          const hasBreachSkill = AGENTS[agent.name].skills.some((skillDefinition) =>
+            breachSkillIds.has(skillDefinition.id) && (agent.skills[skillDefinition.id] ?? 0) > 0);
+          const targetRegion = draft.attackPlan.operatorTargetRegion;
+          const closeToBreach = targetRegion !== null && distance(agent.region, targetRegion) <= 2;
+          if (hasBreachSkill) return closeToBreach ? -104 : -82;
+          if (agent.role === "duelist" && agent.id !== draft.spike.carrierId) return -72;
+          if (agent.id === draft.spike.carrierId && draft.teams.attack.agents.filter((ally) => ally.alive).length >= 3) return 16;
+          return -46;
+        }
         if (forcedPlant && draft.spike.status === "carried") {
           const carrier = getAgent(draft, draft.spike.carrierId);
           const situation = attackSiteSituation(draft, draft.attackPlan.targetSite);
@@ -6354,7 +6604,10 @@ export default function Home() {
         const rawTargets = cardTargets(draft, agent, card).filter((region) => region !== agent.region);
         const targets = aiTargetsAfterRetreatMemory(draft, agent, rawTargets);
         if (!targets.length) continue;
-        const recoveryObjective = forcedPlant && draft.spike.status === "carried" ? null : aiRecoveryObjectiveForAgent(draft, agent);
+        const operatorBreach = side === "attack" && attackOperatorBreachActive(draft);
+        const recoveryObjective = (forcedPlant && draft.spike.status === "carried") || operatorBreach
+          ? null
+          : aiRecoveryObjectiveForAgent(draft, agent);
         const recoveryDecision = recoveryObjective
           ? aiRecoveryOrderDestination(draft, agent, recoveryObjective, targets)
           : null;
@@ -6367,8 +6620,8 @@ export default function Home() {
             ? distance(a, objectiveRegion) - distance(b, objectiveRegion)
             : 0)[0];
         const escortDestination = side === "attack" ? aiSpikeEscortDestination(draft, agent, targets) : null;
-        const weaponDestination = forcedPlant ? null : aiWeaponDestination(draft, agent, targets);
-        const recoveryEscortDestination = forcedPlant ? null : aiRecoveryEscortDestination(draft, agent, targets);
+        const weaponDestination = forcedPlant || operatorBreach ? null : aiWeaponDestination(draft, agent, targets);
+        const recoveryEscortDestination = forcedPlant || operatorBreach ? null : aiRecoveryEscortDestination(draft, agent, targets);
         const priorityDestination = agent.weapon === "classic"
           ? weaponDestination ?? escortDestination
           : escortDestination ?? weaponDestination;
@@ -6391,7 +6644,7 @@ export default function Home() {
         draft.selectedAgentId = agent.id;
         playCard(draft, card, agent);
         if (!applyActionStartFire(draft, agent)) return;
-        moveAgent(draft, agent, tacticalDestination, card.kind);
+        moveAgent(draft, agent, tacticalDestination, card.kind, shortestAiMovementPath(draft, agent, tacticalDestination));
         if (card.kind === "basic" && agent.alive) draft.pendingWait = agent.id;
         return;
       }

@@ -389,8 +389,8 @@ test("attack AI abandons scouting and forces site clear, carrier entry, plant, a
   assert.match(page, /sameRegionEnemy && queueCurrentEncounter\(draft, carrier, 3, true, 0, true, "turn-start"\)/);
   assert.match(page, /if \(siteContested && agent\.role === "duelist"/);
   assert.match(page, /if \(agent\.id === carrier\?\.id\) return -100/);
-  assert.match(page, /const weaponDestination = forcedPlant \? null : aiWeaponDestination/);
-  assert.match(page, /forcedPlant && draft\.spike\.status === "carried" \? null : aiRecoveryObjectiveForAgent/);
+  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \? null : aiWeaponDestination/);
+  assert.match(page, /\(forcedPlant && draft\.spike\.status === "carried"\) \|\| operatorBreach/);
 });
 
 test("AI protects spike transport, recovers drops, and converts defense to spike denial", async () => {
@@ -449,7 +449,7 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
   assert.match(page, /!\(side === "attack" && attackForcedPlantMode\(draft\)\) && aiPickupWeaponAtCurrentRegion\(draft, side\)/);
   assert.match(page, /&& !aiWeaponPickupObjective\(draft, agent\)/);
-  assert.match(page, /const weaponDestination = forcedPlant \? null : aiWeaponDestination/);
+  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \? null : aiWeaponDestination/);
   assert.match(page, /const classicWeaponClaimants = forcedPlant \? \[\] : team\.agents\.filter/);
   assert.match(page, /if \(weaponObjective && agent\.weapon === "classic"\) return -48/);
   assert.match(page, /const priorityDestination = agent\.weapon === "classic"/);
@@ -545,6 +545,27 @@ test("AI identifies known Operators and avoids unsupported head-on lanes", async
   assert.match(page, /const operatorRetreatBias = operatorHeadOn && !objectiveCommit \? 24 : 0/);
   assert.match(page, /returnFire\.killChance >= 60[\s\S]{0,80}attackOdds\.killChance < 35/);
   assert.match(page, /return operatorDisengage \|\| tradeRelayRetreat \|\| tacticalResetRetreat \|\| genericRetreat/);
+});
+
+test("AI rotates away from a known Operator but commits a coordinated breach when every site is held", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /type OperatorResponseMode = "none" \| "avoid" \| "breach"/);
+  assert.match(page, /operatorCommitUntilCycle: number/);
+  assert.match(page, /function operatorSiteAssessment/);
+  assert.match(page, /const safeAlternative = current\.holds\.length > 0[\s\S]{0,220}alternative\.holds\.length === 0/);
+  assert.match(page, /plan\.targetSite = otherSite;[\s\S]{0,120}plan\.operatorMode = "avoid"/);
+  assert.match(page, /const bothSitesHeld = assessments\.A\.holds\.length > 0 && assessments\.B\.holds\.length > 0/);
+  assert.match(page, /plan\.operatorMode = "breach"/);
+  assert.match(page, /operatorCommitUntilCycle = Math\.min\(PRE_PLANT_CYCLE_LIMIT, Math\.max\(game\.cycle \+ 2, plan\.commitCycle\)\)/);
+  assert.match(page, /formation = "five"/);
+  assert.match(page, /refreshAttackOperatorResponse\(draft\)/);
+  assert.match(page, /const coordinatedBreach = agent\.team === "attack"/);
+  assert.match(page, /const unsupportedBreachPenalty = coordinatedBreach/);
+  assert.match(page, /function shortestAiMovementPath/);
+  assert.match(page, /moveAgent\(draft, agent, tacticalDestination, card\.kind, shortestAiMovementPath/);
+  assert.match(page, /attackOperatorBreachActive\(game, opponent\.id\)/);
+  assert.match(page, /operatorSiteAssessment\(game, game\.attackPlan\.targetSite\)\.holds/);
+  assert.match(page, /game\.attackPlan\.operatorTargetIds/);
 });
 
 test("combat retreat closes the result scene before replaying movement on the tactical map", async () => {
