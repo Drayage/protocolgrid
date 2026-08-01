@@ -5340,22 +5340,37 @@ export default function Home() {
   const currentCombatPhase = currentCombatScene?.phase ?? null;
   const currentCombatId = currentCombatScene?.id ?? null;
   const currentCombatHasShot = !!(currentCombatScene?.mover.shot || currentCombatScene?.holder.shot);
+  const currentCombatDriverId = currentCombatPhase === "tailwind"
+    ? currentCombatScene?.tailwindActorId
+    : currentCombatScene?.actorId;
+  const currentCombatDriver = getAgent(game, currentCombatDriverId);
+  const currentCombatDriverSide = currentCombatDriver?.team
+    ?? (currentCombatScene?.kind === "turret" ? currentCombatScene.holder.team : null);
+  const autoObservedCombat = spectatorMode
+    || (currentCombatDriverSide !== null && controlledAiSides.includes(currentCombatDriverSide));
   useEffect(() => {
     if (!currentCombatPhase) return;
     const isActionPhase = currentCombatPhase === "choice" || currentCombatPhase === "tailwind";
-    const delay = currentCombatPhase === "result" && currentCombatHasShot ? 780 : currentCombatPhase === "result" ? 180 : 40;
+    const resultDelay = currentCombatHasShot ? 780 : 180;
+    const delay = autoObservedCombat
+      ? 0
+      : currentCombatPhase === "result" ? resultDelay : 40;
     const timer = window.setTimeout(() => {
-      const target = currentCombatPhase === "result"
-        ? combatResultRef.current
-        : isActionPhase
-          ? combatActionRef.current
-          : combatTurnRef.current;
+      const target = autoObservedCombat
+        ? combatTurnRef.current
+        : currentCombatPhase === "result"
+          ? combatResultRef.current
+          : isActionPhase
+            ? combatActionRef.current
+            : combatTurnRef.current;
       const container = target?.closest<HTMLElement>(".combat-modal");
       if (!target || !container) return;
       const start = container.scrollTop;
       const targetTop = Math.max(0, target.getBoundingClientRect().top - container.getBoundingClientRect().top + start - 12);
       const distanceToTravel = targetTop - start;
-      const duration = currentCombatPhase === "result" ? 720 : isActionPhase ? 360 : 260;
+      const duration = autoObservedCombat
+        ? Math.max(90, 180 / (spectatorMode ? spectatorSpeed : 1))
+        : currentCombatPhase === "result" ? 720 : isActionPhase ? 360 : 260;
       const startedAt = performance.now();
       const animate = (now: number) => {
         const progress = Math.min(1, (now - startedAt) / duration);
@@ -5374,7 +5389,7 @@ export default function Home() {
         combatScrollFrameRef.current = null;
       }
     };
-  }, [currentCombatId, currentCombatPhase, currentCombatHasShot]);
+  }, [currentCombatId, currentCombatPhase, currentCombatHasShot, autoObservedCombat, spectatorMode, spectatorSpeed]);
   const validTargets = useMemo(() => {
     if (game.pendingWait) {
       const agent = getAgent(game, game.pendingWait);

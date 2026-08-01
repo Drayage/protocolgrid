@@ -965,11 +965,14 @@ test("postplant AI backs off, watches the objective, and rejects inward idle hol
   assert.match(page, /설치 후 후방 사격 위치에서 스파이크와 재진입 통로를 교차 대기합니다/);
 });
 
-test("combat scrolling waits for the shot presentation and then eases to the result", async () => {
+test("combat scrolling keeps automatic battles pinned above and eases manual shots to the result", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /const combatResultRef = useRef<HTMLDivElement \| null>/);
   assert.match(page, /const combatActionRef = useRef<HTMLDivElement \| null>/);
-  assert.match(page, /currentCombatPhase === "result" && currentCombatHasShot \? 780/);
+  assert.match(page, /const resultDelay = currentCombatHasShot \? 780 : 180/);
+  assert.match(page, /const autoObservedCombat = spectatorMode/);
+  assert.match(page, /autoObservedCombat[\s\S]{0,80}\? combatTurnRef\.current/);
+  assert.match(page, /const delay = autoObservedCombat[\s\S]{0,50}\? 0/);
   assert.match(page, /currentCombatPhase === "result" \? 720 : isActionPhase \? 360 : 260/);
   assert.match(page, /isActionPhase[\s\S]{0,100}combatActionRef\.current/);
   assert.match(page, /const eased = 1 - Math\.pow\(1 - progress, 3\)/);
