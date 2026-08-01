@@ -1585,11 +1585,11 @@ function roll(max: number) {
   return Math.floor(Math.random() * Math.max(1, max)) + 1;
 }
 
-function finalStats(game: GameState, agent: Agent) {
+function finalStats(game: GameState, agent: Agent, ignoreConsumedAttackEffects = false) {
   const base = ROLE_STATS[agent.role];
   const weapon = WEAPONS[agent.weapon];
   const stimmed = game.stims.some((zone) => zone.owner === agent.team && zone.region === agent.region);
-  const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id);
+  const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id && (!ignoreConsumedAttackEffects || !effect.consumeOnAttack));
   const timedAimPenalty = timed.reduce((sum, effect) => sum + (effect.aimPenalty ?? 0), 0);
   const timedPriorityPenalty = timed.reduce((sum, effect) => sum + (effect.priorityPenalty ?? 0), 0);
   return {
@@ -1612,9 +1612,9 @@ interface ShotResult {
   moveSize: number;
 }
 
-function appliedAimSize(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number) {
+function appliedAimSize(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, ignoreConsumedAttackEffects = false) {
   const weapon = WEAPONS[attacker.weapon];
-  let aim = finalStats(game, attacker).aim + aimBonus + (defender.detected ? 1 : 0);
+  let aim = finalStats(game, attacker, ignoreConsumedAttackEffects).aim + aimBonus + (defender.detected ? 1 : 0);
   if (weapon.type === "normal" && range === 0) aim += 1;
   if (weapon.type === "shotgun") aim += range === 0 ? 2 : -2;
   if (weapon.type === "sniper" && waiting) aim += 1;
@@ -1627,10 +1627,10 @@ function appliedMoveSize(game: GameState, defender: Agent, defenderMoveBonus: nu
   return Math.max(1, finalStats(game, defender).move + defenderMoveBonus);
 }
 
-function appliedDamageProfile(attacker: Agent, defender: Agent, range: number, waiting: boolean) {
+function appliedDamageProfile(attacker: Agent, defender: Agent, range: number, waiting: boolean, vulnerable = defender.status.vulnerable) {
   const weapon = WEAPONS[attacker.weapon];
   const rangeBonus = weapon.type === "shotgun" && range === 0 ? SHOTGUN_CLOSE_DAMAGE_BONUS : 0;
-  const vulnerableBonus = defender.status.vulnerable ? 1 : 0;
+  const vulnerableBonus = vulnerable ? 1 : 0;
   const outlawNonWaitPenalty = weapon.id === "outlaw" && !waiting ? 1 : 0;
   return {
     body: weapon.body + rangeBonus + vulnerableBonus - outlawNonWaitPenalty,
@@ -1671,6 +1671,41 @@ function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, ra
     killChance: percentage(killOutcomes),
     expectedDamage,
   };
+}
+
+interface ShotOutcomeProbability {
+  damage: number;
+  hit: boolean;
+  probability: number;
+}
+
+function calculateShotOutcomeProbabilities(
+  game: GameState,
+  attacker: Agent,
+  defender: Agent,
+  range: number,
+  waiting: boolean,
+  aimBonus: number,
+  defenderMoveBonus: number,
+  ignoreConsumedAttackEffects: boolean,
+  defenderVulnerable: boolean,
+): ShotOutcomeProbability[] {
+  const aim = appliedAimSize(game, attacker, defender, range, waiting, aimBonus, ignoreConsumedAttackEffects);
+  const move = appliedMoveSize(game, defender, defenderMoveBonus);
+  const damage = appliedDamageProfile(attacker, defender, range, waiting, defenderVulnerable);
+  const outcomes = new Map<string, ShotOutcomeProbability>();
+  const probability = 1 / (aim * move);
+  for (let aimRoll = 1; aimRoll <= aim; aimRoll += 1) {
+    for (let moveRoll = 1; moveRoll <= move; moveRoll += 1) {
+      const value = aimRoll - moveRoll;
+      const dealt = value <= 0 ? 0 : value >= 5 ? damage.head : damage.body;
+      const key = `${dealt}`;
+      const outcome = outcomes.get(key) ?? { damage: dealt, hit: dealt > 0, probability: 0 };
+      outcome.probability += probability;
+      outcomes.set(key, outcome);
+    }
+  }
+  return [...outcomes.values()];
 }
 
 function makeShot(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number): ShotResult {
@@ -3918,6 +3953,139 @@ function aiCombatOdds(game: GameState, scene: CombatScene, attacker: Agent, defe
   );
 }
 
+interface CombatDuelOdds {
+  opponentFirstDeath: number;
+  actorFirstDeath: number;
+  mutualDeath: number;
+  stalemate: number;
+}
+
+interface CombatDuelState {
+  actorDurability: number;
+  opponentDurability: number;
+  actorFirstShot: boolean;
+  opponentFirstShot: boolean;
+  actorVulnerable: boolean;
+  opponentVulnerable: boolean;
+  actorTurn: boolean;
+  probability: number;
+}
+
+function combatDuelStateKey(state: CombatDuelState) {
+  return [
+    state.actorDurability,
+    state.opponentDurability,
+    Number(state.actorFirstShot),
+    Number(state.opponentFirstShot),
+    Number(state.actorVulnerable),
+    Number(state.opponentVulnerable),
+    Number(state.actorTurn),
+  ].join(":");
+}
+
+function addCombatDuelState(states: Map<string, CombatDuelState>, state: CombatDuelState) {
+  const key = combatDuelStateKey(state);
+  const current = states.get(key);
+  if (current) current.probability += state.probability;
+  else states.set(key, state);
+}
+
+function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: Agent, defender: Agent, firstShot: boolean, defenderVulnerable: boolean) {
+  const attackerIsMover = attacker.id === scene.mover.id;
+  const defenderIsMover = defender.id === scene.mover.id;
+  return calculateShotOutcomeProbabilities(
+    game,
+    attacker,
+    defender,
+    scene.range,
+    !attackerIsMover && scene.waiting,
+    firstShot ? attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus : 0,
+    defenderIsMover ? scene.moverMoveBonus : 0,
+    !firstShot,
+    defenderVulnerable,
+  );
+}
+
+function aiCombatDuelOdds(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent): CombatDuelOdds {
+  let opponentFirstDeath = 0;
+  let actorFirstDeath = 0;
+  let mutualDeath = 0;
+  let states = new Map<string, CombatDuelState>();
+  addCombatDuelState(states, {
+    actorDurability: Math.max(1, actor.hp + actor.armor),
+    opponentDurability: Math.max(1, opponent.hp + opponent.armor),
+    actorFirstShot: true,
+    opponentFirstShot: true,
+    actorVulnerable: actor.status.vulnerable,
+    opponentVulnerable: opponent.status.vulnerable,
+    actorTurn: true,
+    probability: 1,
+  });
+
+  for (let exchange = 0; exchange < 64 && states.size; exchange += 1) {
+    const next = new Map<string, CombatDuelState>();
+    for (const state of states.values()) {
+      if (scene.simultaneous) {
+        const actorOutcomes = combatDuelShotOutcomes(game, scene, actor, opponent, state.actorFirstShot, state.opponentVulnerable);
+        const opponentOutcomes = combatDuelShotOutcomes(game, scene, opponent, actor, state.opponentFirstShot, state.actorVulnerable);
+        for (const actorOutcome of actorOutcomes) {
+          for (const opponentOutcome of opponentOutcomes) {
+            const probability = state.probability * actorOutcome.probability * opponentOutcome.probability;
+            const actorDurability = state.actorDurability - opponentOutcome.damage;
+            const opponentDurability = state.opponentDurability - actorOutcome.damage;
+            if (actorDurability <= 0 && opponentDurability <= 0) mutualDeath += probability;
+            else if (opponentDurability <= 0) opponentFirstDeath += probability;
+            else if (actorDurability <= 0) actorFirstDeath += probability;
+            else addCombatDuelState(next, {
+              actorDurability,
+              opponentDurability,
+              actorFirstShot: false,
+              opponentFirstShot: false,
+              actorVulnerable: state.actorVulnerable && !opponentOutcome.hit,
+              opponentVulnerable: state.opponentVulnerable && !actorOutcome.hit,
+              actorTurn: true,
+              probability,
+            });
+          }
+        }
+        continue;
+      }
+
+      const attacker = state.actorTurn ? actor : opponent;
+      const defender = state.actorTurn ? opponent : actor;
+      const firstShot = state.actorTurn ? state.actorFirstShot : state.opponentFirstShot;
+      const defenderVulnerable = state.actorTurn ? state.opponentVulnerable : state.actorVulnerable;
+      for (const outcome of combatDuelShotOutcomes(game, scene, attacker, defender, firstShot, defenderVulnerable)) {
+        const probability = state.probability * outcome.probability;
+        const actorDurability = state.actorDurability - (state.actorTurn ? 0 : outcome.damage);
+        const opponentDurability = state.opponentDurability - (state.actorTurn ? outcome.damage : 0);
+        if (opponentDurability <= 0) opponentFirstDeath += probability;
+        else if (actorDurability <= 0) actorFirstDeath += probability;
+        else addCombatDuelState(next, {
+          actorDurability,
+          opponentDurability,
+          actorFirstShot: state.actorTurn ? false : state.actorFirstShot,
+          opponentFirstShot: state.actorTurn ? state.opponentFirstShot : false,
+          actorVulnerable: state.actorTurn ? state.actorVulnerable : state.actorVulnerable && !outcome.hit,
+          opponentVulnerable: state.actorTurn ? state.opponentVulnerable && !outcome.hit : state.opponentVulnerable,
+          actorTurn: !state.actorTurn,
+          probability,
+        });
+      }
+    }
+    states = next;
+  }
+
+  const stalemate = [...states.values()].reduce((total, state) => total + state.probability, 0);
+  const percent = (probability: number) => Math.round(probability * 1000) / 10;
+  return {
+    opponentFirstDeath: percent(opponentFirstDeath),
+    actorFirstDeath: percent(actorFirstDeath),
+    mutualDeath: percent(mutualDeath),
+    stalemate: percent(stalemate),
+  };
+}
+
 function aiShotgunApproachRegion(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent, retreatOptions: number[]) {
   if (WEAPONS[actor.weapon].type !== "shotgun" || scene.range !== 1 || !retreatOptions.includes(opponent.region)) return null;
   const nearbyExactEnemies = aiEnemyIntel(game, actor.team).filter((enemy) =>
@@ -3957,6 +4125,9 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
   const returnFire = aiCombatOdds(game, scene, opponent, actor);
   const actorDurability = Math.max(1, actor.hp + actor.armor);
   const opponentDurability = Math.max(1, opponent.hp + opponent.armor);
+  const duelOdds = aiCombatDuelOdds(game, scene, actor, opponent);
+  const combatWinChance = duelOdds.opponentFirstDeath + duelOdds.mutualDeath * .5;
+  const combatLossChance = duelOdds.actorFirstDeath + duelOdds.mutualDeath * .5;
   const attackValue = attackOdds.killChance * 1.35 + attackOdds.expectedDamage / opponentDurability * 55;
   const dangerValue = returnFire.killChance * 1.15 + returnFire.expectedDamage / actorDurability * 48;
   const operatorHeadOn = opponent.weapon === "operator"
@@ -3984,7 +4155,8 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
     && !weakTradeFollowup
     && returnFire.killChance >= 60
     && attackOdds.killChance < 35;
-  const decisiveMismatch = dangerValue + operatorRetreatBias >= attackValue + retreatOpportunityCost;
+  const decisiveMismatch = combatLossChance >= combatWinChance + 18
+    && dangerValue + operatorRetreatBias >= attackValue + retreatOpportunityCost;
   const hopelessAccuracy = attackOdds.hitChance <= 15
     && returnFire.hitChance >= 60
     && returnFire.killChance >= 40;
@@ -3993,13 +4165,13 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
     && !weakTradeFollowup
     && returnFire.killChance >= 35
     && dangerValue >= attackValue + 12
-    && attackOdds.killChance < 50;
+    && combatWinChance < 42;
   const tacticalResetRetreat = tacticalResetAvailable
     && !objectiveCommit
     && !weakTradeFollowup
     && returnFire.killChance >= 35
     && dangerValue >= attackValue + 4
-    && attackOdds.killChance < 45;
+    && combatWinChance < 46;
   const tradeRelayRetreat = strongerTradeExit
     && (returnFire.killChance >= 30 || dangerValue >= attackValue - 2)
     && (!objectiveCommit || game.actionsUsed <= 2);
@@ -7466,7 +7638,7 @@ export default function Home() {
           </div>
         </section>
         <div className="combat-result" ref={combatResultRef}><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : combatScene.waitClaim ? "점유한 적이 모두 제거되거나 후퇴하면 선택한 구역에 대기가 완성됩니다. 대기 시도자는 후퇴할 수 없습니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
-        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>이 요원은 대기 구역을 확보할 때까지 후퇴할 수 없습니다.</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
+        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>이번 사격 · 기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>이 요원은 대기 구역을 확보할 때까지 후퇴할 수 없습니다.</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
       {showShop && !isAiControlledTurn && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>

@@ -222,6 +222,13 @@ test("AI compares real combat odds and lets an isolated shotgun close distance t
   assert.match(page, /let killOutcomes = 0/);
   assert.match(page, /killChance: percentage\(killOutcomes\)/);
   assert.match(page, /function aiCombatOdds/);
+  assert.match(page, /function calculateShotOutcomeProbabilities/);
+  assert.match(page, /function aiCombatDuelOdds/);
+  assert.match(page, /exchange < 64/);
+  assert.match(page, /if \(actorDurability <= 0 && opponentDurability <= 0\) mutualDeath \+= probability/);
+  assert.match(page, /const duelOdds = aiCombatDuelOdds/);
+  assert.match(page, /const combatWinChance = duelOdds\.opponentFirstDeath \+ duelOdds\.mutualDeath \* \.5/);
+  assert.match(page, /const combatLossChance = duelOdds\.actorFirstDeath \+ duelOdds\.mutualDeath \* \.5/);
   assert.match(page, /function aiShotgunApproachRegion/);
   assert.match(page, /WEAPONS\[actor\.weapon\]\.type !== "shotgun" \|\| scene\.range !== 1/);
   assert.match(page, /nearbyExactEnemies\.length !== 1/);
@@ -238,9 +245,10 @@ test("AI compares real combat odds and lets an isolated shotgun close distance t
   assert.match(page, /function aiShortCombatFlankPlan/);
   assert.match(page, /const strongerTradeExit = retreatPlan\.tradeFollowup\.stronger/);
   assert.match(page, /const tradeRelayRetreat = strongerTradeExit/);
-  assert.match(page, /const decisiveMismatch = dangerValue \+ operatorRetreatBias >= attackValue \+ retreatOpportunityCost/);
+  assert.match(page, /const decisiveMismatch = combatLossChance >= combatWinChance \+ 18[\s\S]{0,100}dangerValue \+ operatorRetreatBias >= attackValue \+ retreatOpportunityCost/);
+  assert.doesNotMatch(page, /combatDuelPreview/);
   assert.match(page, /const positionalRetreat = shouldAiRetreat/);
-  assert.match(page, /returnFire\.killChance >= 35[\s\S]{0,120}attackOdds\.killChance < 50/);
+  assert.match(page, /returnFire\.killChance >= 35[\s\S]{0,160}combatWinChance < 42/);
   assert.match(page, /const decision = aiCombatDecision\(props\.game, scene, actor, retreatOptions\)/);
 });
 
@@ -1002,6 +1010,9 @@ test("combat presentation holds automatic actions above, reveals final AI result
   assert.match(css, /\.combat-transition-viewport \{[^}]*container-type: size/);
   assert.match(css, /\.combat-transition-plane \{[^}]*width: min\(100cqw,100cqh\); height: min\(100cqw,100cqh\)/);
   assert.match(css, /\.transition-wait-cone/);
+  assert.doesNotMatch(css, /\.transition-wait-cone \{[^}]*margin-top:/);
+  assert.match(css, /@media \(max-width: 800px\)[\s\S]*?\.transition-wait-cone \{ height: 28px; \}/);
+  assert.match(css, /@media \(max-width: 800px\)[\s\S]*?\.transition-wait-origin \{ width: 46px; height: 46px;/);
   assert.match(css, /\.contact-focus-pulse\.ambush/);
   assert.match(css, /@keyframes holdConeTrigger/);
   assert.match(css, /transition-contact-token\.dead/);
