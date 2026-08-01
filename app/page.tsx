@@ -5206,6 +5206,7 @@ export default function Home() {
   const combatTurnRef = useRef<HTMLDivElement | null>(null);
   const combatStageRef = useRef<HTMLDivElement | null>(null);
   const combatResultRef = useRef<HTMLDivElement | null>(null);
+  const combatActionRef = useRef<HTMLDivElement | null>(null);
   const combatScrollFrameRef = useRef<number | null>(null);
   const mapBoardRef = useRef<HTMLDivElement | null>(null);
   const audioEventRef = useRef({
@@ -5341,16 +5342,20 @@ export default function Home() {
   const currentCombatHasShot = !!(currentCombatScene?.mover.shot || currentCombatScene?.holder.shot);
   useEffect(() => {
     if (!currentCombatPhase) return;
-    if (currentCombatPhase !== "encounter" && currentCombatPhase !== "result") return;
+    const isActionPhase = currentCombatPhase === "choice" || currentCombatPhase === "tailwind";
     const delay = currentCombatPhase === "result" && currentCombatHasShot ? 780 : currentCombatPhase === "result" ? 180 : 40;
     const timer = window.setTimeout(() => {
-      const target = currentCombatPhase === "result" ? combatResultRef.current : combatTurnRef.current;
+      const target = currentCombatPhase === "result"
+        ? combatResultRef.current
+        : isActionPhase
+          ? combatActionRef.current
+          : combatTurnRef.current;
       const container = target?.closest<HTMLElement>(".combat-modal");
       if (!target || !container) return;
       const start = container.scrollTop;
       const targetTop = Math.max(0, target.getBoundingClientRect().top - container.getBoundingClientRect().top + start - 12);
       const distanceToTravel = targetTop - start;
-      const duration = currentCombatPhase === "result" ? 720 : 260;
+      const duration = currentCombatPhase === "result" ? 720 : isActionPhase ? 360 : 260;
       const startedAt = performance.now();
       const animate = (now: number) => {
         const progress = Math.min(1, (now - startedAt) / duration);
@@ -7287,7 +7292,7 @@ export default function Home() {
           </div>
         </section>
         <div className="combat-result" ref={combatResultRef}><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : combatScene.waitClaim ? "점유한 적이 모두 제거되거나 후퇴하면 선택한 구역에 대기가 완성됩니다. 대기 시도자는 후퇴할 수 없습니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
-        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>이 요원은 대기 구역을 확보할 때까지 후퇴할 수 없습니다.</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
+        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>이 요원은 대기 구역을 확보할 때까지 후퇴할 수 없습니다.</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
       {showShop && !isAiControlledTurn && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
