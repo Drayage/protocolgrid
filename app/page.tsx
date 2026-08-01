@@ -215,6 +215,11 @@ interface AiRetreatMemory {
   retreatRegion: number;
   createdTeamTurn: number;
   expiresTeamTurn: number;
+  plan?: "regroup" | "utility" | "flank" | "trade";
+  blockerRegion?: number;
+  blockerWaitDirs?: number[];
+  flankRegion?: number;
+  tradeAllyId?: string;
 }
 
 interface VisibilityContext {
@@ -2650,13 +2655,16 @@ function aiRetreatReentryIsUrgent(game: GameState, agent: Agent) {
 
 function aiCanReenterRetreatRegion(game: GameState, agent: Agent, memory: AiRetreatMemory) {
   if (game.teamTurns[agent.team] <= memory.createdTeamTurn) return false;
-  const blockers = aiEnemyIntel(game, agent.team).filter((enemy) => enemy.exact && enemy.region === memory.avoidedRegion);
+  const blockerRegion = memory.blockerRegion ?? memory.avoidedRegion;
+  const blockers = aiEnemyIntel(game, agent.team).filter((enemy) => enemy.exact && enemy.region === blockerRegion);
   if (!blockers.length) return true;
   const support = game.teams[agent.team].agents.filter((ally) =>
-    ally.alive && ally.id !== agent.id && distance(ally.region, memory.avoidedRegion) <= 1);
+    ally.alive && ally.id !== agent.id && distance(ally.region, blockerRegion) <= 1);
   const breachSkillIds = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark"]);
-  const hasBreachUtility = AGENTS[agent.name].skills.some((skill) =>
-    breachSkillIds.has(skill.id) && (agent.skills[skill.id] ?? 0) > 0);
+  const hasBreachUtility = game.teams[agent.team].agents.some((ally) =>
+    ally.alive
+    && distance(ally.region, blockerRegion) <= 2
+    && AGENTS[ally.name].skills.some((skill) => breachSkillIds.has(skill.id) && (ally.skills[skill.id] ?? 0) > 0));
   return hasBreachUtility || support.length > blockers.length;
 }
 
@@ -2664,7 +2672,17 @@ function aiTargetsAfterRetreatMemory(game: GameState, agent: Agent, targets: num
   pruneAiRetreatMemories(game);
   if (agent.team === "attack" && attackForcedPlantMode(game)) return targets;
   const memory = game.aiRetreatMemories.find((item) => item.agentId === agent.id);
-  if (!memory || aiCanReenterRetreatRegion(game, agent, memory)) return targets;
+  if (!memory) return targets;
+  if (memory.plan === "flank" && memory.flankRegion !== undefined && agent.region !== memory.flankRegion) {
+    const blockedRegions = new Set(memory.blockerWaitDirs ?? []);
+    const route = shortestRecoveryFlankPath(agent.region, memory.flankRegion, memory.blockerRegion ?? memory.avoidedRegion, blockedRegions);
+    const routeTargets = targets
+      .map((region) => ({ region, progress: route.indexOf(region) }))
+      .filter((target) => target.progress > 0)
+      .sort((a, b) => b.progress - a.progress);
+    if (routeTargets.length) return [routeTargets[0].region];
+  }
+  if (aiCanReenterRetreatRegion(game, agent, memory)) return targets;
   return targets.filter((region) => {
     const path = shortestPath(agent.region, region);
     return region !== memory.avoidedRegion && !path.slice(1).includes(memory.avoidedRegion);
@@ -3356,6 +3374,132 @@ function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) 
   })[0];
 }
 
+function aiCombatObjectiveMustBeBroken(game: GameState, actor: Agent, opponent: Agent) {
+  if (game.spike.region === null) return false;
+  const spikeRegion = game.spike.region;
+  const spikeActive = ["planted", "half", "defusing"].includes(game.spike.status);
+  const relevantObjective = (actor.team === "attack" && game.spike.status === "dropped")
+    || (actor.team === "defense" && spikeActive)
+    || (actor.team === "attack" && spikeActive && (game.spike.status === "defusing" || distance(opponent.region, spikeRegion) <= 1));
+  if (!relevantObjective) return false;
+  if (game.spike.actorId === opponent.id || opponent.region === spikeRegion || opponent.region === actor.region) return true;
+  const route = shortestPath(actor.region, spikeRegion);
+  const guardedRoute = new Set(route.slice(1));
+  return guardedRoute.has(opponent.region)
+    || opponent.waitDirs.some((region) => region === spikeRegion || guardedRoute.has(region));
+}
+
+function aiCombatTradeFollowup(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent) {
+  const unavailable = { score: 0, stronger: false, allyId: null as string | null };
+  if (game.actionsUsed >= 3) return unavailable;
+  const team = game.teams[actor.team];
+  const actorOdds = aiCombatOdds(game, scene, actor, opponent);
+  const actorReturnFire = aiCombatOdds(game, scene, opponent, actor);
+  const actorDurability = Math.max(1, actor.hp + actor.armor);
+  const opponentDurability = Math.max(1, opponent.hp + opponent.armor);
+  const actorValue = actorOdds.killChance * 1.35
+    + actorOdds.expectedDamage / opponentDurability * 55
+    - actorReturnFire.killChance * 0.75
+    - actorReturnFire.expectedDamage / actorDurability * 30;
+  return team.agents.reduce((best, ally) => {
+    if (!ally.alive || ally.id === actor.id || isChanneling(game, ally)) return best;
+    const range = distance(ally.region, opponent.region);
+    if (range > 1 || isWaitPathSmokeBlocked(game, ally.region, opponent.region)) return best;
+    const canFollow = team.hand.some((card) =>
+      !card.used
+      && canUseCard(card, ally)
+      && cardTargets(game, ally, card).some((region) => distance(region, opponent.region) <= 1));
+    if (!canFollow) return best;
+    const odds = calculateShotOdds(game, ally, opponent, range, false, 1, 0);
+    const allyDurability = Math.max(1, ally.hp + ally.armor);
+    const holderWaiting = opponent.waitDirs.includes(ally.region) && !isWaitPathSmokeBlocked(game, opponent.region, ally.region);
+    const returnFire = calculateShotOdds(game, opponent, ally, range, holderWaiting, 0, 0);
+    const weaponCondition = Math.max(-8, Math.min(12, (WEAPONS[ally.weapon].price - WEAPONS[actor.weapon].price) / 2));
+    const tradePriorityValue = 16;
+    const score = odds.killChance * 1.35
+      + odds.expectedDamage / opponentDurability * 55
+      - returnFire.killChance * 0.75
+      - returnFire.expectedDamage / allyDurability * 30
+      + weaponCondition
+      + tradePriorityValue;
+    return score > best.score
+      ? { score, stronger: score >= actorValue + 6, allyId: ally.id }
+      : best;
+  }, unavailable);
+}
+
+function aiAllyCanDisruptCombatHold(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent) {
+  if (!scene.waiting || opponent.id !== scene.holder.id) return false;
+  const team = game.teams[actor.team];
+  const canPrepareAnotherAgent = game.actionsUsed < 3;
+  return team.agents.some((ally) => {
+    if (!ally.alive || ally.id === actor.id || isChanneling(game, ally)) return false;
+    const hasActionAccess = ally.extraActions > 0 || (canPrepareAnotherAgent && team.hand.some((card) => !card.used && canUseCard(card, ally)));
+    if (!hasActionAccess) return false;
+    return AGENTS[ally.name].skills.some((skillDefinition) => {
+      if ((ally.skills[skillDefinition.id] ?? 0) <= 0) return false;
+      const enemyRange = distance(ally.region, opponent.region);
+      if (["paint", "relay", "flash", "aftershock"].includes(skillDefinition.id)) return enemyRange <= 1;
+      if (skillDefinition.id === "blast") return opponent.detected && enemyRange <= 1;
+      if (skillDefinition.id === "curve") return distance(ally.region, actor.region) <= 1 && opponent.waitDirs.includes(actor.region);
+      if (["recon", "shock"].includes(skillDefinition.id)) return enemyRange <= 2;
+      if (skillDefinition.id === "smoke") return Math.min(enemyRange, distance(ally.region, actor.region)) <= 2;
+      if (skillDefinition.id === "dark") return true;
+      if (skillDefinition.id === "stim") return ally.region === actor.region;
+      return false;
+    });
+  });
+}
+
+function aiShortCombatFlankPlan(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent, retreatRegion: number) {
+  if (!scene.waiting || opponent.id !== scene.holder.id || !opponent.waitDirs.length) return null;
+  const exactEnemyRegions = new Set(aiEnemyIntel(game, actor.team)
+    .filter((enemy) => enemy.exact && enemy.agent.id !== opponent.id)
+    .map((enemy) => enemy.region));
+  const blockedRegions = new Set([...opponent.waitDirs, ...exactEnemyRegions]);
+  const candidates = (GRAPH.get(opponent.region) ?? [])
+    .filter((region) => !opponent.waitDirs.includes(region) && !exactEnemyRegions.has(region))
+    .flatMap((region) => {
+      const route = shortestRecoveryFlankPath(retreatRegion, region, opponent.region, blockedRegions);
+      if (route.length < 2 || route.length - 1 > 3) return [];
+      const threat = route.slice(1).reduce((total, step) => total + knownThreatScoreAtRegion(game, actor.team, step), 0);
+      return threat <= 40 ? [{ region, route, threat }] : [];
+    })
+    .sort((a, b) => a.route.length * 12 + a.threat - (b.route.length * 12 + b.threat));
+  return candidates[0] ?? null;
+}
+
+function aiCombatRetreatPlan(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent, retreatRegion: number) {
+  return {
+    objectiveMustBreak: aiCombatObjectiveMustBeBroken(game, actor, opponent),
+    tradeFollowup: aiCombatTradeFollowup(game, scene, actor, opponent),
+    utilityDisruption: aiAllyCanDisruptCombatHold(game, scene, actor, opponent),
+    flankPlan: aiShortCombatFlankPlan(game, scene, actor, opponent, retreatRegion),
+  };
+}
+
+function aiTradeRelayMemoryForAgent(game: GameState, agent: Agent) {
+  return game.aiRetreatMemories.find((memory) =>
+    memory.side === agent.team
+    && memory.plan === "trade"
+    && memory.tradeAllyId === agent.id
+    && game.trade.some((trade) => trade.team === agent.team && trade.sourceId === memory.agentId));
+}
+
+function aiTradeFollowupDestination(game: GameState, agent: Agent, targets: number[]) {
+  const memory = aiTradeRelayMemoryForAgent(game, agent);
+  if (!memory) return null;
+  const trade = game.trade.find((item) => item.team === agent.team && item.sourceId === memory.agentId);
+  const enemy = trade ? getAgent(game, trade.enemyId) : null;
+  if (!enemy?.alive) return null;
+  const entries = targets.filter((region) =>
+    distance(region, enemy.region) <= 1
+    && !isWaitPathSmokeBlocked(game, region, enemy.region));
+  return [...entries].sort((a, b) =>
+    knownThreatScoreAtRegion(game, agent.team, a) + distance(agent.region, a) * 4
+    - (knownThreatScoreAtRegion(game, agent.team, b) + distance(agent.region, b) * 4))[0] ?? null;
+}
+
 function shouldAiRetreat(game: GameState, agent: Agent, retreatRegion?: number) {
   if (aiRetreatReentryIsUrgent(game, agent)) return false;
   if (agent.team === "defense" && retreatRegion !== undefined && game.spike.region !== null && ["planted", "half", "defusing"].includes(game.spike.status)) {
@@ -3419,6 +3563,7 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
 
   const retreatRegion = aiRetreatDestination(game, actor, retreatOptions);
   if (retreatRegion === undefined) return { type: "attack" as const };
+  const retreatPlan = aiCombatRetreatPlan(game, scene, actor, opponent, retreatRegion);
   const attackOdds = aiCombatOdds(game, scene, actor, opponent);
   const returnFire = aiCombatOdds(game, scene, opponent, actor);
   const actorDurability = Math.max(1, actor.hp + actor.armor);
@@ -3430,13 +3575,21 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
     && scene.waiting
     && !isWaitPathSmokeBlocked(game, opponent.region, actor.region);
   const urgentObjective = aiRetreatReentryIsUrgent(game, actor);
-  const operatorRetreatBias = operatorHeadOn && !urgentObjective ? 24 : 0;
+  const objectiveCommit = urgentObjective || retreatPlan.objectiveMustBreak;
+  const strongerTradeExit = retreatPlan.tradeFollowup.stronger;
+  const weakTradeFollowup = retreatPlan.tradeFollowup.allyId !== null && !strongerTradeExit;
+  const tacticalResetAvailable = retreatPlan.utilityDisruption || !!retreatPlan.flankPlan || strongerTradeExit;
+  const operatorRetreatBias = operatorHeadOn && !objectiveCommit ? 24 : 0;
   const retreatOpportunityCost = 32
     + (attackOdds.killChance >= 35 ? 12 : 0)
     + (scene.round > 1 ? 10 : 0)
-    + (urgentObjective ? 24 : 0);
+    + (weakTradeFollowup ? 14 : 0)
+    + (objectiveCommit ? 48 : 0)
+    - (strongerTradeExit ? 14 : 0)
+    - (tacticalResetAvailable ? 12 : 0);
   const operatorDisengage = operatorHeadOn
-    && !urgentObjective
+    && !objectiveCommit
+    && !weakTradeFollowup
     && returnFire.killChance >= 60
     && attackOdds.killChance < 35;
   const decisiveMismatch = dangerValue + operatorRetreatBias >= attackValue + retreatOpportunityCost;
@@ -3444,11 +3597,22 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
     && returnFire.hitChance >= 60
     && returnFire.killChance >= 40;
   const positionalRetreat = shouldAiRetreat(game, actor, retreatRegion)
-    && !urgentObjective
+    && !objectiveCommit
+    && !weakTradeFollowup
     && returnFire.killChance >= 35
     && dangerValue >= attackValue + 12
     && attackOdds.killChance < 50;
-  return operatorDisengage || decisiveMismatch || hopelessAccuracy || positionalRetreat
+  const tacticalResetRetreat = tacticalResetAvailable
+    && !objectiveCommit
+    && !weakTradeFollowup
+    && returnFire.killChance >= 35
+    && dangerValue >= attackValue + 4
+    && attackOdds.killChance < 45;
+  const tradeRelayRetreat = strongerTradeExit
+    && (returnFire.killChance >= 30 || dangerValue >= attackValue - 2)
+    && (!objectiveCommit || game.actionsUsed <= 2);
+  const genericRetreat = !objectiveCommit && !weakTradeFollowup && (decisiveMismatch || hopelessAccuracy || positionalRetreat);
+  return operatorDisengage || tradeRelayRetreat || tacticalResetRetreat || genericRetreat
     ? { type: "retreat" as const, region: retreatRegion, approach: false }
     : { type: "attack" as const };
 }
@@ -5626,6 +5790,9 @@ export default function Home() {
   const executeCombatRetreat = (draft: GameState, scene: CombatScene, agent: Agent, region: number) => {
     const before = { hp: agent.hp, armor: agent.armor };
     const from = agent.region;
+    const opponentId = agent.id === scene.mover.id ? scene.holder.id : scene.mover.id;
+    const opponent = getAgent(draft, opponentId);
+    const tacticalPlan = opponent?.alive ? aiCombatRetreatPlan(draft, scene, agent, opponent, region) : null;
     clearWait(agent);
     if (draft.pendingWait === agent.id) draft.pendingWait = null;
     cancelProgress(draft, agent);
@@ -5639,8 +5806,6 @@ export default function Home() {
     agent.status.aimPenalty = Math.max(1, agent.status.aimPenalty);
     agent.status.moveBonus = Math.min(-1, agent.status.moveBonus);
     if (agent.id === scene.mover.id) scene.moverRetreated = true;
-    const opponentId = agent.id === scene.mover.id ? scene.holder.id : scene.mover.id;
-    const opponent = getAgent(draft, opponentId);
     draft.aiRetreatMemories = draft.aiRetreatMemories.filter((memory) => memory.agentId !== agent.id);
     draft.aiRetreatMemories.push({
       side: agent.team,
@@ -5648,7 +5813,12 @@ export default function Home() {
       avoidedRegion: from,
       retreatRegion: region,
       createdTeamTurn: draft.teamTurns[agent.team],
-      expiresTeamTurn: draft.teamTurns[agent.team] + 1,
+      expiresTeamTurn: draft.teamTurns[agent.team] + 2,
+      plan: tacticalPlan?.tradeFollowup.stronger ? "trade" : tacticalPlan?.flankPlan ? "flank" : tacticalPlan?.utilityDisruption ? "utility" : "regroup",
+      blockerRegion: opponent?.region,
+      blockerWaitDirs: opponent ? [...opponent.waitDirs] : [],
+      flankRegion: tacticalPlan?.flankPlan?.region,
+      tradeAllyId: tacticalPlan?.tradeFollowup.stronger ? tacticalPlan.tradeFollowup.allyId ?? undefined : undefined,
     });
     const recoveryOrder = aiRecoveryOrderForAgent(draft, agent);
     if (recoveryOrder) {
@@ -6098,6 +6268,11 @@ export default function Home() {
         return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
       };
       const strategicBias = (agent: Agent) => {
+        if (aiTradeRelayMemoryForAgent(draft, agent)) return -140;
+        if (draft.aiRetreatMemories.some((memory) =>
+          memory.plan === "trade"
+          && memory.agentId === agent.id
+          && draft.trade.some((trade) => trade.team === agent.team && trade.sourceId === memory.agentId))) return 54;
         if (forcedPlant && draft.spike.status === "carried") {
           const carrier = getAgent(draft, draft.spike.carrierId);
           const situation = attackSiteSituation(draft, draft.attackPlan.targetSite);
@@ -6164,7 +6339,8 @@ export default function Home() {
         const recoveryDecision = recoveryObjective
           ? aiRecoveryOrderDestination(draft, agent, recoveryObjective, targets)
           : null;
-        if (recoveryDecision?.order && recoveryDecision.destination === null) continue;
+        const tradeDestination = aiTradeFollowupDestination(draft, agent, targets);
+        if (recoveryDecision?.order && recoveryDecision.destination === null && tradeDestination === null) continue;
         const objectiveRegion = side === "defense" && ["planted", "half", "defusing"].includes(draft.spike.status) ? draft.spike.region : null;
         const destination = [...targets].sort((a, b) => side === "attack"
           ? 0
@@ -6177,7 +6353,7 @@ export default function Home() {
         const priorityDestination = agent.weapon === "classic"
           ? weaponDestination ?? escortDestination
           : escortDestination ?? weaponDestination;
-        const safePriorityDestination = recoveryDecision?.destination ?? priorityDestination;
+        const safePriorityDestination = tradeDestination ?? recoveryDecision?.destination ?? priorityDestination;
         const tacticalDestination = safePriorityDestination ?? recoveryEscortDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
           : objectiveRegion === null

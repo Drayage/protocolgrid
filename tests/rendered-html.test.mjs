@@ -223,6 +223,12 @@ test("AI compares real combat odds and lets an isolated shotgun close distance t
   assert.match(page, /const retreatOpportunityCost = 32/);
   assert.match(page, /attackOdds\.killChance >= 35 \? 12 : 0/);
   assert.match(page, /scene\.round > 1 \? 10 : 0/);
+  assert.match(page, /function aiCombatObjectiveMustBeBroken/);
+  assert.match(page, /function aiCombatTradeFollowup/);
+  assert.match(page, /function aiAllyCanDisruptCombatHold/);
+  assert.match(page, /function aiShortCombatFlankPlan/);
+  assert.match(page, /const strongerTradeExit = retreatPlan\.tradeFollowup\.stronger/);
+  assert.match(page, /const tradeRelayRetreat = strongerTradeExit/);
   assert.match(page, /const decisiveMismatch = dangerValue \+ operatorRetreatBias >= attackValue \+ retreatOpportunityCost/);
   assert.match(page, /const positionalRetreat = shouldAiRetreat/);
   assert.match(page, /returnFire\.killChance >= 35[\s\S]{0,120}attackOdds\.killChance < 50/);
@@ -527,9 +533,9 @@ test("AI identifies known Operators and avoids unsupported head-on lanes", async
   assert.match(page, /function aiAttackDestination[\s\S]{0,2600}const operatorA = aiOperatorRoutePenalty/);
   assert.match(page, /function aiDefenseDestination[\s\S]{0,1800}const operatorA = aiOperatorRoutePenalty/);
   assert.match(page, /const operatorHeadOn = opponent\.weapon === "operator"/);
-  assert.match(page, /const operatorRetreatBias = operatorHeadOn && !urgentObjective \? 24 : 0/);
+  assert.match(page, /const operatorRetreatBias = operatorHeadOn && !objectiveCommit \? 24 : 0/);
   assert.match(page, /returnFire\.killChance >= 60[\s\S]{0,80}attackOdds\.killChance < 35/);
-  assert.match(page, /return operatorDisengage \|\| decisiveMismatch \|\| hopelessAccuracy \|\| positionalRetreat/);
+  assert.match(page, /return operatorDisengage \|\| tradeRelayRetreat \|\| tacticalResetRetreat \|\| genericRetreat/);
 });
 
 test("combat retreat closes the result scene before replaying movement on the tactical map", async () => {
@@ -552,10 +558,15 @@ test("AI remembers a conceded entry and only re-enters after regrouping or utili
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /interface AiRetreatMemory/);
   assert.match(page, /avoidedRegion: from/);
-  assert.match(page, /expiresTeamTurn: draft\.teamTurns\[agent\.team\] \+ 1/);
+  assert.match(page, /expiresTeamTurn: draft\.teamTurns\[agent\.team\] \+ 2/);
   assert.match(page, /function aiTargetsAfterRetreatMemory/);
   assert.match(page, /!path\.slice\(1\)\.includes\(memory\.avoidedRegion\)/);
   assert.match(page, /hasBreachUtility \|\| support\.length > blockers\.length/);
+  assert.match(page, /memory\.plan === "flank" && memory\.flankRegion !== undefined/);
+  assert.match(page, /function aiTradeRelayMemoryForAgent/);
+  assert.match(page, /function aiTradeFollowupDestination/);
+  assert.match(page, /if \(aiTradeRelayMemoryForAgent\(draft, agent\)\) return -140/);
+  assert.match(page, /const safePriorityDestination = tradeDestination \?\? recoveryDecision\?\.destination/);
   assert.match(page, /if \(aiRetreatReentryIsUrgent\(game, agent\)\) return false/);
   assert.match(page, /shouldAiRetreat\(game, actor, retreatRegion\)/);
 });
@@ -585,7 +596,7 @@ test("AI commits to a strength-based recovery breach or flank across multiple tu
   assert.match(page, /assaultScore >= 0 \|\| deadlineForcesBreach \? "breach" : "flank"/);
   assert.match(page, /refreshAiRecoveryOrder\(game, agent, order\)/);
   assert.match(page, /const recoveryBlockerIds = new Set/);
-  assert.match(page, /recoveryDecision\.destination === null\) continue/);
+  assert.match(page, /recoveryDecision\.destination === null && tradeDestination === null\) continue/);
   assert.match(page, /회수 작전 ·/);
   assert.match(page, /회수는 확인된 대기 사격 때문에 보류하고/);
 });
