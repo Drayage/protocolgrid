@@ -4341,6 +4341,8 @@ interface SelectionScreenProps {
   onConfirm: () => void;
   playMode: PlayMode;
   onPlayMode: (mode: PlayMode) => void;
+  humanSide: Side;
+  onHumanSide: (side: Side) => void;
 }
 
 function SelectionScreen(props: SelectionScreenProps) {
@@ -4388,10 +4390,11 @@ function SelectionScreen(props: SelectionScreenProps) {
           <div className="mode-picker">
             <b>플레이 모드</b>
             <button className={props.playMode === "hotseat" ? "active" : ""} onClick={() => props.onPlayMode("hotseat")}>2인 핫시트</button>
-            <button className={props.playMode === "vs-ai" ? "active" : ""} onClick={() => props.onPlayMode("vs-ai")}>VS AI · 공격팀</button>
+            <button className={props.playMode === "vs-ai" ? "active" : ""} onClick={() => props.onPlayMode("vs-ai")}>사람 vs AI</button>
             <button className={props.playMode === "ai-vs-ai" ? "active spectator-mode" : "spectator-mode"} onClick={() => props.onPlayMode("ai-vs-ai")}><strong>AI vs AI 관전</strong><small>자동 구매 · 배치 · 전술 분석</small></button>
+            {props.playMode === "vs-ai" && <div className="human-side-picker"><span>내 진영 선택</span><button className={props.humanSide === "attack" ? "active attack" : "attack"} onClick={() => props.onHumanSide("attack")}><b>ATK</b><strong>공격팀 플레이</strong><small>AI가 수비·배치</small></button><button className={props.humanSide === "defense" ? "active defense" : "defense"} onClick={() => props.onHumanSide("defense")}><b>DEF</b><strong>수비팀 플레이</strong><small>AI가 공격·설치</small></button></div>}
           </div>
-          <button className="confirm-lineup" disabled={props.attackPick.length !== 5 || props.defensePick.length !== 5} onClick={props.onConfirm}><span>STEP 02</span><strong>수비 구매로 이동</strong></button>
+          <button className="confirm-lineup" disabled={props.attackPick.length !== 5 || props.defensePick.length !== 5} onClick={props.onConfirm}><span>STEP 02</span><strong>{props.playMode === "ai-vs-ai" ? "AI 자동 경기 시작" : props.playMode === "vs-ai" ? `${SIDE_LABEL[props.humanSide]} 구매로 이동` : "수비 구매로 이동"}</strong></button>
         </aside>
       </section>
     </main>
@@ -4591,6 +4594,12 @@ function prepareAiVsAiRound(game: GameState) {
   queueNextTurnStartContact(game);
 }
 
+function prepareAiDefenseForHumanAttack(game: GameState) {
+  autoBuyTeamLoadout(game, "defense");
+  autoDeployDefense(game);
+  addLog(game, `수비팀 AI가 ${game.defensePlan.label} 전술로 구매와 초기 배치를 완료했습니다. 공격팀 구매를 진행하세요.`);
+}
+
 interface PurchaseScreenProps {
   game: GameState;
   side: Side;
@@ -4778,6 +4787,7 @@ export default function Home() {
   const [defensePick, setDefensePick] = useState<string[]>([]);
   const [pickingSide, setPickingSide] = useState<Side>("attack");
   const [playMode, setPlayMode] = useState<PlayMode>("hotseat");
+  const [humanSide, setHumanSide] = useState<Side>("defense");
   const [spectatorPaused, setSpectatorPaused] = useState(false);
   const [spectatorSpeed, setSpectatorSpeed] = useState(1);
   const [spectatorStep, setSpectatorStep] = useState(0);
@@ -4809,10 +4819,10 @@ export default function Home() {
     turnSerial: -1,
   });
 
-  const aiSide: Side | null = playMode === "vs-ai" ? "attack" : null;
+  const aiSide: Side | null = playMode === "vs-ai" ? otherSide(humanSide) : null;
   const spectatorMode = playMode === "ai-vs-ai";
   const actorSide = game.turnSide;
-  const viewerSide = spectatorMode ? actorSide : aiSide ? otherSide(aiSide) : actorSide;
+  const viewerSide = spectatorMode ? actorSide : playMode === "vs-ai" ? humanSide : actorSide;
   const allowLastKnown = spectatorMode ? false : !aiSide || actorSide === viewerSide;
   const visibilityContext = useMemo<VisibilityContext>(() => ({ actorSide, viewerSide, allowLastKnown, omniscient: spectatorMode }), [actorSide, viewerSide, allowLastKnown, spectatorMode]);
   const activeTeam = game.teams[game.turnSide];
@@ -4996,11 +5006,13 @@ export default function Home() {
     if (attackPick.length !== 5 || defensePick.length !== 5) return;
     const next = createInitialGame(attackPick, defensePick, Date.now());
     if (playMode === "ai-vs-ai") prepareAiVsAiRound(next);
+    else if (aiSide === "defense") prepareAiDefenseForHumanAttack(next);
     setGame(next);
-    setDeploymentAgentId(next.teams.defense.agents[0]?.id ?? null);
-    setSetupAgentId(next.teams.defense.agents[0]?.id ?? null);
+    const setupSide: Side = aiSide === "defense" ? "attack" : "defense";
+    setDeploymentAgentId(aiSide === "defense" ? null : next.teams.defense.agents[0]?.id ?? null);
+    setSetupAgentId(next.teams[setupSide].agents[0]?.id ?? null);
     setSpectatorPaused(false);
-    setStage(playMode === "ai-vs-ai" ? "play" : "buy_defense");
+    setStage(playMode === "ai-vs-ai" ? "play" : aiSide === "defense" ? "buy_attack" : "buy_defense");
   };
 
   const setupBuyWeapon = (side: Side, weapon: Weapon) => mutate((draft) => {
@@ -5130,6 +5142,7 @@ export default function Home() {
     setDefensePick([]);
     setPickingSide("attack");
     setPlayMode("hotseat");
+    setHumanSide("defense");
     setSpectatorPaused(false);
     setSpectatorSpeed(1);
     setSpectatorStep(0);
@@ -5141,22 +5154,28 @@ export default function Home() {
   };
 
   const startNextRound = (swapSides: boolean) => {
-    const nextDefenseFirst = (swapSides ? game.teams.attack : game.teams.defense).agents[0]?.id ?? null;
+    const nextHumanSide = playMode === "vs-ai" && swapSides ? otherSide(humanSide) : humanSide;
+    const nextAiSide = playMode === "vs-ai" ? otherSide(nextHumanSide) : null;
+    const futureAttackTeam = swapSides ? game.teams.defense : game.teams.attack;
+    const futureDefenseTeam = swapSides ? game.teams.attack : game.teams.defense;
+    const nextSetupTeam = nextAiSide === "defense" ? futureAttackTeam : futureDefenseTeam;
     mutate((draft) => {
       prepareNextRoundState(draft, swapSides);
       if (spectatorMode) prepareAiVsAiRound(draft);
+      else if (nextAiSide === "defense") prepareAiDefenseForHumanAttack(draft);
     });
-    setSetupAgentId(nextDefenseFirst);
-    setDeploymentAgentId(nextDefenseFirst);
+    setHumanSide(nextHumanSide);
+    setSetupAgentId(nextSetupTeam.agents[0]?.id ?? null);
+    setDeploymentAgentId(nextAiSide === "defense" ? null : futureDefenseTeam.agents[0]?.id ?? null);
     setShowShop(false);
-    setStage(spectatorMode ? "play" : "buy_defense");
+    setStage(spectatorMode ? "play" : nextAiSide === "defense" ? "buy_attack" : "buy_defense");
   };
 
   if (stage === "title") return <TitleScreen onStart={() => setStage("select")} />;
-  if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} playMode={playMode} onPlayMode={setPlayMode} />;
+  if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} playMode={playMode} onPlayMode={setPlayMode} humanSide={humanSide} onHumanSide={setHumanSide} />;
   if (stage === "buy_defense") return <PurchaseScreen game={game} side="defense" selectedId={setupAgentId} step="STEP 02" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("defense", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("defense", weapon)} onArmor={(type, price, value) => setupBuyArmor("defense", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("defense", type, price, value)} onSkill={(item) => setupBuySkill("defense", item)} onAllSkills={(scope) => setupBuyAllSkills("defense", scope)} onBack={() => { if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); }} onContinue={() => { setDeploymentAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("deploy"); }} />;
   if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => { setSetupAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("buy_defense"); }} onStart={() => { if (aiSide === "attack") autoBuyAttackAndStart(); else { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("buy_attack"); } }} />;
-  if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onAllSkills={(scope) => setupBuyAllSkills("attack", scope)} onBack={() => setStage("deploy")} onContinue={() => { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("setup_attack_wait"); }} />;
+  if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onAllSkills={(scope) => setupBuyAllSkills("attack", scope)} onBack={() => { if (aiSide === "defense") { if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); } else setStage("deploy"); }} onContinue={() => { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("setup_attack_wait"); }} />;
   if (stage === "setup_attack_wait") return <AttackWaitSetupScreen game={game} selectedId={setupAgentId} onSelect={setSetupAgentId} onSetWait={setAttackOpeningWait} onAuto={() => mutate((draft) => autoSetAttackOpeningWaits(draft))} onClear={clearAttackOpeningWait} onBack={() => setStage("buy_attack")} onStart={() => startFirstDefenseTurn("공격팀 구매와 본진 대기 설정 완료. 수비팀 첫 턴을 시작합니다.")} />;
 
   const selectAgent = (id: string) => {

@@ -130,7 +130,7 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /interface VisibilityContext/);
-  assert.match(page, /const viewerSide = spectatorMode \? actorSide : aiSide \? otherSide\(aiSide\) : actorSide/);
+  assert.match(page, /const viewerSide = spectatorMode \? actorSide : playMode === "vs-ai" \? humanSide : actorSide/);
   assert.match(page, /const allowLastKnown = spectatorMode \? false : !aiSide \|\| actorSide === viewerSide/);
   assert.match(page, /function observedRegions\(game: GameState, observer: Side\)/);
   assert.match(page, /if \(!context\.allowLastKnown\) return visible/);
@@ -143,6 +143,25 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
   assert.match(css, /combat-modal > \.combat-map-overview \{ order: 8/);
   assert.match(page, /combatTurnRef\.current/);
   assert.match(page, /target\?\.scrollIntoView/);
+});
+
+test("human versus AI supports either side and mirrors setup after a side swap", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /const \[humanSide, setHumanSide\] = useState<Side>\("defense"\)/);
+  assert.match(page, /const aiSide: Side \| null = playMode === "vs-ai" \? otherSide\(humanSide\) : null/);
+  assert.match(page, /내 진영 선택/);
+  assert.match(page, /공격팀 플레이/);
+  assert.match(page, /수비팀 플레이/);
+  assert.match(page, /function prepareAiDefenseForHumanAttack/);
+  assert.match(page, /else if \(aiSide === "defense"\) prepareAiDefenseForHumanAttack\(next\)/);
+  assert.match(page, /aiSide === "defense" \? "buy_attack" : "buy_defense"/);
+  assert.match(page, /const nextHumanSide = playMode === "vs-ai" && swapSides \? otherSide\(humanSide\) : humanSide/);
+  assert.match(page, /else if \(nextAiSide === "defense"\) prepareAiDefenseForHumanAttack\(draft\)/);
+  assert.match(page, /humanSide=\{humanSide\} onHumanSide=\{setHumanSide\}/);
+  assert.match(css, /\.human-side-picker/);
 });
 
 test("AI versus AI spectator mode auto-prepares both teams and records tactical analysis", async () => {
