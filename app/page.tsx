@@ -223,6 +223,15 @@ interface AiRetreatMemory {
   tradeAllyId?: string;
 }
 
+interface AiMovementHistory {
+  side: Side;
+  agentId: string;
+  objectiveKey: string;
+  regions: number[];
+  updatedTeamTurn: number;
+  expiresTeamTurn: number;
+}
+
 interface VisibilityContext {
   actorSide: Side;
   viewerSide: Side;
@@ -484,6 +493,7 @@ interface GameState {
   aiEnemyKnowledge: AiEnemyKnowledge[];
   aiRecoveryOrders: AiRecoveryOrder[];
   aiRetreatMemories: AiRetreatMemory[];
+  aiMovementHistories: AiMovementHistory[];
   lastSkillFx: SkillFx | null;
   lastMovementFx: MovementFx | null;
   postCombatMovementFxQueue: MovementFx[];
@@ -883,6 +893,7 @@ function createInitialGame(
     aiEnemyKnowledge: [],
     aiRecoveryOrders: [],
     aiRetreatMemories: [],
+    aiMovementHistories: [],
     lastSkillFx: null,
     lastMovementFx: null,
     postCombatMovementFxQueue: [],
@@ -1029,6 +1040,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.aiEnemyKnowledge = [];
   game.aiRecoveryOrders = [];
   game.aiRetreatMemories = [];
+  game.aiMovementHistories = [];
   game.lastSkillFx = null;
   game.lastMovementFx = null;
   game.postCombatMovementFxQueue = [];
@@ -1354,7 +1366,41 @@ function attackLurkerWaypoints(game: GameState, agent: Agent) {
   return plan.lurkerProbeSite === "A" ? [2, 12] : [4, 17];
 }
 
+function attackPostplantWaypoints(game: GameState, agent: Agent) {
+  if (game.spike.region === null) return attackCoreWaypoints(game);
+  const spikeRegion = game.spike.region;
+  const site = siteForRegion(spikeRegion) ?? game.attackPlan.targetSite;
+  const waitRange = WEAPONS[agent.weapon].type === "sniper" ? 2 : 1;
+  const backRoute = site === "A" ? [12, 8, 2, 5] : [17, 13, 4, 5];
+  const candidates = REGIONS
+    .map((region) => region.id)
+    .filter((region) => region !== spikeRegion)
+    .filter((region) => {
+      const range = distance(region, spikeRegion);
+      return range >= 1 && range <= waitRange && !isWaitPathSmokeBlocked(game, region, spikeRegion);
+    })
+    .sort((a, b) => {
+      const onSiteA = SITE_REGIONS[site].includes(a) ? 1 : 0;
+      const onSiteB = SITE_REGIONS[site].includes(b) ? 1 : 0;
+      const backA = Math.min(...backRoute.map((region) => distance(a, region)));
+      const backB = Math.min(...backRoute.map((region) => distance(b, region)));
+      const dangerA = knownThreatScoreAtRegion(game, "attack", a);
+      const dangerB = knownThreatScoreAtRegion(game, "attack", b);
+      const occupiedA = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
+      const occupiedB = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
+      return onSiteA * 38 + backA * 9 + dangerA + occupiedA * 12 + aiRecentMovementPenalty(game, agent, a)
+        - (onSiteB * 38 + backB * 9 + dangerB + occupiedB * 12 + aiRecentMovementPenalty(game, agent, b));
+    });
+  if (!candidates.length) return [spikeRegion];
+  if (candidates.includes(agent.region) && agent.waitDirs.includes(spikeRegion)) return [agent.region];
+  const alive = game.teams.attack.agents.filter((ally) => ally.alive);
+  const index = Math.max(0, alive.findIndex((ally) => ally.id === agent.id));
+  const spreadCount = Math.min(3, candidates.length);
+  return [candidates[index % spreadCount]];
+}
+
 function attackPlanWaypoints(game: GameState, agent?: Agent): number[] {
+  if (agent && attackPlanPhase(game) === "postplant" && game.spike.region !== null) return attackPostplantWaypoints(game, agent);
   if (agent && game.spike.status === "carried" && game.spike.carrierId === agent.id) return attackCoreWaypoints(game);
   if (agent && isAttackLurker(game, agent)) return attackLurkerWaypoints(game, agent);
   if (!agent || game.attackPlan.formation === "five" || attackPlanPhase(game) === "execute" || attackPlanPhase(game) === "postplant") return attackCoreWaypoints(game);
@@ -1418,12 +1464,62 @@ function ensureAiTacticalState(game: GameState) {
   game.aiEnemyKnowledge ??= [];
   game.aiRecoveryOrders ??= [];
   game.aiRetreatMemories ??= [];
+  game.aiMovementHistories ??= [];
   game.lastMovementFx ??= null;
   game.postCombatMovementFxQueue ??= [];
   game.attackPlan.operatorMode ??= "none";
   game.attackPlan.operatorTargetRegion ??= null;
   game.attackPlan.operatorTargetIds ??= [];
   game.attackPlan.operatorCommitUntilCycle ??= 0;
+}
+
+function aiMovementObjectiveKey(game: GameState, agent: Agent) {
+  if (game.spike.status === "dropped" && game.spike.region !== null) {
+    return `${agent.team}:recover-spike:${game.spike.region}`;
+  }
+  if (["planting", "planted", "half", "defusing"].includes(game.spike.status) && game.spike.region !== null) {
+    return `${agent.team}:${agent.team === "attack" ? "postplant" : "retake"}:${game.spike.region}`;
+  }
+  if (agent.team === "attack") {
+    if (attackOperatorBreachActive(game)) return `attack:operator-breach:${game.attackPlan.targetSite}:${game.attackPlan.operatorTargetIds.join(",")}`;
+    const assignment = isAttackLurker(game, agent) ? `lurker-${game.attackPlan.lurkerMode}` : "main";
+    return `attack:${game.attackPlan.targetSite}:${assignment}`;
+  }
+  const threat = defenseThreatSite(game) ?? "none";
+  const assignment = defenseShouldFlank(game, agent, threat === "none" ? null : threat) ? "flank" : defenseAssignedLane(game, agent);
+  return `defense:${threat}:${assignment}`;
+}
+
+function recordAiMovementHistory(game: GameState, agent: Agent, origin: number) {
+  if (origin === agent.region) return;
+  ensureAiTacticalState(game);
+  const objectiveKey = aiMovementObjectiveKey(game, agent);
+  const existing = game.aiMovementHistories.find((history) => history.agentId === agent.id && history.objectiveKey === objectiveKey);
+  const regions = existing
+    ? [...existing.regions, agent.region].slice(-5)
+    : [origin, agent.region];
+  game.aiMovementHistories = game.aiMovementHistories.filter((history) => history.agentId !== agent.id);
+  game.aiMovementHistories.push({
+    side: agent.team,
+    agentId: agent.id,
+    objectiveKey,
+    regions,
+    updatedTeamTurn: game.teamTurns[agent.team],
+    expiresTeamTurn: game.teamTurns[agent.team] + 2,
+  });
+}
+
+function aiRecentMovementPenalty(game: GameState, agent: Agent, target: number) {
+  ensureAiTacticalState(game);
+  const history = game.aiMovementHistories.find((item) =>
+    item.agentId === agent.id
+    && item.objectiveKey === aiMovementObjectiveKey(game, agent)
+    && game.teamTurns[agent.team] <= item.expiresTeamTurn);
+  if (!history) return 0;
+  const priorRegion = history.regions.at(-2);
+  if (target === priorRegion) return 120;
+  const olderIndex = history.regions.lastIndexOf(target);
+  return olderIndex >= 0 && olderIndex < history.regions.length - 1 ? 42 : 0;
 }
 
 function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
@@ -2054,12 +2150,14 @@ function showMovementFx(game: GameState, agent: Agent, path: number[]) {
 }
 
 function finishMovement(game: GameState, agent: Agent, origin: number, stopped = false) {
+  const movementKind = game.pendingMovement?.kind;
   game.pendingMovement = null;
   agent.status.moveBonus = 0;
   agent.status.moveRangeBonus = 0;
   agent.status.ignoreGround = false;
   agent.status.highGear = false;
   agent.status.evadeReady = false;
+  if (agent.alive && movementKind !== "forced") recordAiMovementHistory(game, agent, origin);
   if (agent.alive) addLog(game, stopped
     ? `${agent.name}의 이동이 ${regionName(agent.region)}에서 중단되었습니다.`
     : `${agent.name} 이동 완료: ${regionName(origin)} → ${regionName(agent.region)}`);
@@ -3135,50 +3233,95 @@ function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiE
   return [...objectives].sort((a, b) => distance(from, a) - distance(from, b))[0];
 }
 
+const AI_WAIT_CHOKE_REGIONS = new Set([2, 4, 5, 6, 8, 9, 12, 13, 14, 17]);
+
+function aiLastMovementOrigin(game: GameState, agent: Agent) {
+  ensureAiTacticalState(game);
+  const history = game.aiMovementHistories.find((item) =>
+    item.agentId === agent.id
+    && item.objectiveKey === aiMovementObjectiveKey(game, agent)
+    && game.teamTurns[agent.team] <= item.expiresTeamTurn);
+  return history?.regions.at(-2) ?? null;
+}
+
+function aiEnemyApproachScore(game: GameState, agent: Agent, region: number, intel: AiEnemyIntel[]) {
+  return intel.reduce((score, enemy) => {
+    if (enemy.region === region) return score + (enemy.exact ? 180 : 110) * enemy.confidence;
+    const route = shortestPath(enemy.region, agent.region);
+    const approachesFromRegion = route.length >= 2 && route.at(-2) === region;
+    const adjacentIntel = distance(region, enemy.region) <= 1;
+    return score
+      + (approachesFromRegion ? (enemy.exact ? 86 : 58) * enemy.confidence : 0)
+      + (adjacentIntel ? 28 * enemy.confidence : 0);
+  }, 0);
+}
+
+function aiStrategicWaitScore(game: GameState, agent: Agent, region: number, intel = aiEnemyIntel(game, agent.team)) {
+  if (isWaitPathSmokeBlocked(game, agent.region, region)) return -200;
+  const approachScore = aiEnemyApproachScore(game, agent, region, intel);
+  const cameFrom = aiLastMovementOrigin(game, agent) === region;
+  let score = approachScore + (AI_WAIT_CHOKE_REGIONS.has(region) ? 12 : 0);
+
+  if (game.spike.region !== null && ["planting", "planted", "half", "defusing"].includes(game.spike.status)) {
+    const spikeRegion = game.spike.region;
+    if (agent.team === "attack") {
+      if (region === spikeRegion) score += 190;
+      const retakeRoute = shortestPath(7, agent.region);
+      if (retakeRoute.length >= 2 && retakeRoute.at(-2) === region) score += 54;
+      const site = siteForRegion(spikeRegion) ?? game.attackPlan.targetSite;
+      if (DEFENDER_BACK_EDGES[site].some(([from, to]) => from === region || to === region)) score += 30;
+    } else {
+      if (region === spikeRegion) score += 170;
+      const route = shortestPath(agent.region, spikeRegion);
+      if (route[1] === region) score += 70;
+    }
+  } else if (agent.team === "attack") {
+    const waypoints = attackPlanWaypoints(game, agent);
+    const objective = [...waypoints].sort((a, b) => distance(agent.region, a) - distance(agent.region, b))[0];
+    if (objective !== undefined) {
+      const route = shortestPath(agent.region, objective);
+      if (route[1] === region) score += 58;
+      if (waypoints.includes(region)) score += 28;
+    }
+  } else {
+    if (game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
+      if (region === game.spike.region) score += 170;
+      const route = shortestPath(agent.region, game.spike.region);
+      if (route[1] === region) score += 62;
+    }
+    if (!intel.length) {
+      const defaultAttackRoute = shortestPath(1, agent.region);
+      if (defaultAttackRoute.length >= 2 && defaultAttackRoute.at(-2) === region) score += 52;
+    }
+  }
+
+  if (cameFrom && approachScore < 45 && region !== game.spike.region) score -= 78;
+  return score;
+}
+
+function aiWaitShouldBePreserved(game: GameState, agent: Agent) {
+  if (!agent.waitDirs.length || isChanneling(game, agent)) return false;
+  if (agent.team === "attack" && attackForcedPlantMode(game)) return false;
+  if (agent.team === "defense" && defenseRetakeMustAdvance(game, agent)) return false;
+  const intel = aiEnemyIntel(game, agent.team);
+  return agent.waitDirs.some((region) => aiStrategicWaitScore(game, agent, region, intel) >= 45);
+}
+
 function aiStrategicWaitDirections(game: GameState, agent: Agent, count: number) {
   const intel = aiEnemyIntel(game, agent.team);
   const rawOptions = count === 1
     ? waitTargetsFor(agent)
     : controlWaitTargetsFor(game, agent);
-  const optionsWithoutFriendlyStack = rawOptions.filter((region) =>
-    !game.teams[agent.team].agents.some((ally) => ally.alive && ally.id !== agent.id && ally.region === region));
-  let options = optionsWithoutFriendlyStack;
-  if (agent.team === "attack" && attackPlanPhase(game) !== "postplant") {
-    const objective = aiObjectiveRegion(game, "attack", agent.region, intel);
-    const currentDistance = distance(agent.region, objective);
-    const knownThreatDirections = options.filter((region) => intel.some((enemy) =>
-      enemy.region === region || enemy.waitDirs.includes(region)));
-    const forwardDirections = options.filter((region) => distance(region, objective) < currentDistance);
-    options = [...new Set([...knownThreatDirections, ...forwardDirections])];
-  }
-  const attackWaypoints = agent.team === "attack" ? attackPlanWaypoints(game, agent) : [];
-  return [...options].sort((a, b) => {
-    if (agent.team === "attack") {
-      const heldSite = game.spike.region !== null && ["planting", "planted", "half", "defusing"].includes(game.spike.status)
-        ? siteForRegion(game.spike.region)
-        : REGIONS.find((region) => region.id === agent.region)?.site ?? null;
-      if (heldSite) {
-        const backRegions = new Set(DEFENDER_BACK_EDGES[heldSite].flatMap(([from, to]) => [from, to]));
-        const retakeA = distance(a, 7) - (backRegions.has(a) ? 4 : 0);
-        const retakeB = distance(b, 7) - (backRegions.has(b) ? 4 : 0);
-        if (retakeA !== retakeB) return retakeA - retakeB;
-      }
-    }
-    if (agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
-      const spikeA = (a === game.spike.region ? -20 : 0) + distance(a, game.spike.region);
-      const spikeB = (b === game.spike.region ? -20 : 0) + distance(b, game.spike.region);
-      if (spikeA !== spikeB) return spikeA - spikeB;
-    }
-    if (intel.length) {
-      const distanceA = Math.min(...intel.map((item) => distance(a, item.region)));
-      const distanceB = Math.min(...intel.map((item) => distance(b, item.region)));
-      if (distanceA !== distanceB) return distanceA - distanceB;
-    }
-    if (agent.team === "defense") return distance(a, 1) - distance(b, 1);
-    const routeA = Math.min(...attackWaypoints.map((region) => distance(a, region)));
-    const routeB = Math.min(...attackWaypoints.map((region) => distance(b, region)));
-    return routeA - routeB;
-  }).slice(0, count);
+  const options = rawOptions.filter((region) => {
+    const coveringPlantedSpike = agent.team === "attack"
+      && game.spike.region === region
+      && ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+    return coveringPlantedSpike
+      || !game.teams[agent.team].agents.some((ally) => ally.alive && ally.id !== agent.id && ally.region === region);
+  });
+  return [...options]
+    .sort((a, b) => aiStrategicWaitScore(game, agent, b, intel) - aiStrategicWaitScore(game, agent, a, intel) || a - b)
+    .slice(0, count);
 }
 
 function defenseAssignedLane(game: GameState, agent: Agent): TacticalLane {
@@ -3353,11 +3496,22 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
     const occupiedB = game.teams.defense.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
     const operatorA = aiOperatorRoutePenalty(game, agent, a);
     const operatorB = aiOperatorRoutePenalty(game, agent, b);
-    return routeDistance(a) * 4 + occupiedA * 2 + operatorA - (routeDistance(b) * 4 + occupiedB * 2 + operatorB);
+    return routeDistance(a) * 4 + occupiedA * 2 + operatorA + aiRecentMovementPenalty(game, agent, a)
+      - (routeDistance(b) * 4 + occupiedB * 2 + operatorB + aiRecentMovementPenalty(game, agent, b));
   })[0] ?? null;
   if (destination === null) return null;
   if (!flanking && routeDistance(destination) > routeDistance(agent.region)) return null;
   return destination;
+}
+
+function aiPostplantHoldIsUseful(game: GameState, agent: Agent) {
+  if (game.spike.region === null || !agent.waitDirs.length) return false;
+  const assignedPositions = attackPostplantWaypoints(game, agent);
+  const positioned = assignedPositions.includes(agent.region)
+    || (!SITE_REGIONS[game.attackPlan.targetSite].includes(agent.region) && distance(agent.region, game.spike.region) <= 2);
+  const coversSpikeOrRetake = agent.waitDirs.some((region) =>
+    region === game.spike.region || aiStrategicWaitScore(game, agent, region) >= 70);
+  return positioned && coversSpikeOrRetake;
 }
 
 function aiHoldPositionDecision(game: GameState, side: Side): string | null {
@@ -3378,11 +3532,14 @@ function aiHoldPositionDecision(game: GameState, side: Side): string | null {
       return planter?.alive ? "설치 요원과 확보한 진입각을 유지합니다" : null;
     }
     if (["planted", "half", "defusing"].includes(game.spike.status) && game.spike.region !== null) {
-      const nearSpike = alive.filter((agent) => distance(agent.region, game.spike.region!) <= 1);
-      const coveringAgents = nearSpike.filter((agent) => agent.waitDirs.length > 0 || isChanneling(game, agent));
+      const nearSpike = alive.filter((agent) => distance(agent.region, game.spike.region!) <= 2);
+      const coveringAgents = nearSpike.filter((agent) => aiPostplantHoldIsUseful(game, agent) || isChanneling(game, agent));
+      const directSpikeCoverage = coveringAgents.filter((agent) => agent.waitDirs.includes(game.spike.region!));
       const requiredCoverage = Math.min(2, alive.length);
-      return nearSpike.length >= Math.ceil(alive.length * 0.6) && coveringAgents.length >= requiredCoverage
-        ? "설치 후 교차 대기와 사이트 수비 진형을 유지합니다"
+      return nearSpike.length >= Math.ceil(alive.length * 0.6)
+        && coveringAgents.length >= requiredCoverage
+        && directSpikeCoverage.length >= Math.min(1, alive.length)
+        ? "설치 후 후방 사격 위치에서 스파이크와 재진입 통로를 교차 대기합니다"
         : null;
     }
 
@@ -3568,8 +3725,10 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
     const carrierSupportB = aiCarrierAdvanceSupportPenalty(game, agent, b);
     const breachSupportA = breachA ? Math.max(0, 2 - occupiedA) * 12 : 0;
     const breachSupportB = breachB ? Math.max(0, 2 - occupiedB) * 12 : 0;
-    return routeA * 4 + occupiedA * 2 + dangerA + operatorA + carrierSupportA + breachSupportA
-      - (routeB * 4 + occupiedB * 2 + dangerB + operatorB + carrierSupportB + breachSupportB);
+    const repeatA = aiRecentMovementPenalty(game, agent, a);
+    const repeatB = aiRecentMovementPenalty(game, agent, b);
+    return routeA * 4 + occupiedA * 2 + dangerA + operatorA + carrierSupportA + breachSupportA + repeatA
+      - (routeB * 4 + occupiedB * 2 + dangerB + operatorB + carrierSupportB + breachSupportB + repeatB);
   })[0] ?? null;
   if (destination === null) return null;
   if (phase !== "execute" && phase !== "postplant" && routeDistance(destination) > routeDistance(agent.region)) return null;
@@ -5046,6 +5205,8 @@ export default function Home() {
   const [showSound, setShowSound] = useState(false);
   const combatTurnRef = useRef<HTMLDivElement | null>(null);
   const combatStageRef = useRef<HTMLDivElement | null>(null);
+  const combatResultRef = useRef<HTMLDivElement | null>(null);
+  const combatScrollFrameRef = useRef<number | null>(null);
   const mapBoardRef = useRef<HTMLDivElement | null>(null);
   const audioEventRef = useRef({
     encounterId: "",
@@ -5174,16 +5335,41 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [activePostCombatMovementFx]);
 
-  const currentCombatPhase = game.combatQueue[0]?.phase ?? null;
-  const currentCombatResult = game.combatQueue[0]?.result ?? null;
+  const currentCombatScene = game.combatQueue[0] ?? null;
+  const currentCombatPhase = currentCombatScene?.phase ?? null;
+  const currentCombatId = currentCombatScene?.id ?? null;
+  const currentCombatHasShot = !!(currentCombatScene?.mover.shot || currentCombatScene?.holder.shot);
   useEffect(() => {
     if (!currentCombatPhase) return;
+    if (currentCombatPhase !== "encounter" && currentCombatPhase !== "result") return;
+    const delay = currentCombatPhase === "result" && currentCombatHasShot ? 780 : currentCombatPhase === "result" ? 180 : 40;
     const timer = window.setTimeout(() => {
-      const target = currentCombatPhase === "result" ? combatStageRef.current : combatTurnRef.current;
-      target?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 40);
-    return () => window.clearTimeout(timer);
-  }, [currentCombatPhase, currentCombatResult]);
+      const target = currentCombatPhase === "result" ? combatResultRef.current : combatTurnRef.current;
+      const container = target?.closest<HTMLElement>(".combat-modal");
+      if (!target || !container) return;
+      const start = container.scrollTop;
+      const targetTop = Math.max(0, target.getBoundingClientRect().top - container.getBoundingClientRect().top + start - 12);
+      const distanceToTravel = targetTop - start;
+      const duration = currentCombatPhase === "result" ? 720 : 260;
+      const startedAt = performance.now();
+      const animate = (now: number) => {
+        const progress = Math.min(1, (now - startedAt) / duration);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        container.scrollTop = start + distanceToTravel * eased;
+        if (progress < 1) combatScrollFrameRef.current = window.requestAnimationFrame(animate);
+        else combatScrollFrameRef.current = null;
+      };
+      if (combatScrollFrameRef.current !== null) window.cancelAnimationFrame(combatScrollFrameRef.current);
+      combatScrollFrameRef.current = window.requestAnimationFrame(animate);
+    }, delay);
+    return () => {
+      window.clearTimeout(timer);
+      if (combatScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(combatScrollFrameRef.current);
+        combatScrollFrameRef.current = null;
+      }
+    };
+  }, [currentCombatId, currentCombatPhase, currentCombatHasShot]);
   const validTargets = useMemo(() => {
     if (game.pendingWait) {
       const agent = getAgent(game, game.pendingWait);
@@ -6527,6 +6713,7 @@ export default function Home() {
       };
       const strategicBias = (agent: Agent) => {
         if (aiTradeRelayMemoryForAgent(draft, agent)) return -140;
+        if (aiWaitShouldBePreserved(draft, agent)) return 92;
         if (draft.aiRetreatMemories.some((memory) =>
           memory.plan === "trade"
           && memory.agentId === agent.id
@@ -6594,6 +6781,7 @@ export default function Home() {
         .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
       for (const agent of candidates) {
         if (card.kind === "control") {
+          if (agent.waitDirs.length >= 2 && aiWaitShouldBePreserved(draft, agent)) continue;
           const directions = aiStrategicWaitDirections(draft, agent, 2);
           if (directions.length < 2) continue;
           setWait(draft, agent, directions);
@@ -7098,7 +7286,7 @@ export default function Home() {
             </article>)}
           </div>
         </section>
-        <div className="combat-result"><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : combatScene.waitClaim ? "점유한 적이 모두 제거되거나 후퇴하면 선택한 구역에 대기가 완성됩니다. 대기 시도자는 후퇴할 수 없습니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
+        <div className="combat-result" ref={combatResultRef}><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : combatScene.waitClaim ? "점유한 적이 모두 제거되거나 후퇴하면 선택한 구역에 대기가 완성됩니다. 대기 시도자는 후퇴할 수 없습니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
         {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>이번 교전 차례를 선택하세요</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>이 요원은 대기 구역을 확보할 때까지 후퇴할 수 없습니다.</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 

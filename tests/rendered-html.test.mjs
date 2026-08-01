@@ -132,7 +132,7 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
   assert.match(css, /combat-modal > \.combat-actions, \.combat-modal > \.combat-continue \{ order: 5/);
   assert.match(css, /combat-modal > \.combat-map-overview \{ order: 8/);
   assert.match(page, /combatTurnRef\.current/);
-  assert.match(page, /target\?\.scrollIntoView/);
+  assert.match(page, /combatScrollFrameRef\.current = window\.requestAnimationFrame\(animate\)/);
 });
 
 test("human versus AI supports either side and mirrors setup after a side swap", async () => {
@@ -346,7 +346,7 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /kind: "mid-b"[\s\S]{0,100}commitCycle: 5/);
   assert.match(page, /kind: "fake-a-b"[\s\S]{0,100}commitCycle: 6/);
   assert.match(page, /Math\.max\(2, Math\.min\(FORCED_EXECUTE_CYCLE - 2/);
-  assert.match(page, /const attackWaypoints = agent\.team === "attack" \? attackPlanWaypoints/);
+  assert.match(page, /const waypoints = attackPlanWaypoints\(game, agent\)/);
   assert.match(page, /attackExecuting[\s\S]{0,220}\{ entry: 0, peek: 1/);
   assert.match(page, /공격 AI 작전 브리핑/);
   assert.match(page, /작전 선택 · \$\{game\.attackPlan\.label\}/);
@@ -419,7 +419,7 @@ test("AI protects spike transport, recovers drops, and converts defense to spike
   assert.match(page, /return hasPioneer \? preparedMovement \? -20 : 6 : 38/);
   assert.match(page, /spikeKnownByDefense: boolean/);
   assert.match(page, /스파이크 확보 · 인접 구역 교차 대기 · 공격팀 회수 차단/);
-  assert.match(page, /a === game\.spike\.region \? -20 : 0/);
+  assert.match(page, /if \(region === game\.spike\.region\) score \+= 170/);
   assert.match(page, /guardingDroppedSpike/);
   assert.match(page, /agent\.alive && agent\.extraActions > 0 && !isChanneling\(game, agent\)/);
   assert.match(page, /item\.alive && item\.extraActions > 0 && !isChanneling\(game, item\)/);
@@ -496,7 +496,7 @@ test("AI preserves unused action cards when holding is tactically stronger than 
   assert.match(page, /phase === "execute"/);
   assert.match(page, /game\.cycle < game\.attackPlan\.commitCycle/);
   assert.match(page, /현재 수비 배치와 대기 각이 안정적이므로 위치를 유지합니다/);
-  assert.match(page, /설치 후 교차 대기와 사이트 수비 진형을 유지합니다/);
+  assert.match(page, /설치 후 후방 사격 위치에서 스파이크와 재진입 통로를 교차 대기합니다/);
   assert.match(page, /최종 해체 요원을 보호하며 위치를 유지합니다/);
   assert.match(page, /draft\.aiTurnComplete = true/);
   assert.match(page, /props\.game\.actionsUsed >= 3 \|\| props\.game\.aiTurnComplete/);
@@ -515,8 +515,9 @@ test("map movement follows the graph while attack AI avoids rear holds and misti
   assert.match(page, /className=\{`movement-runner/);
   assert.match(css, /@keyframes mapUnitTravel/);
   assert.match(css, /@keyframes movementRoutePulse/);
-  assert.match(page, /const optionsWithoutFriendlyStack = rawOptions\.filter/);
-  assert.match(page, /const forwardDirections = options\.filter/);
+  assert.match(page, /const options = rawOptions\.filter/);
+  assert.match(page, /function aiStrategicWaitScore/);
+  assert.match(page, /cameFrom && approachScore < 45/);
   assert.doesNotMatch(page, /preferred !== undefined && legalTargets\.includes\(preferred\) \? preferred : legalTargets\[0\]/);
   assert.match(page, /function attackAiSkillWindowOpen/);
   assert.match(page, /function aiHasFollowupMovementCard/);
@@ -934,4 +935,42 @@ test("procedural tactical audio covers combat, utility, objectives, and mobile c
   assert.match(css, /\.sound-popover/);
   assert.match(css, /\.audio-profile-switch/);
   assert.match(css, /width: min\(260px, calc\(100vw - 16px\)\)/);
+});
+
+test("AI preserves movement intent and aims holds at predicted approach lanes", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /interface AiMovementHistory/);
+  assert.match(page, /aiMovementHistories: AiMovementHistory\[\]/);
+  assert.match(page, /function aiMovementObjectiveKey/);
+  assert.match(page, /expiresTeamTurn: game\.teamTurns\[agent\.team\] \+ 2/);
+  assert.match(page, /if \(target === priorRegion\) return 120/);
+  assert.match(page, /recordAiMovementHistory\(game, agent, origin\)/);
+  assert.match(page, /function aiEnemyApproachScore/);
+  assert.match(page, /route\.at\(-2\) === region/);
+  assert.match(page, /cameFrom && approachScore < 45/);
+  assert.match(page, /if \(aiWaitShouldBePreserved\(draft, agent\)\) return 92/);
+  assert.match(page, /aiRecentMovementPenalty\(game, agent, a\)/);
+});
+
+test("postplant AI backs off, watches the objective, and rejects inward idle holds", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function attackPostplantWaypoints/);
+  assert.match(page, /SITE_REGIONS\[site\]\.includes\(a\) \? 1 : 0/);
+  assert.match(page, /candidates\.includes\(agent\.region\) && agent\.waitDirs\.includes\(spikeRegion\)/);
+  assert.match(page, /if \(agent && attackPlanPhase\(game\) === "postplant"/);
+  assert.match(page, /if \(region === spikeRegion\) score \+= 190/);
+  assert.match(page, /const coveringPlantedSpike = agent\.team === "attack"/);
+  assert.match(page, /function aiPostplantHoldIsUseful/);
+  assert.match(page, /directSpikeCoverage\.length >= Math\.min\(1, alive\.length\)/);
+  assert.match(page, /설치 후 후방 사격 위치에서 스파이크와 재진입 통로를 교차 대기합니다/);
+});
+
+test("combat scrolling waits for the shot presentation and then eases to the result", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const combatResultRef = useRef<HTMLDivElement \| null>/);
+  assert.match(page, /currentCombatPhase === "result" && currentCombatHasShot \? 780/);
+  assert.match(page, /currentCombatPhase === "result" \? 720 : 260/);
+  assert.match(page, /const eased = 1 - Math\.pow\(1 - progress, 3\)/);
+  assert.match(page, /ref=\{combatResultRef\}/);
+  assert.doesNotMatch(page, /\[currentCombatPhase, currentCombatResult\]/);
 });
