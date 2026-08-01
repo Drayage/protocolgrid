@@ -391,6 +391,7 @@ interface CombatScene {
   moverPriorityBase: number;
   moverRetreated: boolean;
   moverAdvanced: boolean;
+  retreatedIds?: string[];
   evaded: boolean;
   result: string;
   waitDirections: number[];
@@ -1887,6 +1888,7 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     moverPriorityBase: moverPriority,
     moverRetreated: false,
     moverAdvanced: false,
+    retreatedIds: [],
     evaded: false,
     result: `${mover.name}과 ${enemy.name}이 ${regionName(mover.region)} 전선에서 마주쳤습니다.`,
     waitDirections: revealedWaitDirs,
@@ -1978,6 +1980,7 @@ function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable,
     moverPriorityBase: profile.priority,
     moverRetreated: false,
     moverAdvanced: false,
+    retreatedIds: [],
     evaded: false,
     result: `${mover.name}이 ${regionName(turret.to ?? mover.region)} 포탑 감시 구역에 진입했습니다.`,
     waitDirections: turret.to === undefined ? [] : [turret.to],
@@ -5151,13 +5154,25 @@ function CombatTransitionScene({ scene, mode }: { scene: CombatScene; mode: "int
     : scene.waiting
       ? "HOLD TRIGGERED"
       : scene.offAngle
-        ? "OFF-ANGLE ENGAGEMENT"
+        ? "AMBUSH · DIVERTED HOLD"
         : "ENGAGEMENT DECLARED";
   const introTitle = scene.kind === "turret"
     ? `${scene.mover.name}이 포탑 감시 구역에 진입`
     : scene.waiting
       ? `${scene.mover.name}이 ${scene.holder.name}의 대기선에 진입`
       : `${scene.mover.name} ↔ ${scene.holder.name} 교전 발생`;
+  const outcomeClass = (fighter: CombatFighterView) => mode !== "outro"
+    ? ""
+    : fighter.hpAfter <= 0
+      ? "dead"
+      : scene.retreatedIds?.includes(fighter.id)
+        ? "retreating"
+        : "standing";
+  const outcomeLabel = (fighter: CombatFighterView) => fighter.hpAfter <= 0
+    ? "DOWN"
+    : scene.retreatedIds?.includes(fighter.id)
+      ? "RETREAT"
+      : null;
 
   return <section className={`combat-transition-sequence ${mode} ${scene.waiting ? "wait-contact" : "declared-contact"}`} style={transitionStyle} aria-label={mode === "intro" ? "교전 접촉 연출" : "교전 종료 연출"}>
     <header><span>{mode === "intro" ? contactLabel : "CONTACT RESOLVED"}</span><strong>{mode === "intro" ? introTitle : "교전 종료 · 전술 시야 복귀"}</strong><small>{mode === "intro" ? `${regionName(moverContactId)} · 거리 ${scene.range} · 우선도 ${scene.mover.priority}:${scene.holder.priority}` : "전장을 축소한 뒤 후퇴·이탈 이동을 표시합니다"}</small></header>
@@ -5166,10 +5181,12 @@ function CombatTransitionScene({ scene, mode }: { scene: CombatScene; mode: "int
         <div className="combat-transition-map-image" />
         {EDGES.map(([a, b]) => <span key={`transition-edge-${a}-${b}`} className="map-edge" style={connectionStyle(a, b)} />)}
         {moverApproachId !== moverContactId && <span className="contact-approach-line" style={connectionStyle(moverApproachId, moverContactId)} />}
+        {mode === "intro" && (scene.waiting || scene.offAngle) && scene.waitDirections.map((direction) => <span key={`transition-hold-${holderContactId}-${direction}`} className={`transition-wait-cone ${scene.offAngle ? "diverted" : "triggered"}`} style={connectionStyle(holderContactId, direction)}><i /></span>)}
         <span className={`contact-line ${scene.waiting ? "hold-line" : "fight-line"}`} style={connectionStyle(holderContactId, moverContactId)}><i /></span>
-        <i className={`transition-contact-token mover ${agentArtClass(scene.mover.name)}`}><b>{scene.mover.name}</b></i>
-        <i className={`transition-contact-token holder ${scene.holder.kind === "turret" ? skillArtClass("turret") : agentArtClass(scene.holder.name)}`}><b>{scene.holder.name}</b></i>
-        <span className="contact-focus-pulse"><i /><b>{scene.waiting ? "HOLD" : "CONTACT"}</b></span>
+        <i className={`transition-contact-token mover ${outcomeClass(scene.mover)} ${agentArtClass(scene.mover.name)}`}><b>{scene.mover.name}{outcomeLabel(scene.mover) && <span>{outcomeLabel(scene.mover)}</span>}</b></i>
+        <i className={`transition-contact-token holder ${outcomeClass(scene.holder)} ${scene.holder.kind === "turret" ? skillArtClass("turret") : agentArtClass(scene.holder.name)}`}><b>{scene.holder.name}{outcomeLabel(scene.holder) && <span>{outcomeLabel(scene.holder)}</span>}</b></i>
+        {mode === "intro" && (scene.waiting || scene.offAngle) && <span className={`transition-wait-origin ${scene.offAngle ? "diverted" : "triggered"}`} style={{ left: `${holderContact.x}%`, top: `${holderContact.y}%` }}><i /><b>{scene.offAngle ? "HOLD AWAY" : `HOLD · P${scene.holder.priority}`}</b></span>}
+        <span className={`contact-focus-pulse ${scene.offAngle ? "ambush" : ""}`}><i /><b>{scene.waiting ? "HOLD" : scene.offAngle ? "AMBUSH" : "CONTACT"}</b></span>
       </div>
     </div>
     <footer><i /><span>{mode === "intro" ? scene.waiting ? "대기 지점 확대 중" : "교전 구간 확대 중" : "전술 지도 복귀 중"}</span><i /></footer>
@@ -5283,6 +5300,7 @@ export default function Home() {
   const [audioProfile, setAudioProfile] = useState<TacticalAudioProfile>(() =>
     typeof window === "undefined" || window.localStorage.getItem("protocol-grid-audio-profile") !== "speakers" ? "headset" : "speakers");
   const [showSound, setShowSound] = useState(false);
+  const [combatApproachReadyId, setCombatApproachReadyId] = useState<string | null>(null);
   const [combatIntroReadyId, setCombatIntroReadyId] = useState<string | null>(null);
   const combatTurnRef = useRef<HTMLDivElement | null>(null);
   const combatStageRef = useRef<HTMLDivElement | null>(null);
@@ -5420,18 +5438,53 @@ export default function Home() {
   const currentCombatScene = game.combatQueue[0] ?? null;
   const currentCombatPhase = currentCombatScene?.phase ?? null;
   const currentCombatId = currentCombatScene?.id ?? null;
+  const currentCombatApproachFx = currentCombatScene
+    && currentCombatPhase === "encounter"
+    && currentCombatScene.approachMoverRegion !== currentCombatScene.contactMoverRegion
+    && game.lastMovementFx?.agentId === currentCombatScene.mover.id
+    && game.lastMovementFx.path.at(-1) === (currentCombatScene.contactMoverRegion ?? currentCombatScene.mover.region)
+    && (spectatorMode
+      || game.lastMovementFx.team === viewerSide
+      || game.lastMovementFx.path.every((region) => observed.has(region)))
+    ? game.lastMovementFx
+    : null;
+  const combatApproachDuration = currentCombatApproachFx
+    ? Math.max(460, (currentCombatApproachFx.path.length - 2) * 240 + 460)
+    : 0;
+  const combatApproachActive = !!currentCombatId
+    && currentCombatPhase === "encounter"
+    && !!currentCombatApproachFx
+    && combatApproachReadyId !== currentCombatId;
   const combatIntroActive = !!currentCombatId
     && currentCombatPhase !== "outro"
+    && !combatApproachActive
     && combatIntroReadyId !== currentCombatId;
   useEffect(() => {
     if (!currentCombatId) {
+      setCombatApproachReadyId(null);
+      return;
+    }
+    if (!currentCombatApproachFx) {
+      setCombatApproachReadyId(currentCombatId);
+      return;
+    }
+    setCombatApproachReadyId(null);
+    const timer = window.setTimeout(() => setCombatApproachReadyId(currentCombatId), combatApproachDuration);
+    return () => window.clearTimeout(timer);
+  }, [currentCombatId, currentCombatApproachFx?.id, combatApproachDuration]);
+  useEffect(() => {
+    if (!currentCombatId) {
+      setCombatIntroReadyId(null);
+      return;
+    }
+    if (combatApproachActive) {
       setCombatIntroReadyId(null);
       return;
     }
     setCombatIntroReadyId(null);
     const timer = window.setTimeout(() => setCombatIntroReadyId(currentCombatId), 1850);
     return () => window.clearTimeout(timer);
-  }, [currentCombatId]);
+  }, [currentCombatId, combatApproachActive]);
   const currentCombatHasShot = !!(currentCombatScene?.mover.shot || currentCombatScene?.holder.shot);
   const currentCombatDriverId = currentCombatPhase === "tailwind"
     ? currentCombatScene?.tailwindActorId
@@ -6364,6 +6417,8 @@ export default function Home() {
     agent.status.aimPenalty = Math.max(1, agent.status.aimPenalty);
     agent.status.moveBonus = Math.min(-1, agent.status.moveBonus);
     if (agent.id === scene.mover.id) scene.moverRetreated = true;
+    scene.retreatedIds ??= [];
+    if (!scene.retreatedIds.includes(agent.id)) scene.retreatedIds.push(agent.id);
     draft.aiRetreatMemories = draft.aiRetreatMemories.filter((memory) => memory.agentId !== agent.id);
     draft.aiRetreatMemories.push({
       side: agent.team,
@@ -7036,7 +7091,7 @@ export default function Home() {
 
   return (
     <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""}`}>
-      <AiController game={game} sides={controlledAiSides} paused={spectatorMode && spectatorPaused} speed={spectatorMode ? spectatorSpeed : 1} stepSignal={spectatorStep} presentationLocked={combatIntroActive || currentCombatPhase === "outro"} onStep={runAiStep} onEndTurn={endTurn} onCombatAttack={combatAttack} onCombatRetreat={combatRetreat} onCombatAdvance={combatAdvance} onCombatContinue={advanceCombat} onTailwind={tailwindMove} />
+      <AiController game={game} sides={controlledAiSides} paused={spectatorMode && spectatorPaused} speed={spectatorMode ? spectatorSpeed : 1} stepSignal={spectatorStep} presentationLocked={combatApproachActive || combatIntroActive || currentCombatPhase === "outro"} onStep={runAiStep} onEndTurn={endTurn} onCombatAttack={combatAttack} onCombatRetreat={combatRetreat} onCombatAdvance={combatAdvance} onCombatContinue={advanceCombat} onTailwind={tailwindMove} />
       <CombatOutroController sceneId={currentCombatPhase === "outro" ? currentCombatId : null} onComplete={advanceCombat} />
       {game.lastKillFx && <KillStreakOverlay key={game.lastKillFx.id} highlight={game.lastKillFx} />}
       <header className="topbar">
@@ -7117,6 +7172,7 @@ export default function Home() {
           </div>
           <div className="map-board fog-on" ref={mapBoardRef}>
             <div className="map-vignette" />
+            {combatApproachActive && currentCombatApproachFx && <div className={`combat-approach-banner team-${currentCombatApproachFx.team}`}><span>CONTACT APPROACH</span><b>{currentCombatApproachFx.agentName} · 이동 경로 확인 중</b></div>}
             {combatIntermission && activePostCombatMovementFx && <div className={`post-combat-move-banner team-${activePostCombatMovementFx.team}`}>
               <span>COMBAT RETREAT</span>
               <b>{activePostCombatMovementFx.agentName} · {activePostCombatMovementFx.path[0]} → {activePostCombatMovementFx.path.at(-1)}</b>
@@ -7295,7 +7351,7 @@ export default function Home() {
 
       {game.targeting?.kind === "skill" && ((game.targeting.candidateAgentIds?.length ?? 0) > 0 || (game.targeting.candidateDeployableIds?.length ?? 0) > 0) && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">TARGET SELECT</span><h2>스킬 목표 선택</h2><div className="choice-grid">{game.targeting.candidateAgentIds?.map((id) => { const target = getAgent(game, id); return target ? <button key={id} onClick={() => resolveSkillCandidate(id, "agent")}><b>{target.name}</b><small>{target.team === game.turnSide ? "아군" : "탐지된 적"} · {target.region}번</small></button> : null; })}{game.targeting.candidateDeployableIds?.map((id) => { const device = game.deployables.find((item) => item.id === id); return device ? <button key={id} onClick={() => resolveSkillCandidate(id, "deployable")}><b>{device.kind}</b><small>설치물 · {device.region}번</small></button> : null; })}</div><button className="choice-cancel" onClick={cancelTargeting}>취소</button></section></div>}
 
-      {combatScene && <div className="modal-backdrop combat-backdrop"><section className={`combat-modal phase-${combatScene.phase} ${combatIntroActive ? "presentation-intro" : combatScene.phase === "outro" ? "presentation-outro" : ""}`} aria-label="전투 진행" aria-live="polite">
+      {combatScene && !combatApproachActive && <div className="modal-backdrop combat-backdrop"><section className={`combat-modal phase-${combatScene.phase} ${combatIntroActive ? "presentation-intro" : combatScene.phase === "outro" ? "presentation-outro" : ""}`} aria-label="전투 진행" aria-live="polite">
         {(combatIntroActive || combatScene.phase === "outro") && <CombatTransitionScene scene={combatScene} mode={combatScene.phase === "outro" ? "outro" : "intro"} />}
         <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>{combatScene.kind === "turret" ? "포탑 자동 교전" : `지속 교전 · ${combatScene.round}회차`}</h2></div><div><span>GAME TURN</span><b>{SIDE_LABEL[game.turnSide]} · 전술 {game.cycle}</b></div></header>
         <div ref={combatTurnRef} className={`combat-turn-banner focus-${combatFocusSide}`}>
@@ -7356,6 +7412,7 @@ export default function Home() {
               {isMover && combatScene.offAngle && <div className="ambush-ribbon">AMBUSH · 우선도 +1 · 대기 무효</div>}
               <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? combatScene.offAngle ? "측면 공격" : "진입" : combatScene.waiting ? "대기 반응" : combatScene.offAngle ? "일반 대응 · 대기 보너스 없음" : "범위 내 반응"}</div>
               <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span>{liveAgent && <AgentStatusBadges game={game} agent={liveAgent} compact />}</div>
+              {fighter.kind === "agent" && <div className={`combat-weapon-readout ${isMover ? "faces-right" : "faces-left"}`} aria-label={`${WEAPONS[fighter.weapon].name} 장착`}><WeaponSilhouette weapon={fighter.weapon} /><span>{WEAPONS[fighter.weapon].name}</span></div>}
               <h3>{fighter.name}</h3><p>{fighter.kind === "turret" ? `설치물 · 에임 5 · 피해 ${SKILL_DAMAGE.turret}` : `${ROLE_LABEL[fighter.role]} · ${WEAPONS[fighter.weapon].name}`}</p>
               <div className="combat-priority"><span>공격 우선도</span><strong>{fighter.priority}</strong></div>
               {fighter.kind === "turret" ? <div className="combat-vitals"><span>내구도</span><b>{fighter.hpBefore + fighter.armorBefore}</b><i>→</i><strong>{fighter.hpAfter + fighter.armorAfter}</strong></div> : <CombatVitalSlots fighter={fighter} />}
