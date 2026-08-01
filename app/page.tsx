@@ -1200,6 +1200,39 @@ function attackMainAgents(game: GameState) {
   return game.teams.attack.agents.filter((agent) => agent.name !== game.attackPlan.lurkerName);
 }
 
+function attackCarrierProtectionActive(game: GameState, agent: Agent) {
+  return agent.team === "attack"
+    && game.spike.status === "carried"
+    && game.spike.carrierId === agent.id
+    && game.teams.attack.agents.filter((ally) => ally.alive).length >= 3
+    && !attackForcedPlantMode(game);
+}
+
+function attackCarrierHasPioneer(game: GameState, carrier: Agent) {
+  if (!attackCarrierProtectionActive(game, carrier)) return true;
+  const waypoints = attackPlanWaypoints(game, carrier);
+  const carrierRouteDistance = Math.min(...waypoints.map((waypoint) => distance(carrier.region, waypoint)));
+  return game.teams.attack.agents.some((ally) =>
+    ally.alive
+    && ally.id !== carrier.id
+    && ally.region !== carrier.region
+    && (
+      distance(ally.region, carrier.region) <= 1
+      || Math.min(...waypoints.map((waypoint) => distance(ally.region, waypoint))) < carrierRouteDistance
+    ));
+}
+
+function aiCarrierAdvanceSupportPenalty(game: GameState, carrier: Agent, target: number) {
+  if (!attackCarrierProtectionActive(game, carrier)) return 0;
+  const allies = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== carrier.id);
+  const path = shortestPath(carrier.region, target).slice(1);
+  const uncoveredSteps = path.filter((region) => !allies.some((ally) => distance(ally.region, region) <= 1)).length;
+  const alliesAtTarget = allies.filter((ally) => ally.region === target).length;
+  const recoverySupport = allies.filter((ally) => distance(ally.region, target) <= 1).length;
+  const destinationPenalty = alliesAtTarget > 0 ? -20 : recoverySupport >= 2 ? -10 : recoverySupport === 1 ? 6 : 30;
+  return uncoveredSteps * 38 + destinationPenalty;
+}
+
 function attackCarrierEscortAgents(game: GameState) {
   const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
   if (!carrier?.alive) return [];
@@ -3301,7 +3334,10 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
     const dangerB = knownThreatScoreAtRegion(game, "attack", b);
     const operatorA = aiOperatorRoutePenalty(game, agent, a);
     const operatorB = aiOperatorRoutePenalty(game, agent, b);
-    return routeA * 4 + occupiedA * 2 + dangerA + operatorA - (routeB * 4 + occupiedB * 2 + dangerB + operatorB);
+    const carrierSupportA = aiCarrierAdvanceSupportPenalty(game, agent, a);
+    const carrierSupportB = aiCarrierAdvanceSupportPenalty(game, agent, b);
+    return routeA * 4 + occupiedA * 2 + dangerA + operatorA + carrierSupportA
+      - (routeB * 4 + occupiedB * 2 + dangerB + operatorB + carrierSupportB);
   })[0] ?? null;
   if (destination === null) return null;
   if (phase !== "execute" && phase !== "postplant" && routeDistance(destination) > routeDistance(agent.region)) return null;
@@ -6010,9 +6046,10 @@ export default function Home() {
       const group = [...groups.entries()].sort((a, b) => b[1].length - a[1].length)[0];
       const destination = group ? attackPlanRushDestination(draft, group[0]) : null;
       if (group?.[1].length > 1 && destination !== null) {
-        const rushAgents = draft.teams.attack.lossStreak > 0
-          ? [...group[1]].sort((a, b) => Number(a.weapon === "classic") - Number(b.weapon === "classic"))
-          : group[1];
+        const protectCarrier = draft.teams.attack.agents.filter((agent) => agent.alive).length >= 3;
+        const rushAgents = [...group[1]].sort((a, b) =>
+          (protectCarrier ? Number(a.id === draft.spike.carrierId) - Number(b.id === draft.spike.carrierId) : 0)
+          || (draft.teams.attack.lossStreak > 0 ? Number(a.weapon === "classic") - Number(b.weapon === "classic") : 0));
         draft.teams.attack.rushUsed = true;
         draft.groupMovement = { agentIds: rushAgents.map((agent) => agent.id), nextIndex: 0, target: destination, special: "rush" };
         if (spectatorMode) addLog(draft, `공격팀 AI가 ${draft.attackPlan.label} 작전의 초반 러쉬로 ${regionName(destination)}에 전개합니다.`);
@@ -6061,7 +6098,6 @@ export default function Home() {
         return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
       };
       const strategicBias = (agent: Agent) => {
-        if (agent.status.moveRangeBonus > 0 || agent.status.highGear || agent.status.ignoreGround || agent.status.evadeReady) return -58;
         if (forcedPlant && draft.spike.status === "carried") {
           const carrier = getAgent(draft, draft.spike.carrierId);
           const situation = attackSiteSituation(draft, draft.attackPlan.targetSite);
@@ -6071,6 +6107,12 @@ export default function Home() {
           if (carrier && distance(agent.region, carrier.region) <= 1) return -72;
           return -48;
         }
+        if (attackCarrierProtectionActive(draft, agent)) {
+          const hasPioneer = attackCarrierHasPioneer(draft, agent);
+          const preparedMovement = agent.status.moveRangeBonus > 0 || agent.status.highGear || agent.status.ignoreGround || agent.status.evadeReady;
+          return hasPioneer ? preparedMovement ? -20 : 6 : 38;
+        }
+        if (agent.status.moveRangeBonus > 0 || agent.status.highGear || agent.status.ignoreGround || agent.status.evadeReady) return -58;
         if (forcedPlant && draft.spike.status === "dropped" && draft.spike.region !== null) return -120 + distance(agent.region, draft.spike.region) * 6;
         const retakePair = side === "defense" ? defenseRetakePair(draft) : null;
         if (retakePair) {
@@ -6087,7 +6129,6 @@ export default function Home() {
         if (side === "attack" && draft.spike.status === "dropped" && draft.spike.region !== null) return -40 + distance(agent.region, draft.spike.region) * 5;
         if (side === "attack" && draft.spike.status === "carried") {
           const escortAgents = attackCarrierEscortAgents(draft);
-          if (escortAgents.length && draft.spike.carrierId === agent.id) return 18;
           if (escortAgents.some((escort) => escort.id === agent.id)) return distance(agent.region, getAgent(draft, draft.spike.carrierId)?.region ?? agent.region) <= 1 ? 14 : -16;
         }
         if (weaponObjective) return -10;
