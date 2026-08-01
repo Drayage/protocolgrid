@@ -220,7 +220,12 @@ test("AI compares real combat odds and lets an isolated shotgun close distance t
   assert.match(page, /const retreatMoveDelta = Math\.min\(-1, actor\.status\.moveBonus\) - actor\.status\.moveBonus/);
   assert.match(page, /const closeSurvival = Math\.max\(0, 100 - closeReturnFire\.killChance\)/);
   assert.match(page, /closeValue >= currentValue \+ 8 \? opponent\.region : null/);
-  assert.match(page, /const oddsFavorRetreat = dangerValue \+ operatorRetreatBias >= attackValue \+ 20/);
+  assert.match(page, /const retreatOpportunityCost = 32/);
+  assert.match(page, /attackOdds\.killChance >= 35 \? 12 : 0/);
+  assert.match(page, /scene\.round > 1 \? 10 : 0/);
+  assert.match(page, /const decisiveMismatch = dangerValue \+ operatorRetreatBias >= attackValue \+ retreatOpportunityCost/);
+  assert.match(page, /const positionalRetreat = shouldAiRetreat/);
+  assert.match(page, /returnFire\.killChance >= 35[\s\S]{0,120}attackOdds\.killChance < 50/);
   assert.match(page, /const decision = aiCombatDecision\(props\.game, scene, actor, retreatOptions\)/);
 });
 
@@ -510,8 +515,9 @@ test("AI identifies known Operators and avoids unsupported head-on lanes", async
   assert.match(page, /function aiAttackDestination[\s\S]{0,2600}const operatorA = aiOperatorRoutePenalty/);
   assert.match(page, /function aiDefenseDestination[\s\S]{0,1800}const operatorA = aiOperatorRoutePenalty/);
   assert.match(page, /const operatorHeadOn = opponent\.weapon === "operator"/);
-  assert.match(page, /const operatorRetreatBias = operatorHeadOn && !urgentObjective \? 35 : 0/);
-  assert.match(page, /return operatorDisengage \|\| oddsFavorRetreat \|\| shouldAiRetreat/);
+  assert.match(page, /const operatorRetreatBias = operatorHeadOn && !urgentObjective \? 24 : 0/);
+  assert.match(page, /returnFire\.killChance >= 60[\s\S]{0,80}attackOdds\.killChance < 35/);
+  assert.match(page, /return operatorDisengage \|\| decisiveMismatch \|\| hopelessAccuracy \|\| positionalRetreat/);
 });
 
 test("combat retreat closes the result scene before replaying movement on the tactical map", async () => {

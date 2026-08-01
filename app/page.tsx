@@ -3394,14 +3394,25 @@ function aiCombatDecision(game: GameState, scene: CombatScene, actor: Agent, ret
     && scene.waiting
     && !isWaitPathSmokeBlocked(game, opponent.region, actor.region);
   const urgentObjective = aiRetreatReentryIsUrgent(game, actor);
-  const operatorRetreatBias = operatorHeadOn && !urgentObjective ? 35 : 0;
+  const operatorRetreatBias = operatorHeadOn && !urgentObjective ? 24 : 0;
+  const retreatOpportunityCost = 32
+    + (attackOdds.killChance >= 35 ? 12 : 0)
+    + (scene.round > 1 ? 10 : 0)
+    + (urgentObjective ? 24 : 0);
   const operatorDisengage = operatorHeadOn
     && !urgentObjective
-    && returnFire.killChance >= 40
-    && attackOdds.killChance < 65;
-  const oddsFavorRetreat = dangerValue + operatorRetreatBias >= attackValue + 20
-    || (attackOdds.hitChance <= 25 && returnFire.hitChance >= attackOdds.hitChance + 25);
-  return operatorDisengage || oddsFavorRetreat || shouldAiRetreat(game, actor, retreatRegion)
+    && returnFire.killChance >= 60
+    && attackOdds.killChance < 35;
+  const decisiveMismatch = dangerValue + operatorRetreatBias >= attackValue + retreatOpportunityCost;
+  const hopelessAccuracy = attackOdds.hitChance <= 15
+    && returnFire.hitChance >= 60
+    && returnFire.killChance >= 40;
+  const positionalRetreat = shouldAiRetreat(game, actor, retreatRegion)
+    && !urgentObjective
+    && returnFire.killChance >= 35
+    && dangerValue >= attackValue + 12
+    && attackOdds.killChance < 50;
+  return operatorDisengage || decisiveMismatch || hopelessAccuracy || positionalRetreat
     ? { type: "retreat" as const, region: retreatRegion, approach: false }
     : { type: "attack" as const };
 }
