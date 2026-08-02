@@ -5792,13 +5792,12 @@ function CombatTransitionScene({ scene, mode }: { scene: CombatScene; mode: "int
   const sameContactRegion = moverContactId === holderContactId;
   const moverVisual = { x: moverContact.x - (sameContactRegion ? 3.2 : 0), y: moverContact.y + (sameContactRegion ? 1.2 : 0) };
   const holderVisual = { x: holderContact.x + (sameContactRegion ? 3.2 : 0), y: holderContact.y - (sameContactRegion ? 1.2 : 0) };
-  const directedHalfStyle = (from: { x: number; y: number }, to: { x: number; y: number }) => {
-    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
-    const dx = to.x - midpoint.x;
-    const dy = to.y - midpoint.y;
+  const directedContactStyle = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
     return {
-      left: `${midpoint.x}%`,
-      top: `${midpoint.y}%`,
+      left: `${from.x}%`,
+      top: `${from.y}%`,
       width: `${Math.sqrt(dx * dx + dy * dy)}%`,
       transform: `translateY(-50%) rotate(${Math.atan2(dy, dx) * 180 / Math.PI}deg)`,
     } as CSSProperties;
@@ -5848,7 +5847,7 @@ function CombatTransitionScene({ scene, mode }: { scene: CombatScene; mode: "int
         {EDGES.map(([a, b]) => <span key={`transition-edge-${a}-${b}`} className="map-edge" style={connectionStyle(a, b)} />)}
         {moverApproachId !== moverContactId && <span className="contact-approach-line" style={connectionStyle(moverApproachId, moverContactId)} />}
         {mode === "intro" && (scene.waiting || scene.offAngle) && scene.waitDirections.map((direction) => <span key={`transition-hold-${holderContactId}-${direction}`} className={`transition-wait-cone ${scene.offAngle ? "diverted" : "triggered"}`} style={connectionStyle(holderContactId, direction)}><i /></span>)}
-        {mode === "intro" && <span className={`contact-line ${scene.waiting ? "hold-line" : "fight-line"}`} style={directedHalfStyle(contactSource, contactTarget)}><i /></span>}
+        {mode === "intro" && <span className={`contact-line ${scene.waiting ? "hold-line" : "fight-line"}`} style={directedContactStyle(contactSource, contactTarget)}><i /></span>}
         {mode === "outro" && (scene.postMovementFx ?? []).map((movement) => {
           const from = movement.path[0];
           const to = movement.path.at(-1);

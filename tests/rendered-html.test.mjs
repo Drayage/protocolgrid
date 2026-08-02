@@ -1071,7 +1071,11 @@ test("combat presentation holds automatic actions above, reveals final AI result
   assert.match(page, /scene\.offAngle \? "AMBUSH" : "CONTACT"/);
   assert.match(page, /scene\.offAngle \? "HOLD AWAY"/);
   assert.match(page, /const contactSource = scene\.waiting \? holderVisual : moverVisual/);
-  assert.match(page, /style=\{directedHalfStyle\(contactSource, contactTarget\)\}/);
+  assert.match(page, /const directedContactStyle = \(from:/);
+  assert.match(page, /left: `\$\{from\.x\}%`/);
+  assert.match(page, /top: `\$\{from\.y\}%`/);
+  assert.match(page, /style=\{directedContactStyle\(contactSource, contactTarget\)\}/);
+  assert.match(css, /contactArrowReach \{ 0%,18% \{ opacity: 1; clip-path: polygon\(0 43%,44% 43%,44% 0,50% 50%/);
   assert.match(page, /className="transition-retreat-arrow"/);
   assert.match(page, /retreatedIds\?: string\[\]/);
   assert.match(page, /fighter\.hpAfter <= 0[\s\S]{0,80}\? "dead"/);
