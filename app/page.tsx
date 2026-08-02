@@ -527,6 +527,8 @@ interface GameState {
 const SIDE_LABEL: Record<Side, string> = { attack: "공격팀", defense: "수비팀" };
 const PRE_PLANT_CYCLE_LIMIT = 12;
 const SPIKE_EXPLOSION_ROUNDS = 6;
+const DEFENSE_RETAKE_SITE_ENTRY_TARGET = 3;
+const DEFENSE_RETAKE_FORCE_ENTRY_BUFFER = 2;
 const FORCED_EXECUTE_CYCLE = PRE_PLANT_CYCLE_LIMIT - 2;
 const AGENT_MAX_HP = 4;
 const MAX_ARMOR = 2;
@@ -3497,11 +3499,28 @@ function defenseRetakeIsActive(game: GameState) {
   return game.spike.region !== null && ["planted", "half", "defusing"].includes(game.spike.status);
 }
 
+function defenseRetakeSiteDistance(game: GameState, agent: Agent) {
+  if (!defenseRetakeIsActive(game) || game.spike.region === null) return Infinity;
+  const site = siteForRegion(game.spike.region);
+  const siteRegions = site ? SITE_REGIONS[site] : [game.spike.region];
+  return Math.min(...siteRegions.map((region) => distance(agent.region, region)));
+}
+
 function defenseRetakeMustAdvance(game: GameState, agent: Agent) {
   if (!defenseRetakeIsActive(game) || game.spike.region === null) return false;
-  const travelTurns = distance(agent.region, game.spike.region);
+  const siteEntryTurns = defenseRetakeSiteDistance(game, agent);
+  const spikeTravelTurns = distance(agent.region, game.spike.region);
   const interactionTurns = game.spike.status === "planted" ? 2 : 1;
-  return game.spike.explosion <= travelTurns + interactionTurns;
+  const siteEntryDue = game.spike.explosion <= siteEntryTurns + DEFENSE_RETAKE_SITE_ENTRY_TARGET;
+  const defuseDue = game.spike.explosion <= spikeTravelTurns + interactionTurns;
+  return siteEntryDue || defuseDue;
+}
+
+function defenseRetakeForceEntry(game: GameState, agent: Agent) {
+  const siteEntryTurns = defenseRetakeSiteDistance(game, agent);
+  return Number.isFinite(siteEntryTurns)
+    && siteEntryTurns > 0
+    && game.spike.explosion <= siteEntryTurns + DEFENSE_RETAKE_FORCE_ENTRY_BUFFER;
 }
 
 function defenseRetakePair(game: GameState) {
@@ -3540,6 +3559,12 @@ function updateDefensePlanReadout(game: GameState) {
   const threat = defenseThreatSite(game);
   if (!threat) return;
   const plan = game.defensePlan;
+  if (defenseRetakeIsActive(game)) {
+    const outsideCount = game.teams.defense.agents.filter((agent) =>
+      agent.alive && defenseRetakeSiteDistance(game, agent) > 0).length;
+    plan.readout = `${threat} 리테이크 · 폭발 ${DEFENSE_RETAKE_SITE_ENTRY_TARGET}턴 전 사이트 진입 목표 · ${DEFENSE_RETAKE_FORCE_ENTRY_BUFFER}턴 전 강제 돌파 · 외부 ${outsideCount}명`;
+    return;
+  }
   if (plan.kind === "stack-a" || plan.kind === "stack-b") {
     plan.readout = plan.strongSite === threat
       ? `${threat} 압박 확인 · 5인 스택으로 즉시 교전`
@@ -3594,7 +3619,7 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
   const flanking = !guardingDroppedSpike && !urgentRetake && defenseShouldFlank(game, agent, threat);
   const safeTargets = guardingDroppedSpike || flanking || urgentRetake ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
   if (!safeTargets.length) return null;
-  if (pair && pairSeparated && agent.id === pair.leader.id && game.spike.explosion > 2) return null;
+  if (pair && pairSeparated && agent.id === pair.leader.id && !urgentRetake) return null;
   if (pair && agent.id === pair.escort.id) {
     const escortTargets = safeTargets.filter((region) => distance(region, pair.leader.region) <= 1);
     if (game.spike.region !== null) {
@@ -4817,7 +4842,6 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         const edge = aiSmokeEdge(game, agent, definition.id, intel);
         if (!edge) continue;
         if (!begin()) return true;
-        if (definition.id === "dark") game.smokes = game.smokes.filter((smoke) => !(smoke.sourceAgentId === agent.id && smoke.sourceSkill === "dark"));
         game.smokes.push({ key: edgeKey(edge[0], edge[1]), owner: side, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: definition.id });
         finish(edge[1]);
         return true;
@@ -6255,7 +6279,6 @@ export default function Home() {
         }
         case "dark": {
           const first = targeting.selected![0];
-          draft.smokes = draft.smokes.filter((smoke) => !(smoke.sourceAgentId === agent.id && smoke.sourceSkill === "dark"));
           draft.smokes.push({ key: edgeKey(first, region), owner: agent.team, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "dark" });
           break;
         }
@@ -7246,6 +7269,12 @@ export default function Home() {
         return (index - draft.teamTurns[side] + team.agents.length) % team.agents.length;
       };
       const strategicBias = (agent: Agent) => {
+        if (side === "defense" && defenseRetakeMustAdvance(draft, agent)) {
+          const siteDistance = defenseRetakeSiteDistance(draft, agent);
+          const entrySlack = draft.spike.explosion - DEFENSE_RETAKE_SITE_ENTRY_TARGET - siteDistance;
+          const forceEntry = defenseRetakeForceEntry(draft, agent);
+          return (forceEntry ? -280 : -180) - siteDistance * 12 - Math.max(0, -entrySlack) * 18;
+        }
         if (aiTradeRelayMemoryForAgent(draft, agent)) return -140;
         if (aiWaitShouldBePreserved(draft, agent)) return 92;
         if (draft.aiRetreatMemories.some((memory) =>
@@ -7283,7 +7312,7 @@ export default function Home() {
         if (retakePair) {
           const separated = distance(retakePair.leader.region, retakePair.escort.region) > 1;
           if (separated && agent.id === retakePair.escort.id) return -42;
-          if (separated && agent.id === retakePair.leader.id && draft.spike.explosion > 2) return 28;
+          if (separated && agent.id === retakePair.leader.id && !defenseRetakeMustAdvance(draft, agent)) return 28;
           if (agent.id === retakePair.leader.id) return -28;
           if (agent.id === retakePair.escort.id) return -16;
         }

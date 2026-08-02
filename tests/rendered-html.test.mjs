@@ -616,13 +616,29 @@ test("AI remembers a conceded entry and only re-enters after regrouping or utili
 test("defense retake deadline forces a paired trade entry before two-stage defuse expires", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function defenseRetakeMustAdvance/);
+  assert.match(page, /const DEFENSE_RETAKE_SITE_ENTRY_TARGET = 3/);
+  assert.match(page, /const DEFENSE_RETAKE_FORCE_ENTRY_BUFFER = 2/);
+  assert.match(page, /function defenseRetakeSiteDistance/);
+  assert.match(page, /siteEntryTurns \+ DEFENSE_RETAKE_SITE_ENTRY_TARGET/);
+  assert.match(page, /function defenseRetakeForceEntry/);
+  assert.match(page, /siteEntryTurns \+ DEFENSE_RETAKE_FORCE_ENTRY_BUFFER/);
   assert.match(page, /const interactionTurns = game\.spike\.status === "planted" \? 2 : 1/);
-  assert.match(page, /game\.spike\.explosion <= travelTurns \+ interactionTurns/);
+  assert.match(page, /spikeTravelTurns \+ interactionTurns/);
   assert.match(page, /function defenseRetakePair/);
   assert.match(page, /alive\.length !== 2/);
-  assert.match(page, /pairSeparated && agent\.id === pair\.leader\.id && game\.spike\.explosion > 2/);
+  assert.match(page, /pairSeparated && agent\.id === pair\.leader\.id && !urgentRetake/);
   assert.match(page, /distance\(a, pair\.leader\.region\) \* 8/);
   assert.match(page, /separated && agent\.id === retakePair\.escort\.id/);
+  assert.match(page, /forceEntry \? -280 : -180/);
+  assert.match(page, /\$\{DEFENSE_RETAKE_SITE_ENTRY_TARGET\}턴 전 사이트 진입 목표/);
+  assert.match(page, /\$\{DEFENSE_RETAKE_FORCE_ENTRY_BUFFER\}턴 전 강제 돌파/);
+});
+
+test("Omen keeps every active dark smoke until its normal expiry", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /sourceSkill: definition\.id/);
+  assert.match(page, /sourceSkill: "dark"/);
+  assert.doesNotMatch(page, /smokes = (?:game|draft)\.smokes\.filter\(\(smoke\) => !\(smoke\.sourceAgentId === agent\.id && smoke\.sourceSkill === "dark"\)\)/);
 });
 
 test("AI commits to a strength-based recovery breach or flank across multiple turns", async () => {
