@@ -233,6 +233,13 @@ interface AiMovementHistory {
   expiresTeamTurn: number;
 }
 
+interface AiPostplantSurveillance {
+  site: "A" | "B" | null;
+  spikeRegion: number | null;
+  lastObservedTeamTurn: number;
+  lastObservedCycle: number;
+}
+
 interface VisibilityContext {
   actorSide: Side;
   viewerSide: Side;
@@ -506,6 +513,7 @@ interface GameState {
   aiRecoveryOrders: AiRecoveryOrder[];
   aiRetreatMemories: AiRetreatMemory[];
   aiMovementHistories: AiMovementHistory[];
+  aiPostplantSurveillance: AiPostplantSurveillance;
   lastSkillFx: SkillFx | null;
   lastMovementFx: MovementFx | null;
   postCombatMovementFxQueue: MovementFx[];
@@ -908,6 +916,7 @@ function createInitialGame(
     aiRecoveryOrders: [],
     aiRetreatMemories: [],
     aiMovementHistories: [],
+    aiPostplantSurveillance: { site: null, spikeRegion: null, lastObservedTeamTurn: -1, lastObservedCycle: -1 },
     lastSkillFx: null,
     lastMovementFx: null,
     postCombatMovementFxQueue: [],
@@ -1056,6 +1065,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.aiRecoveryOrders = [];
   game.aiRetreatMemories = [];
   game.aiMovementHistories = [];
+  game.aiPostplantSurveillance = { site: null, spikeRegion: null, lastObservedTeamTurn: -1, lastObservedCycle: -1 };
   game.lastSkillFx = null;
   game.lastMovementFx = null;
   game.postCombatMovementFxQueue = [];
@@ -1460,6 +1470,31 @@ interface AttackPostplantPressure {
   needsAction: boolean;
   checkerId: string | null;
   knownSiteEnemies: AiEnemyIntel[];
+  surveillanceDue: boolean;
+  retakeEta: number;
+}
+
+function refreshAttackPostplantSurveillance(game: GameState) {
+  ensureAiTacticalState(game);
+  const active = ["planted", "half", "defusing"].includes(game.spike.status) && game.spike.region !== null;
+  if (!active || game.spike.region === null) {
+    game.aiPostplantSurveillance = { site: null, spikeRegion: null, lastObservedTeamTurn: -1, lastObservedCycle: -1 };
+    return;
+  }
+  const site = siteForRegion(game.spike.region);
+  const samePlant = game.aiPostplantSurveillance.spikeRegion === game.spike.region && game.aiPostplantSurveillance.site === site;
+  if (!samePlant) {
+    game.aiPostplantSurveillance = {
+      site,
+      spikeRegion: game.spike.region,
+      lastObservedTeamTurn: game.teamTurns.attack - 1,
+      lastObservedCycle: game.cycle - 1,
+    };
+  }
+  if (observedRegions(game, "attack").has(game.spike.region)) {
+    game.aiPostplantSurveillance.lastObservedTeamTurn = game.teamTurns.attack;
+    game.aiPostplantSurveillance.lastObservedCycle = game.cycle;
+  }
 }
 
 function attackPostplantPressure(game: GameState): AttackPostplantPressure {
@@ -1467,16 +1502,33 @@ function attackPostplantPressure(game: GameState): AttackPostplantPressure {
   const spikeRegion = active ? game.spike.region : null;
   const site = spikeRegion !== null ? siteForRegion(spikeRegion) : null;
   if (!active || spikeRegion === null || !site) {
-    return { active: false, spikeRegion, site, spikeObserved: false, urgency: "none", urgencyLevel: 0, needsAction: false, checkerId: null, knownSiteEnemies: [] };
+    return { active: false, spikeRegion, site, spikeObserved: false, urgency: "none", urgencyLevel: 0, needsAction: false, checkerId: null, knownSiteEnemies: [], surveillanceDue: false, retakeEta: 99 };
   }
 
   const aliveAttackers = game.teams.attack.agents.filter((agent) => agent.alive && !isChanneling(game, agent));
   const spikeObserved = observedRegions(game, "attack").has(spikeRegion);
-  const knownSiteEnemies = aiEnemyIntel(game, "attack").filter((enemy) =>
+  const enemyIntel = aiEnemyIntel(game, "attack");
+  const knownSiteEnemies = enemyIntel.filter((enemy) =>
     enemy.agent.alive
     && enemy.confidence >= 0.45
     && SITE_REGIONS[site].includes(enemy.region));
   const knownEnemyOnSpike = knownSiteEnemies.some((enemy) => enemy.region === spikeRegion);
+  const retakeEta = enemyIntel.length
+    ? Math.min(...enemyIntel.map((enemy) => distance(enemy.region, spikeRegion)))
+    : 3;
+  const routes = postplantRetakeRoutes(game, spikeRegion);
+  const routeCovered = aliveAttackers.some((agent) => agent.waitDirs.some((waitRegion) =>
+    (waitRegion === spikeRegion || routes.some((route) => route.slice(0, -1).includes(waitRegion)))
+    && !isWaitPathSmokeBlocked(game, agent.region, waitRegion)));
+  const delayingDevice = game.deployables.some((item) =>
+    item.owner === "attack"
+    && (SITE_REGIONS[site].includes(item.region) || routes.some((route) => route.slice(0, -1).includes(item.region))));
+  const storedObservation = game.aiPostplantSurveillance?.spikeRegion === spikeRegion
+    ? game.aiPostplantSurveillance.lastObservedTeamTurn
+    : game.teamTurns.attack - 1;
+  const checkAge = Math.max(0, game.teamTurns.attack - storedObservation);
+  const checkInterval = retakeEta <= 2 ? 1 : routeCovered || delayingDevice ? 2 : 1;
+  const surveillanceDue = !spikeObserved && checkAge >= checkInterval;
 
   const urgency: AttackPostplantUrgency = game.spike.status === "defusing"
     ? "final-defuse"
@@ -1484,7 +1536,7 @@ function attackPostplantPressure(game: GameState): AttackPostplantPressure {
       ? "half-defuse"
       : knownSiteEnemies.length
         ? "site-entry"
-        : !spikeObserved
+        : surveillanceDue
           ? "surveillance-gap"
           : "none";
   const urgencyLevel = urgency === "final-defuse" ? 4
@@ -1493,7 +1545,7 @@ function attackPostplantPressure(game: GameState): AttackPostplantPressure {
         : urgency === "surveillance-gap" ? 1
           : 0;
   const needsAction = urgencyLevel > 0 && (
-    !spikeObserved
+    surveillanceDue
     || knownEnemyOnSpike
     || game.spike.status === "half"
     || game.spike.status === "defusing"
@@ -1518,7 +1570,7 @@ function attackPostplantPressure(game: GameState): AttackPostplantPressure {
       || a.id.localeCompare(b.id);
   })[0] : null;
 
-  return { active, spikeRegion, site, spikeObserved, urgency, urgencyLevel, needsAction, checkerId: checker?.id ?? null, knownSiteEnemies };
+  return { active, spikeRegion, site, spikeObserved, urgency, urgencyLevel, needsAction, checkerId: checker?.id ?? null, knownSiteEnemies, surveillanceDue, retakeEta };
 }
 
 function attackPostplantMustContest(game: GameState, agent: Agent) {
@@ -1644,6 +1696,7 @@ function ensureAiTacticalState(game: GameState) {
   game.aiRecoveryOrders ??= [];
   game.aiRetreatMemories ??= [];
   game.aiMovementHistories ??= [];
+  game.aiPostplantSurveillance ??= { site: null, spikeRegion: null, lastObservedTeamTurn: -1, lastObservedCycle: -1 };
   game.lastMovementFx ??= null;
   game.postCombatMovementFxQueue ??= [];
   game.attackPlan.operatorMode ??= "none";
@@ -2718,7 +2771,12 @@ function refreshAiEnemyKnowledge(game: GameState, side: Side) {
   const enemies = game.teams[otherSide(side)].agents;
   game.aiEnemyKnowledge = game.aiEnemyKnowledge.filter((memory) => {
     const enemy = getAgent(game, memory.agentId);
-    return memory.observer !== side || !!enemy?.alive;
+    if (memory.observer !== side) return true;
+    if (!enemy?.alive) return false;
+    const confirmedVacated = observed.has(memory.region)
+      && enemy.region !== memory.region
+      && !enemy.detected;
+    return !confirmedVacated;
   });
   enemies.forEach((enemy) => {
     if (!enemy.alive || (!enemy.detected && !observed.has(enemy.region))) return;
@@ -7713,6 +7771,7 @@ export default function Home() {
       return;
     }
     refreshAiEnemyKnowledge(draft, side);
+    if (side === "attack") refreshAttackPostplantSurveillance(draft);
     pruneAiRecoveryOrders(draft);
     if (side === "attack") {
       updateAttackLurkerPlan(draft);

@@ -1068,7 +1068,13 @@ test("postplant AI backs off, watches the objective, and rejects inward idle hol
   assert.match(page, /function aiPostplantNeedsWait/);
   assert.match(page, /if \(postplantAttacker\)/);
   assert.match(page, /function attackPostplantPressure/);
+  assert.match(page, /interface AiPostplantSurveillance/);
+  assert.match(page, /function refreshAttackPostplantSurveillance/);
+  assert.match(page, /lastObservedTeamTurn: game\.teamTurns\.attack/);
   assert.match(page, /observedRegions\(game, "attack"\)\.has\(spikeRegion\)/);
+  assert.match(page, /const checkInterval = retakeEta <= 2 \? 1 : routeCovered \|\| delayingDevice \? 2 : 1/);
+  assert.match(page, /const surveillanceDue = !spikeObserved && checkAge >= checkInterval/);
+  assert.match(page, /const confirmedVacated = observed\.has\(memory\.region\)/);
   assert.match(page, /SITE_REGIONS\[site\]\.includes\(enemy\.region\)/);
   assert.match(page, /game\.spike\.status === "half"/);
   assert.match(page, /game\.spike\.status === "defusing"[\s\S]{0,60}\? "final-defuse"/);
