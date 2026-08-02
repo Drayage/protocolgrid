@@ -2272,7 +2272,9 @@ function acceptPendingContact(game: GameState, enemyId: string) {
     return;
   }
   const queueIndex = game.combatQueue.length;
-  resolveEngagement(game, agent, enemy, contact.priority, contact.canAttack, contact.moveBonus, false);
+  const waiting = enemy.waitDirs.includes(agent.region)
+    && (!isWaitPathSmokeBlocked(game, enemy.region, agent.region) || enemy.detected || agent.detected);
+  resolveEngagement(game, agent, enemy, contact.priority, contact.canAttack, contact.moveBonus, waiting);
   const scene = game.combatQueue[queueIndex];
   if (scene?.kind === "agent" && scene.range === 1 && contact.canAttack && !scene.openingAttackRequiredIds.includes(agent.id)) {
     scene.openingAttackRequiredIds.push(agent.id);
@@ -3630,6 +3632,13 @@ function aiSafeStrategicWaitDirections(game: GameState, agent: Agent) {
         && !isWaitPathSmokeBlocked(game, agent.region, region);
     })
     .sort((a, b) => aiStrategicWaitScore(game, agent, b) - aiStrategicWaitScore(game, agent, a) || a - b);
+}
+
+function aiVisibleAdjacentEnemies(game: GameState, agent: Agent) {
+  return game.teams[otherSide(agent.team)].agents.filter((enemy) => {
+    if (!enemy.alive || distance(agent.region, enemy.region) !== 1) return false;
+    return !isWaitPathSmokeBlocked(game, agent.region, enemy.region) || agent.detected || enemy.detected;
+  });
 }
 
 function aiPostplantWaitDirection(game: GameState, agent: Agent) {
@@ -5998,7 +6007,7 @@ function CombatTransitionScene({ scene, mode }: { scene: CombatScene; mode: "int
         <div className="combat-transition-map-image" />
         {EDGES.map(([a, b]) => <span key={`transition-edge-${a}-${b}`} className="map-edge" style={connectionStyle(a, b)} />)}
         {moverApproachId !== moverContactId && <span className="contact-approach-line" style={connectionStyle(moverApproachId, moverContactId)} />}
-        {mode === "intro" && (scene.waiting || scene.offAngle) && scene.waitDirections.map((direction) => <span key={`transition-hold-${holderContactId}-${direction}`} className={`transition-wait-cone ${scene.offAngle ? "diverted" : "triggered"}`} style={connectionStyle(holderContactId, direction)}><i /></span>)}
+        {mode === "intro" && (scene.waiting || scene.offAngle) && scene.waitDirections.map((direction) => <span key={`transition-hold-${holderContactId}-${direction}`} className={`transition-wait-cone ${scene.offAngle || direction !== moverContactId ? "diverted" : "triggered"}`} style={connectionStyle(holderContactId, direction)}><i /></span>)}
         {mode === "intro" && <span className={`contact-line ${scene.waiting ? "hold-line" : "fight-line"}`} style={directedContactStyle(contactSource, contactTarget)}><i /></span>}
         {mode === "outro" && (scene.postMovementFx ?? []).map((movement) => {
           const from = movement.path[0];
@@ -7606,13 +7615,26 @@ export default function Home() {
     if (draft.pendingWait) {
       const agent = getAgent(draft, draft.pendingWait);
       if (agent?.alive) {
-        const preferred = aiPostplantWaitDirection(draft, agent)
-          ?? aiSafeStrategicWaitDirections(draft, agent)[0]
-          ?? aiStrategicWaitDirections(draft, agent, 1)[0];
-        const legalTargets = waitTargetsFor(agent);
-        const target = preferred !== undefined && legalTargets.includes(preferred) ? preferred : undefined;
-        if (target !== undefined) startWaitAttempt(draft, agent, target);
-        else addLog(draft, `${agent.name} AI · 후방 아군이 확보한 구역 대신 대기를 생략하고 전진 행동을 유지합니다.`);
+        const visibleAdjacentEnemies = aiVisibleAdjacentEnemies(draft, agent);
+        const currentWaitCoversAll = visibleAdjacentEnemies.length > 0
+          && agent.waitDirs.length > 0
+          && visibleAdjacentEnemies.every((enemy) => agent.waitDirs.includes(enemy.region));
+        if (visibleAdjacentEnemies.length > 0) {
+          if (currentWaitCoversAll) {
+            addLog(draft, `${agent.name} AI · 기존 적이 있는 대기 구역을 그대로 감시합니다. 적이 교전을 선택하면 대기 반응합니다.`);
+          } else {
+            clearWait(agent);
+            addLog(draft, `${agent.name} AI · 인접한 적과 교전을 보류했으므로 다른 방향 대기를 만들지 않습니다.`);
+          }
+        } else {
+          const preferred = aiPostplantWaitDirection(draft, agent)
+            ?? aiSafeStrategicWaitDirections(draft, agent)[0]
+            ?? aiStrategicWaitDirections(draft, agent, 1)[0];
+          const legalTargets = waitTargetsFor(agent);
+          const target = preferred !== undefined && legalTargets.includes(preferred) ? preferred : undefined;
+          if (target !== undefined) startWaitAttempt(draft, agent, target);
+          else addLog(draft, `${agent.name} AI · 후방 아군이 확보한 구역 대신 대기를 생략하고 전진 행동을 유지합니다.`);
+        }
       }
       if (!draft.combatQueue.length) draft.pendingWait = null;
       return;
@@ -8188,7 +8210,7 @@ export default function Home() {
             </div>}
             {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && !combatIntermission && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
               <header><span>VISUAL CONTACT // 거리 1</span><strong>{pendingContactAgent.name}이 적을 발견했습니다</strong><p>교전을 선택하면 이 요원은 첫 공격을 마칠 때까지 이탈할 수 없습니다.</p></header>
-              <div>{pendingContactEnemies.map((enemy) => { const offAngle = enemy.waitDirs.length > 0 && !enemy.waitDirs.includes(pendingContactAgent.region); return <button key={enemy.id} className={`contact-engage ${offAngle ? "off-angle-contact" : ""}`} onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{offAngle ? `기습 우선도 ${Math.max(1, (game.pendingContact?.priority ?? 3) - 1)} · 적 대응 우선도 3` : `${regionName(enemy.region)} · 양쪽 보너스 없음`}</small>{offAngle && <em>다른 방향 대기 중: {enemy.waitDirs.map((region) => `${region}번`).join(" · ")} · 대기 미발동</em>}</span></button>; })}</div>
+              <div>{pendingContactEnemies.map((enemy) => { const matchingWait = enemy.waitDirs.includes(pendingContactAgent.region); const offAngle = enemy.waitDirs.length > 0 && !matchingWait; return <button key={enemy.id} className={`contact-engage ${offAngle ? "off-angle-contact" : ""}`} onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{matchingWait ? "대기 반응 · 적 기본 우선도 1" : offAngle ? `기습 우선도 ${Math.max(1, (game.pendingContact?.priority ?? 3) - 1)} · 적 대응 우선도 3` : `${regionName(enemy.region)} · 양쪽 보너스 없음`}</small>{matchingWait && <em>현재 위치를 대기 중 · 교전 선택 시 대기 발동</em>}{offAngle && <em>다른 방향 대기 중: {enemy.waitDirs.map((region) => `${region}번`).join(" · ")} · 대기 미발동</em>}</span></button>; })}</div>
               <button className="contact-skip" onClick={skipOptionalContact}><b>교전하지 않기</b><small>{game.pendingContact.source === "turn-start" ? "턴을 그대로 시작합니다" : "남은 이동·행동을 계속합니다"}</small></button>
             </section>}
           </div>

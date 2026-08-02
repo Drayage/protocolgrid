@@ -104,7 +104,10 @@ test("distance-one sight is optional while same-region and new-entry waits stay 
   assert.match(page, /game\.pendingContact =/);
   assert.match(page, /카드 소모 없이 교전 여부를 선택하세요/);
   assert.match(page, /!revealedWaitDirs\.includes\(mover\.region\)/);
-  assert.match(page, /!enemy\.waitDirs\.includes\(pendingContactAgent\.region\)/);
+  assert.match(page, /const waiting = enemy\.waitDirs\.includes\(agent\.region\)/);
+  assert.match(page, /resolveEngagement\(game, agent, enemy, contact\.priority, contact\.canAttack, contact\.moveBonus, waiting\)/);
+  assert.match(page, /const matchingWait = enemy\.waitDirs\.includes\(pendingContactAgent\.region\)/);
+  assert.match(page, /const offAngle = enemy\.waitDirs\.length > 0 && !matchingWait/);
   assert.match(page, /const surprisePriority = offAngle \? 1 : 0/);
   assert.match(page, /moverTradePriority - surprisePriority/);
   assert.match(page, /\(waiting \? 1 : 3\)/);
@@ -1140,6 +1143,7 @@ test("combat presentation holds automatic actions above, reveals final AI result
   assert.match(css, /@media \(max-width: 800px\)[\s\S]*?\.transition-wait-origin \{ width: 46px; height: 46px;/);
   assert.match(css, /\.contact-focus-pulse\.ambush/);
   assert.match(css, /@keyframes holdConeTrigger/);
+  assert.match(page, /scene\.offAngle \|\| direction !== moverContactId \? "diverted" : "triggered"/);
   assert.match(css, /transition-contact-token\.dead/);
   assert.match(css, /transition-contact-token\.retreating/);
   assert.match(css, /combat-weapon-readout\.faces-right \.weapon-art \{ transform: scaleX\(-1\)/);
@@ -1158,5 +1162,9 @@ test("AI evaluates optional distance-one combat before accepting contact", async
   assert.match(page, /const urgentObjective = aiRetreatReentryIsUrgent\(game, actor\)/);
   assert.match(page, /const assessment = chooseAiOptionalContact\(draft, contact\)/);
   assert.match(page, /acceptPendingContact\(draft, assessment\.enemyId\)/);
+  assert.match(page, /function aiVisibleAdjacentEnemies/);
+  assert.match(page, /const currentWaitCoversAll = visibleAdjacentEnemies\.length > 0/);
+  assert.match(page, /visibleAdjacentEnemies\.every\(\(enemy\) => agent\.waitDirs\.includes\(enemy\.region\)\)/);
+  assert.match(page, /인접한 적과 교전을 보류했으므로 다른 방향 대기를 만들지 않습니다/);
   assert.match(page, /AI 요원.*거리 1 교전 조건을 계산하고 교전을 보류합니다/);
 });
