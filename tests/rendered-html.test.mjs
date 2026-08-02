@@ -203,6 +203,29 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   }
 });
 
+test("extra actions belong to one card while AI weighs immediate objectives, setup utility, and known holds", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function clearTeamExtraActions\(game: GameState, side: Side\)/);
+  assert.match(page, /function commitCardForPreAction\(game: GameState, card: ActionCard, agent: Agent\)/);
+  assert.doesNotMatch(page, /extraActions \+= 1/);
+  assert.match(page, /clearTeamExtraActions\(game, agent\.team\)[\s\S]{0,120}agent\.extraActions = 1/);
+  assert.match(page, /clearTeamExtraActions\(draft, endingSide\)/);
+  assert.match(page, /function aiPreCardActionPlan/);
+  assert.match(page, /function aiShouldReserveCardExtraForDestination/);
+  assert.match(page, /kind: "weapon"/);
+  assert.match(page, /kind: "spike"/);
+  assert.match(page, /tryUseAiSkill\(simulation, side\)/);
+  assert.match(page, /tryPrepareAiPreCardAction\(draft, side\)/);
+  assert.match(page, /const resolvingCommittedAiCard/);
+  assert.match(page, /committedAiCard \? \[committedAiCard\]/);
+  assert.match(page, /function aiKnownWaitEntryAssessment/);
+  assert.match(page, /function aiMovementDestinationAcceptable/);
+  assert.match(page, /const retreatEntry = aiKnownWaitEntryAssessment\(game, actor, retreatRegion, true\)/);
+  assert.match(page, /retreatDestinationIsViable/);
+  assert.match(page, /현재 카드 추가행동/);
+  assert.match(page, /다음 카드나 턴으로 이월되지 않습니다/);
+});
+
 test("Phoenix holds healing fire while Omen teleports only into a covered empty angle", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function aiPhoenixShouldHoldOwnFire/);
@@ -432,9 +455,9 @@ test("AI protects spike transport, recovers drops, and converts defense to spike
   assert.match(page, /스파이크 확보 · 인접 구역 교차 대기 · 공격팀 회수 차단/);
   assert.match(page, /if \(region === game\.spike\.region\) score \+= 170/);
   assert.match(page, /guardingDroppedSpike/);
-  assert.match(page, /agent\.alive && agent\.extraActions > 0 && !isChanneling\(game, agent\)/);
+  assert.match(page, /if \(!agent\.alive \|\| agent\.extraActions < 1 \|\| isChanneling\(game, agent\)\) return false/);
   assert.match(page, /item\.alive && item\.extraActions > 0 && !isChanneling\(game, item\)/);
-  assert.match(page, /agent\.alive && !isChanneling\(draft, agent\) && canUseCard\(card, agent\)/);
+  assert.match(page, /canUseCard\(card, agent\) && !holdingPlantSite && !holdingOwnFireForHealing/);
   assert.match(page, /agent\.alive && !isChanneling\(draft, agent\)/);
 });
 
@@ -459,7 +482,7 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /game\.spike\.carrierId === agent\.id/);
   assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
   assert.match(page, /!\(side === "attack" && attackForcedPlantMode\(draft\)\) && aiPickupWeaponAtCurrentRegion\(draft, side\)/);
-  assert.match(page, /&& !aiWeaponPickupObjective\(draft, agent\)/);
+  assert.match(page, /&& !aiCurrentWeaponPickup\(draft, agent\)/);
   assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \? null : aiWeaponDestination/);
   assert.match(page, /const classicWeaponClaimants = forcedPlant \? \[\] : team\.agents\.filter/);
   assert.match(page, /if \(weaponObjective && agent\.weapon === "classic"\) return -48/);
@@ -556,7 +579,7 @@ test("AI identifies known Operators and avoids unsupported head-on lanes", async
   assert.match(page, /const operatorHeadOn = opponent\.weapon === "operator"/);
   assert.match(page, /const operatorRetreatBias = operatorHeadOn && !objectiveCommit \? 24 : 0/);
   assert.match(page, /returnFire\.killChance >= 60[\s\S]{0,80}attackOdds\.killChance < 35/);
-  assert.match(page, /return operatorDisengage \|\| tradeRelayRetreat \|\| tacticalResetRetreat \|\| genericRetreat/);
+  assert.match(page, /retreatDestinationIsViable && \(operatorDisengage \|\| tradeRelayRetreat \|\| tacticalResetRetreat \|\| genericRetreat\)/);
 });
 
 test("AI rotates away from a known Operator but commits a coordinated breach when every site is held", async () => {
