@@ -73,7 +73,9 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /ENEMY CONTACT/);
   assert.match(page, /lastSkillFx: SkillFx \| null/);
   assert.match(page, /enemy\.region === region \|\| enemy\.waitDirs\.includes\(region\)/);
-  assert.match(page, /weapon\.price - WEAPONS\[agent\.weapon\]\.price/);
+  assert.match(page, /function buyPhaseWeaponDifference/);
+  assert.match(page, /buyBaselineWeapon: WeaponId/);
+  assert.match(page, /보존 총기 판매 불가/);
   assert.match(page, /pendingContact: PendingContact \| null/);
   assert.match(page, /VISUAL CONTACT \/\/ 거리 1/);
   assert.match(page, /queueNextTurnStartContact/);
@@ -302,7 +304,8 @@ test("trade bonuses can be created and consumed by either side of a continuing e
   assert.match(page, /scene\.holderAimBonus/);
   assert.match(page, /if \(attacker\) \{\s*addTrade\(game, \{ enemyId: attacker\.id, team: defender\.team/);
   assert.doesNotMatch(page, /defender\.team === game\.turnSide/);
-  assert.match(page, /TRADE · AIM \+1 · 우선도 \+2단계/);
+  assert.match(page, /TRADE · 우선도 \+\{tradePriorityBonus\}단계 지속/);
+  assert.match(page, /moverTradePriorityBonus: moverTradePriority/);
   assert.match(css, /\.trade-ribbon/);
 });
 
@@ -773,8 +776,13 @@ test("four health, two armor, weapons, and utility share the six-durability bala
   assert.match(page, /spectre: \{[^}]*body: 3, head: 4/);
   assert.match(page, /bulldog: \{[^}]*body: 3, head: 4/);
   assert.match(page, /outlaw: \{[^}]*body: 5, head: 6, price: 20/);
-  assert.match(page, /const outlawNonWaitPenalty = weapon\.id === "outlaw" && !waiting \? 1 : 0/);
+  assert.match(page, /const sniperNonWaitDamagePenalty = weapon\.type === "sniper" && !waiting \? 1 : 0/);
   assert.match(page, /비대기 공격 몸통·헤드 피해 -1/);
+  assert.match(page, /트레이드 상대 페널티: 교전 동안 우선도 \+1·첫 사격 대기 에임 \+1 미적용/);
+  assert.match(page, /holderTradeTargetPenalty/);
+  assert.match(page, /function combatShotIsWaiting[\s\S]{0,180}fighterId === scene\.holder\.id && scene\.waiting/);
+  assert.match(page, /function combatShotGetsWaitAim[\s\S]{0,260}!\(scene\.holderTradeTargetPenalty && openingShot\)/);
+  assert.match(page, /TRADE TARGET · 우선도 \+1 지속 · 첫 사격 대기 에임 미적용/);
   assert.match(page, /judge: \{[^}]*body: 4, head: 5/);
   assert.match(page, /phantom: \{[^}]*body: 4, head: 5/);
   assert.match(page, /vandal: \{[^}]*body: 4, head: 6/);

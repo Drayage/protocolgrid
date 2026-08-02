@@ -86,6 +86,7 @@ interface Agent {
   armorDamaged: boolean;
   alive: boolean;
   weapon: WeaponId;
+  buyBaselineWeapon: WeaponId;
   extraActions: number;
   waitDirs: number[];
   waitStamp: number;
@@ -387,6 +388,12 @@ interface CombatScene {
   canMoverAttack: boolean;
   moverAimBonus: number;
   holderAimBonus: number;
+  moverTradePriorityBonus: number;
+  holderTradePriorityBonus: number;
+  moverTradeTargetPenalty: boolean;
+  holderTradeTargetPenalty: boolean;
+  moverShotsFired: number;
+  holderShotsFired: number;
   moverMoveBonus: number;
   moverPriorityBase: number;
   moverRetreated: boolean;
@@ -628,8 +635,7 @@ function weaponRuleSummary(weapon: Weapon) {
   if (weapon.move) rules.push(`상시 무빙 +${weapon.move}`);
   if (weapon.type === "normal") rules.push("사거리 1", "거리 0 에임 +1");
   if (weapon.type === "shotgun") rules.push("사거리 1", "거리 1 에임 -2", `거리 0 에임 +2 · 피해 +${SHOTGUN_CLOSE_DAMAGE_BONUS}`);
-  if (weapon.type === "sniper") rules.push("대기 구역 거리 2 지정", "대기 사격 에임 +1", "비대기 교전 우선도 +1(한 단계 느림)", "거리 0 에임 -1");
-  if (weapon.id === "outlaw") rules.push("비대기 공격 몸통·헤드 피해 -1");
+  if (weapon.type === "sniper") rules.push("대기 구역 거리 2 지정", "대기 사격 에임 +1", "비대기 교전 우선도 +1(한 단계 느림)", "비대기 공격 몸통·헤드 피해 -1", "트레이드 상대 페널티: 교전 동안 우선도 +1·첫 사격 대기 에임 +1 미적용", "거리 0 에임 -1");
   return rules.join(" · ");
 }
 
@@ -802,6 +808,7 @@ function createAgent(name: string, team: Side): Agent {
     armorDamaged: false,
     alive: true,
     weapon: "classic",
+    buyBaselineWeapon: "classic",
     extraActions: 0,
     waitDirs: [],
     waitStamp: 0,
@@ -942,6 +949,7 @@ function rebuildDeck(team: TeamState, seed: number) {
 function resetAgentForRound(agent: Agent, side: Side, economyReset: boolean) {
   const survived = agent.alive;
   if (economyReset || !survived) agent.weapon = "classic";
+  agent.buyBaselineWeapon = agent.weapon;
   const preserveArmor = !economyReset && survived && agent.armorType !== "regen" && !agent.armorDamaged;
   if (!preserveArmor) {
     agent.armor = 0;
@@ -1464,6 +1472,15 @@ function addTrade(game: GameState, trade: TradeState) {
   game.trade.push(trade);
 }
 
+function buyPhaseWeaponCost(agent: Agent, weaponId: WeaponId) {
+  const baseline = agent.buyBaselineWeapon ?? agent.weapon;
+  return weaponId === baseline ? 0 : WEAPONS[weaponId].price;
+}
+
+function buyPhaseWeaponDifference(agent: Agent, weaponId: WeaponId) {
+  return buyPhaseWeaponCost(agent, weaponId) - buyPhaseWeaponCost(agent, agent.weapon);
+}
+
 function ensureAiTacticalState(game: GameState) {
   game.aiEnemyKnowledge ??= [];
   game.aiRecoveryOrders ??= [];
@@ -1631,15 +1648,25 @@ function appliedDamageProfile(attacker: Agent, defender: Agent, range: number, w
   const weapon = WEAPONS[attacker.weapon];
   const rangeBonus = weapon.type === "shotgun" && range === 0 ? SHOTGUN_CLOSE_DAMAGE_BONUS : 0;
   const vulnerableBonus = vulnerable ? 1 : 0;
-  const outlawNonWaitPenalty = weapon.id === "outlaw" && !waiting ? 1 : 0;
+  const sniperNonWaitDamagePenalty = weapon.type === "sniper" && !waiting ? 1 : 0;
   return {
-    body: weapon.body + rangeBonus + vulnerableBonus - outlawNonWaitPenalty,
-    head: weapon.head + rangeBonus + vulnerableBonus - outlawNonWaitPenalty,
+    body: weapon.body + rangeBonus + vulnerableBonus - sniperNonWaitDamagePenalty,
+    head: weapon.head + rangeBonus + vulnerableBonus - sniperNonWaitDamagePenalty,
   };
 }
 
-function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number) {
-  const aim = appliedAimSize(game, attacker, defender, range, waiting, aimBonus);
+function combatShotIsWaiting(scene: CombatScene, fighterId: string) {
+  return fighterId === scene.holder.id && scene.waiting;
+}
+
+function combatShotGetsWaitAim(scene: CombatScene, fighterId: string, firstShot?: boolean) {
+  const isHolder = fighterId === scene.holder.id;
+  const openingShot = firstShot ?? (isHolder ? scene.holderShotsFired === 0 : scene.moverShotsFired === 0);
+  return isHolder && scene.waiting && !(scene.holderTradeTargetPenalty && openingShot);
+}
+
+function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number, waitAimActive = waiting) {
+  const aim = appliedAimSize(game, attacker, defender, range, waitAimActive, aimBonus);
   const move = appliedMoveSize(game, defender, defenderMoveBonus);
   const damage = appliedDamageProfile(attacker, defender, range, waiting);
   const total = aim * move;
@@ -1689,8 +1716,9 @@ function calculateShotOutcomeProbabilities(
   defenderMoveBonus: number,
   ignoreConsumedAttackEffects: boolean,
   defenderVulnerable: boolean,
+  waitAimActive = waiting,
 ): ShotOutcomeProbability[] {
-  const aim = appliedAimSize(game, attacker, defender, range, waiting, aimBonus, ignoreConsumedAttackEffects);
+  const aim = appliedAimSize(game, attacker, defender, range, waitAimActive, aimBonus, ignoreConsumedAttackEffects);
   const move = appliedMoveSize(game, defender, defenderMoveBonus);
   const damage = appliedDamageProfile(attacker, defender, range, waiting, defenderVulnerable);
   const outcomes = new Map<string, ShotOutcomeProbability>();
@@ -1708,8 +1736,8 @@ function calculateShotOutcomeProbabilities(
   return [...outcomes.values()];
 }
 
-function makeShot(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number): ShotResult {
-  const aim = appliedAimSize(game, attacker, defender, range, waiting, aimBonus);
+function makeShot(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, defenderMoveBonus: number, waitAimActive = waiting): ShotResult {
+  const aim = appliedAimSize(game, attacker, defender, range, waitAimActive, aimBonus);
   const move = appliedMoveSize(game, defender, defenderMoveBonus);
   const damageProfile = appliedDamageProfile(attacker, defender, range, waiting);
   const aimRoll = roll(aim);
@@ -1888,16 +1916,20 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const moverStats = finalStats(game, mover);
   const enemyStats = finalStats(game, enemy);
   const surprisePriority = offAngle ? 1 : 0;
+  const moverTradeTargetPenalty = holderTradeAim > 0 && WEAPONS[mover.weapon].type === "sniper";
+  const holderTradeTargetPenalty = moverTradeAim > 0 && WEAPONS[enemy.weapon].type === "sniper";
   const moverSniperNonWaitPenalty = WEAPONS[mover.weapon].type === "sniper" ? 1 : 0;
   const holderSniperNonWaitPenalty = WEAPONS[enemy.weapon].type === "sniper" && !waiting ? 1 : 0;
-  const moverPrio = Math.max(1, moverPriority + moverSniperNonWaitPenalty + moverStats.priorityPenalty - moverStats.priorityBoost - moverTradePriority - surprisePriority);
-  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + holderSniperNonWaitPenalty + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority);
+  const moverPrio = Math.max(1, moverPriority + moverSniperNonWaitPenalty + (moverTradeTargetPenalty ? 1 : 0) + moverStats.priorityPenalty - moverStats.priorityBoost - moverTradePriority - surprisePriority);
+  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + holderSniperNonWaitPenalty + (holderTradeTargetPenalty ? 1 : 0) + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority);
   const simultaneous = moverPrio === enemyPrio;
   const firstActorId = moverPrio <= enemyPrio ? mover.id : enemy.id;
   const secondActorId = firstActorId === mover.id ? enemy.id : mover.id;
   if (offAngle) {
     addLog(game, `${mover.name}이 ${enemy.name}의 대기 반대 방향을 기습했습니다. ${mover.name}은 우선도 1단계 향상, ${enemy.name}은 대기 보너스 없이 일반 대응합니다.`);
   }
+  if (moverTradeTargetPenalty) addLog(game, `${mover.name}이 트레이드 상대 페널티를 받습니다. 교전 동안 우선도 +1 / 첫 사격 대기 에임 보너스 미적용.`);
+  if (holderTradeTargetPenalty) addLog(game, `${enemy.name}이 트레이드 상대 페널티를 받습니다. 교전 동안 우선도 +1 / 첫 사격 대기 에임 보너스 미적용.`);
   addLog(game, `지속 교전 시작: ${mover.name}(우선 ${moverPrio}) ↔ ${enemy.name}(우선 ${enemyPrio}).`);
   game.combatQueue.push({
     id: `combat-${Date.now()}-${game.combatQueue.length}`,
@@ -1919,6 +1951,12 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     canMoverAttack: canAttack,
     moverAimBonus: moverTradeAim,
     holderAimBonus: holderTradeAim,
+    moverTradePriorityBonus: moverTradePriority,
+    holderTradePriorityBonus: holderTradePriority,
+    moverTradeTargetPenalty,
+    holderTradeTargetPenalty,
+    moverShotsFired: 0,
+    holderShotsFired: 0,
     moverMoveBonus,
     moverPriorityBase: moverPriority,
     moverRetreated: false,
@@ -2011,6 +2049,12 @@ function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable,
     canMoverAttack: profile.canAttack,
     moverAimBonus: 0,
     holderAimBonus: 0,
+    moverTradePriorityBonus: 0,
+    holderTradePriorityBonus: 0,
+    moverTradeTargetPenalty: false,
+    holderTradeTargetPenalty: false,
+    moverShotsFired: 0,
+    holderShotsFired: 0,
     moverMoveBonus: profile.moveBonus,
     moverPriorityBase: profile.priority,
     moverRetreated: false,
@@ -3837,15 +3881,18 @@ function aiCombatTradeFollowup(game: GameState, scene: CombatScene, actor: Agent
     const odds = calculateShotOdds(game, ally, opponent, range, false, 1, 0);
     const allyDurability = Math.max(1, ally.hp + ally.armor);
     const holderWaiting = opponent.waitDirs.includes(ally.region) && !isWaitPathSmokeBlocked(game, opponent.region, ally.region);
-    const returnFire = calculateShotOdds(game, opponent, ally, range, holderWaiting, 0, 0);
+    const sniperTradeTargetPenalty = WEAPONS[opponent.weapon].type === "sniper";
+    const returnFire = calculateShotOdds(game, opponent, ally, range, holderWaiting, 0, 0, holderWaiting && !sniperTradeTargetPenalty);
     const weaponCondition = Math.max(-8, Math.min(12, (WEAPONS[ally.weapon].price - WEAPONS[actor.weapon].price) / 2));
     const tradePriorityValue = 16;
+    const sniperTradeCounterValue = sniperTradeTargetPenalty ? (opponent.weapon === "operator" ? 28 : 18) : 0;
     const score = odds.killChance * 1.35
       + odds.expectedDamage / opponentDurability * 55
       - returnFire.killChance * 0.75
       - returnFire.expectedDamage / allyDurability * 30
       + weaponCondition
-      + tradePriorityValue;
+      + tradePriorityValue
+      + sniperTradeCounterValue;
     return score > best.score
       ? { score, stronger: score >= actorValue + 6, allyId: ally.id }
       : best;
@@ -3947,9 +3994,10 @@ function aiCombatOdds(game: GameState, scene: CombatScene, attacker: Agent, defe
     attacker,
     defender,
     scene.range,
-    !attackerIsMover && scene.waiting,
+    combatShotIsWaiting(scene, attacker.id),
     attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus,
     defenderIsMover ? scene.moverMoveBonus : 0,
+    combatShotGetsWaitAim(scene, attacker.id),
   );
 }
 
@@ -3998,11 +4046,12 @@ function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: A
     attacker,
     defender,
     scene.range,
-    !attackerIsMover && scene.waiting,
+    combatShotIsWaiting(scene, attacker.id),
     firstShot ? attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus : 0,
     defenderIsMover ? scene.moverMoveBonus : 0,
     !firstShot,
     defenderVulnerable,
+    combatShotGetsWaitAim(scene, attacker.id, firstShot),
   );
 }
 
@@ -4014,8 +4063,8 @@ function aiCombatDuelOdds(game: GameState, scene: CombatScene, actor: Agent, opp
   addCombatDuelState(states, {
     actorDurability: Math.max(1, actor.hp + actor.armor),
     opponentDurability: Math.max(1, opponent.hp + opponent.armor),
-    actorFirstShot: true,
-    opponentFirstShot: true,
+    actorFirstShot: actor.id === scene.mover.id ? scene.moverShotsFired === 0 : scene.holderShotsFired === 0,
+    opponentFirstShot: opponent.id === scene.mover.id ? scene.moverShotsFired === 0 : scene.holderShotsFired === 0,
     actorVulnerable: actor.status.vulnerable,
     opponentVulnerable: opponent.status.vulnerable,
     actorTurn: true,
@@ -4896,9 +4945,10 @@ function combatAppliedStats(game: GameState, scene: CombatScene, fighter: Combat
   if (!agent || !opponent) return null;
   const isMover = fighter.id === scene.mover.id;
   const aimBonus = isMover ? scene.moverAimBonus : scene.holderAimBonus;
-  const previewAim = appliedAimSize(game, agent, opponent, scene.range, !isMover && scene.waiting, aimBonus);
+  const waitingShot = combatShotIsWaiting(scene, fighter.id);
+  const previewAim = appliedAimSize(game, agent, opponent, scene.range, combatShotGetsWaitAim(scene, fighter.id), aimBonus);
   const previewMove = appliedMoveSize(game, agent, isMover ? scene.moverMoveBonus : 0);
-  const previewDamage = appliedDamageProfile(agent, opponent, scene.range, !isMover && scene.waiting);
+  const previewDamage = appliedDamageProfile(agent, opponent, scene.range, waitingShot);
   const aim = fighter.shot?.aimSize ?? previewAim;
   const move = incomingShot?.moveSize ?? previewMove;
   const bodyDamage = fighter.shot?.bodyDamage ?? previewDamage.body;
@@ -4995,8 +5045,10 @@ function remainingSkillBuyCost(agent: Agent): number {
 }
 
 function aiBuyWeapon(team: TeamState, agent: Agent, weaponId: WeaponId) {
-  const difference = WEAPONS[weaponId].price - WEAPONS[agent.weapon].price;
-  if (difference <= 0 || team.funds < difference) return false;
+  if (agent.weapon === weaponId) return false;
+  agent.buyBaselineWeapon ??= agent.weapon;
+  const difference = buyPhaseWeaponDifference(agent, weaponId);
+  if (team.funds < difference) return false;
   agent.weapon = weaponId;
   team.funds -= difference;
   return true;
@@ -5097,7 +5149,7 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
         : ["vandal", "phantom", "judge", "outlaw", "bulldog", "spectre"];
   for (const agent of team.agents) {
     const weapon = preferred.map((id) => WEAPONS[id]).find((item) => {
-      const difference = item.price - WEAPONS[agent.weapon].price;
+      const difference = buyPhaseWeaponDifference(agent, item.id);
       return item.unlock <= game.matchRound
         && weaponTacticalValue(item.id) > weaponTacticalValue(agent.weapon)
         && difference > 0
@@ -5213,8 +5265,8 @@ function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onBu
       <aside className="purchase-roster"><span className="eyebrow">TEAM LOADOUT</span><h2>{SIDE_LABEL[side]}</h2><p>{game.matchRound === 1 ? "모든 요원은 클래식과 방어구 0, 스킬 0회로 시작합니다." : "생존 총기와 무피해 방어구는 보존됐습니다. 스킬은 매 라운드 다시 구매합니다."} 팀 공동 자금을 원하는 요원에게 분배하세요.</p><div>{team.agents.map((item) => <button key={item.id} className={agent?.id === item.id ? "selected" : ""} onClick={() => onSelect(item.id)}><i className={`role-${item.role} ${agentArtClass(item.name)}`} aria-label={`${item.name} 초상`} /><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></button>)}</div><footer><span>사용</span><b>{spent}원</b><i style={{ width: `${team.buyStartFunds ? Math.min(100, (spent / team.buyStartFunds) * 100) : 0}%` }} /></footer></aside>
       <section className="purchase-catalog">
         <div className="purchase-agent-head"><div className={`purchase-avatar role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} /><div><span className="eyebrow">SELECTED AGENT</span><h2>{agent.name}</h2><p>{ROLE_LABEL[agent.role]} · 에임 {ROLE_STATS[agent.role].aim} / 무빙 {ROLE_STATS[agent.role].move}</p></div><div className="current-loadout"><span>현재 장비</span><strong>{WEAPONS[agent.weapon].name}</strong><small>방어 {agent.armor} · 스킬 {Object.values(agent.skills).reduce((sum, value) => sum + value, 0)}회</small></div></div>
-        <div className="purchase-section-title"><div><span>01</span><strong>총기</strong></div><p>{game.matchRound === 1 ? "클래식 · 셰리프" : game.matchRound === 2 ? "버키 · 스펙터 · 불독 · 아웃로 추가" : "모든 총기 해금"} · 교체 시 기존 장비값 환불</p></div>
-        <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const difference = weapon.price - WEAPONS[agent.weapon].price; const bulkTargets = team.agents.filter((item) => item.weapon !== weapon.id); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + weapon.price - WEAPONS[item.weapon].price, 0); return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || difference > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)} title={weaponRuleSummary(weapon)}><WeaponSilhouette weapon={weapon.id} /><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : difference < 0 ? `환불 ${-difference}원` : difference ? `${difference}원` : "무료 교체"}</b></button><button className="bulk-buy" disabled={locked || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div>
+        <div className="purchase-section-title"><div><span>01</span><strong>총기</strong></div><p>{game.matchRound === 1 ? "클래식 · 셰리프" : game.matchRound === 2 ? "버키 · 스펙터 · 불독 · 아웃로 추가" : "모든 총기 해금"} · 보존 총기 판매 불가 · 이번 구매만 변경 시 환불</p></div>
+        <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const difference = buyPhaseWeaponDifference(agent, weapon.id); const bulkTargets = team.agents.filter((item) => item.weapon !== weapon.id); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + buyPhaseWeaponDifference(item, weapon.id), 0); return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || difference > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)} title={weaponRuleSummary(weapon)}><WeaponSilhouette weapon={weapon.id} /><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : difference < 0 ? `이번 구매 환불 ${-difference}원` : difference ? `${difference}원` : weapon.id === (agent.buyBaselineWeapon ?? agent.weapon) ? "보존 총기로 복귀" : "무료 교체"}</b></button><button className="bulk-buy" disabled={locked || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `이번 구매 환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div>
         <div className="purchase-lower">
           <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors">{([{"type":"none","name":"방어구 없음","detail":"장비값 환불","price":0,"value":0},{"type":"light","name":"소형 방어구","detail":"방어 1","price":2,"value":1},{"type":"regen","name":"회복 방어구","detail":"턴 종료 회복","price":4,"value":1},{"type":"heavy","name":"대형 방어구","detail":"방어 2","price":6,"value":2}] as const).map((armor) => { const difference = armor.price - ARMOR_PRICE[agent.armorType]; const bulkTargets = team.agents.filter((item) => item.armorType !== armor.type); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + armor.price - ARMOR_PRICE[item.armorType], 0); return <div key={armor.type} className="purchase-armor-option"><button className="purchase-primary" disabled={difference > team.funds || agent.armorType === armor.type} onClick={() => onArmor(armor.type, armor.price, armor.value)}><strong>{armor.name}</strong><span>{armor.detail}</span><b>{difference < 0 ? `환불 ${-difference}원` : difference ? `${difference}원` : "무료 교체"}</b></button><button className="bulk-buy" disabled={bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkArmor(armor.type, armor.price, armor.value)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div></div>
           <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
@@ -5783,7 +5835,8 @@ export default function Home() {
     const team = draft.teams[side];
     const agent = getAgent(draft, setupAgentId);
     if (!agent || agent.team !== side || weapon.unlock > draft.matchRound || agent.weapon === weapon.id) return;
-    const difference = weapon.price - WEAPONS[agent.weapon].price;
+    agent.buyBaselineWeapon ??= agent.weapon;
+    const difference = buyPhaseWeaponDifference(agent, weapon.id);
     if (difference > team.funds) return;
     agent.weapon = weapon.id;
     team.funds -= difference;
@@ -5792,7 +5845,8 @@ export default function Home() {
   const setupBulkBuyWeapon = (side: Side, weapon: Weapon) => mutate((draft) => {
     const team = draft.teams[side];
     const targets = team.agents.filter((agent) => agent.weapon !== weapon.id);
-    const total = targets.reduce((sum, agent) => sum + weapon.price - WEAPONS[agent.weapon].price, 0);
+    targets.forEach((agent) => { agent.buyBaselineWeapon ??= agent.weapon; });
+    const total = targets.reduce((sum, agent) => sum + buyPhaseWeaponDifference(agent, weapon.id), 0);
     if (weapon.unlock > draft.matchRound || targets.length === 0 || team.funds < total) return;
     targets.forEach((agent) => { agent.weapon = weapon.id; });
     team.funds -= total;
@@ -6291,7 +6345,7 @@ export default function Home() {
     });
   };
 
-  const quickAction = (type: "plant" | "half" | "final" | "pickup" | "spike") => {
+  const quickAction = (type: "plant" | "half" | "final" | "pickup" | "drop" | "spike") => {
     if (!selectedAgent || selectedAgent.extraActions < 1 || game.pendingContact) return;
     mutate((draft) => {
       const agent = getAgent(draft, selectedAgent.id);
@@ -6329,6 +6383,14 @@ export default function Home() {
         draft.droppedWeapons = draft.droppedWeapons.filter((item) => item.id !== dropped.id);
         agent.extraActions -= 1;
         addLog(draft, `${agent.name}이 ${WEAPONS[agent.weapon].name}을 주웠습니다.`);
+      }
+      if (type === "drop") {
+        if (agent.weapon === "classic") return;
+        const droppedWeapon = agent.weapon;
+        draft.droppedWeapons.push({ id: `drop-${Date.now()}`, region: agent.region, weapon: droppedWeapon, knownBy: [agent.team] });
+        agent.weapon = "classic";
+        agent.extraActions -= 1;
+        addLog(draft, `${agent.name}이 ${WEAPONS[droppedWeapon].name}을 ${regionName(agent.region)}에 버렸습니다.`);
       }
       if (type === "spike") {
         if (agent.team !== "attack" || draft.spike.status !== "dropped" || draft.spike.region !== agent.region) return;
@@ -6521,7 +6583,10 @@ export default function Home() {
     scene.evaded = false;
     const shooterIsMover = shooter.id === scene.mover.id;
     const targetMoveBonus = target.id === scene.mover.id ? scene.moverMoveBonus : 0;
-    const shot = makeShot(draft, shooter, target, scene.range, !shooterIsMover && scene.waiting, shooterIsMover ? scene.moverAimBonus : scene.holderAimBonus, targetMoveBonus);
+    const waitingShot = combatShotIsWaiting(scene, shooter.id);
+    const shot = makeShot(draft, shooter, target, scene.range, waitingShot, shooterIsMover ? scene.moverAimBonus : scene.holderAimBonus, targetMoveBonus, combatShotGetsWaitAim(scene, shooter.id));
+    if (shooterIsMover) scene.moverShotsFired += 1;
+    else scene.holderShotsFired += 1;
     recordShot(draft, shooter.team, shot, `${shooter.name} → ${target.name}`);
     if (shooterIsMover) scene.moverAimBonus = 0;
     else scene.holderAimBonus = 0;
@@ -6659,11 +6724,17 @@ export default function Home() {
     const holderRetreatMoveBonus = holderChoice.type === "retreat" ? 2 : 0;
     if (moverChoice.type === "attack" && scene.canMoverAttack) {
       if (holder.status.evadeReady) { holder.status.evadeReady = false; scene.evaded = true; lines.push(`${holder.name} 회피`); }
-      else moverShot = makeShot(draft, mover, holder, scene.range, false, scene.moverAimBonus, holderRetreatMoveBonus);
+      else {
+        moverShot = makeShot(draft, mover, holder, scene.range, combatShotIsWaiting(scene, mover.id), scene.moverAimBonus, holderRetreatMoveBonus, combatShotGetsWaitAim(scene, mover.id));
+        scene.moverShotsFired += 1;
+      }
     }
     if (holderChoice.type === "attack") {
       if (mover.status.evadeReady) { mover.status.evadeReady = false; scene.evaded = true; lines.push(`${mover.name} 회피`); }
-      else holderShot = makeShot(draft, holder, mover, scene.range, scene.waiting, scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus);
+      else {
+        holderShot = makeShot(draft, holder, mover, scene.range, combatShotIsWaiting(scene, holder.id), scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus, combatShotGetsWaitAim(scene, holder.id));
+        scene.holderShotsFired += 1;
+      }
     }
     if (moverShot) recordShot(draft, mover.team, moverShot, `${mover.name} → ${holder.name}`);
     if (holderShot) recordShot(draft, holder.team, holderShot, `${holder.name} → ${mover.name}`);
@@ -7225,9 +7296,10 @@ export default function Home() {
       combatActor,
       combatOpponent,
       combatScene.range,
-      !combatActorIsMover && combatScene.waiting,
+      combatShotIsWaiting(combatScene, combatActor.id),
       combatActorIsMover ? combatScene.moverAimBonus : combatScene.holderAimBonus,
       combatOpponent.id === combatScene.mover.id ? combatScene.moverMoveBonus : 0,
+      combatShotGetsWaitAim(combatScene, combatActor.id),
     )
     : null;
   const combatRetreatLocked = !!(combatScene && combatActor && combatScene.retreatLockedIds.includes(combatActor.id));
@@ -7503,6 +7575,7 @@ export default function Home() {
                 {canHalf && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("half")}>◇ 반 해체</button>}
                 {canFinal && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("final")}>◇ 최종 해체</button>}
                 {droppedHere && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("pickup")}>{WEAPONS[droppedHere.weapon].name} 줍기</button>}
+                {selectedAgent.weapon !== "classic" && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("drop")}>{WEAPONS[selectedAgent.weapon].name} 버리기</button>}
                 {selectedAgent.team === "attack" && game.spike.status === "dropped" && game.spike.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike")}>◆ 스파이크 회수</button>}
                 {cameraTargets.map((enemy) => <button key={`cam-${enemy.id}`} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => cameraDetect(enemy.id)}>◉ 스파이캠 탐지 · {enemy.region}번</button>)}
                 {nearbyEnemyDeployables.map((device) => <button key={device.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => destroyDeployable(device.id)}>⌁ {device.kind} 파괴 · {device.region}번</button>)}
@@ -7573,14 +7646,17 @@ export default function Home() {
             const acting = combatScene.phase === "choice" && fighter.id === combatScene.actorId;
             const liveAgent = getAgent(game, fighter.id);
             const appliedStats = fighter.kind === "agent" ? combatAppliedStats(game, combatScene, fighter, opponentShot) : null;
-            const tradeBonus = isMover ? combatScene.moverAimBonus : combatScene.holderAimBonus;
+            const tradeAimBonus = isMover ? combatScene.moverAimBonus : combatScene.holderAimBonus;
+            const tradePriorityBonus = isMover ? combatScene.moverTradePriorityBonus : combatScene.holderTradePriorityBonus;
+            const tradeTargetPenalty = isMover ? combatScene.moverTradeTargetPenalty : combatScene.holderTradeTargetPenalty;
             const statClass = (delta: number) => delta > 0 ? "buff" : delta < 0 ? "nerf" : "neutral";
             const deltaLabel = (delta: number) => delta === 0 ? null : `(${delta > 0 ? "+" : ""}${delta})`;
             const turretTarget = fighter.kind === "turret" ? getAgent(game, combatScene.mover.id) : null;
             const turretDamage = shot?.bodyDamage ?? 1 + (turretTarget?.status.vulnerable ? 1 : 0);
             return <article key={fighter.id} className={`combat-fighter ${isMover ? "mover" : "holder"} team-${fighter.team} ${fighter.kind === "turret" ? "turret-fighter" : ""} ${survived ? "" : "eliminated"} ${acting ? "acting" : ""} ${shot ? "fired" : ""} ${shot && !shot.hit ? "missed-shot" : ""} ${opponentShot?.hit ? "landed incoming-hit" : ""} ${opponentShot?.head ? "incoming-headshot" : ""} ${opponentShot && !opponentShot.hit ? "incoming-miss" : ""}`}>
               {acting && <div className="acting-ribbon">지금 행동</div>}
-              {tradeBonus > 0 && <div className="trade-ribbon">TRADE · AIM +1 · 우선도 +2단계</div>}
+              {tradePriorityBonus > 0 && <div className="trade-ribbon">TRADE · 우선도 +{tradePriorityBonus}단계 지속 · {tradeAimBonus > 0 ? "첫 사격 AIM +1" : "AIM 보너스 소모"}</div>}
+              {tradeTargetPenalty && <div className="trade-ribbon trade-target-penalty">TRADE TARGET · 우선도 +1 지속 · 첫 사격 대기 에임 미적용</div>}
               {isMover && combatScene.offAngle && <div className="ambush-ribbon">AMBUSH · 우선도 +1 · 대기 무효</div>}
               <div className="combat-side-tag">{SIDE_LABEL[fighter.team]} · {fighter.kind === "turret" ? "자동 방어 장치" : isMover ? combatScene.offAngle ? "측면 공격" : "진입" : combatScene.waiting ? "대기 반응" : combatScene.offAngle ? "일반 대응 · 대기 보너스 없음" : "범위 내 반응"}</div>
               <div className={`combat-avatar role-${fighter.role} ${fighter.kind === "turret" ? `turret-avatar ${skillArtClass("turret")}` : agentArtClass(fighter.name)}`} aria-label={`${fighter.name} ${fighter.kind === "turret" ? "장치" : "초상"}`}><span>{fighter.kind === "turret" ? "AUTO" : isMover ? "ACT" : "REACT"}</span>{liveAgent && <AgentStatusBadges game={game} agent={liveAgent} compact />}</div>
@@ -7653,9 +7729,9 @@ export default function Home() {
         <div className="rules-grid">
           <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 → 공격 본진 대기 설정 후 수비가 먼저 행동합니다. 공격 요원은 1번에 고정된 채 초반 진입로를 대기합니다.</p></article>
           <article><b>02</b><h3>지속 교전</h3><p>거리 1에서 다른 방향을 대기 중인 적을 선택 공격하면 기습으로 공격 우선도가 1단계 향상됩니다. 같은 구역에서는 대기 방향과 무관하게 대기 우선도 1입니다. 점유 구역에 대기를 시도하면 먼저 일반 교전하며 시도자는 후퇴할 수 없습니다. 동일 우선도에서 후퇴하면 그 동시 공격에 무빙 +2를 받습니다.</p></article>
-          <article><b>03</b><h3>추가행동</h3><p>카드 한 장마다 해당 요원이 추가행동 1회를 얻습니다. 스킬, 설치·해체, 총기·스파이크 줍기에 사용합니다.</p></article>
+          <article><b>03</b><h3>추가행동</h3><p>카드 한 장마다 해당 요원이 추가행동 1회를 얻습니다. 스킬, 설치·해체, 총기·스파이크 줍기와 총기 버리기에 사용합니다.</p></article>
           <article><b>04</b><h3>시야</h3><p>아군이 있는 구역과 인접 구역만 확인합니다. 연막은 시야와 대기를 끊지만 이동은 막지 않습니다.</p></article>
-          <article><b>05</b><h3>트레이드</h3><p>아군 사망·이탈·정찰 장치 파괴 시 적에게 표식. 같은 턴 다음 아군의 첫 교전에 에임 +1, 우선도 2단계 향상. 기본 진입 우선도 3은 대기 우선도 1과 동률이 되어 동시 사격합니다.</p></article>
+          <article><b>05</b><h3>트레이드</h3><p>아군 사망·이탈·정찰 장치 파괴 시 적에게 표식. 같은 턴 다음 아군은 첫 사격에 에임 +1을 받고 교전 동안 우선도가 2단계 향상됩니다. 트레이드 대상 저격총은 교전 동안 우선도 +1을 받고 첫 사격의 대기 에임 보너스만 잃습니다.</p></article>
           <article><b>06</b><h3>스파이크</h3><p>설치는 다음 공격 턴 시작, 최종 해체는 다음 수비 턴 시작에 완료됩니다. 같은 시점이면 해체가 먼저입니다.</p></article>
         </div>
         <p className="prototype-note">PC와 모바일에서 2인 핫시트 또는 공격팀 AI 모드로 플레이할 수 있습니다. 지속 교전, 라운드 경제, 장비 보존과 역할 스킬을 지원합니다.</p>
