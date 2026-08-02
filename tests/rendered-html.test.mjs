@@ -329,6 +329,10 @@ test("trade bonuses can be created and consumed by either side of a continuing e
   assert.doesNotMatch(page, /defender\.team === game\.turnSide/);
   assert.match(page, /<b>TRADE<\/b><em>PRIO -\{tradePriorityBonus\}/);
   assert.match(page, /moverTradePriorityBonus: moverTradePriority/);
+  assert.match(page, /function clearTradeTargetOnMovement/);
+  assert.match(page, /game\.trade = game\.trade\.filter\(\(trade\) => trade\.enemyId !== agent\.id\)/);
+  assert.match(page, /clearTradeTargetOnMovement\(game, agent, from, agent\.region\)/);
+  assert.match(page, /clearTradeTargetOnMovement\(draft, agent, from, region\)/);
   assert.match(css, /\.combat-modifier-strip \.modifier-trade/);
 });
 
@@ -639,16 +643,18 @@ test("AI remembers a conceded entry and only re-enters after regrouping or utili
 test("defense retake deadline forces a paired trade entry before two-stage defuse expires", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function defenseRetakeMustAdvance/);
-  assert.match(page, /const DEFENSE_RETAKE_SITE_ENTRY_TARGET = 3/);
-  assert.match(page, /const DEFENSE_RETAKE_FORCE_ENTRY_BUFFER = 2/);
+  assert.match(page, /const DEFENSE_RETAKE_SITE_ENTRY_TARGET = 4/);
+  assert.match(page, /const DEFENSE_RETAKE_FORCE_ENTRY_BUFFER = 3/);
   assert.match(page, /function defenseRetakeSiteDistance/);
-  assert.match(page, /siteEntryTurns \+ DEFENSE_RETAKE_SITE_ENTRY_TARGET/);
+  assert.match(page, /function defenseRetakeCombatBuffer/);
+  assert.match(page, /siteEntryTurns \+ DEFENSE_RETAKE_SITE_ENTRY_TARGET \+ combatBuffer/);
   assert.match(page, /function defenseRetakeForceEntry/);
-  assert.match(page, /siteEntryTurns \+ DEFENSE_RETAKE_FORCE_ENTRY_BUFFER/);
+  assert.match(page, /siteEntryTurns \+ DEFENSE_RETAKE_FORCE_ENTRY_BUFFER \+ defenseRetakeCombatBuffer/);
   assert.match(page, /const interactionTurns = game\.spike\.status === "planted" \? 2 : 1/);
-  assert.match(page, /spikeTravelTurns \+ interactionTurns/);
+  assert.match(page, /spikeTravelTurns \+ interactionTurns \+ combatBuffer/);
   assert.match(page, /function defenseRetakePair/);
-  assert.match(page, /alive\.length !== 2/);
+  assert.match(page, /alive\.length < 2/);
+  assert.match(page, /distance\(a\.region, leader\.region\)/);
   assert.match(page, /pairSeparated && agent\.id === pair\.leader\.id && !urgentRetake/);
   assert.match(page, /distance\(a, pair\.leader\.region\) \* 8/);
   assert.match(page, /separated && agent\.id === retakePair\.escort\.id/);
@@ -911,7 +917,9 @@ test("same-turn multikills animate and persist as a round highlight", async () =
   assert.match(page, /function KillStreakOverlay/);
   assert.match(page, /function RoundHighlightCard/);
   assert.match(page, /multiKillLabel\(highlight\.count\)/);
-  assert.match(page, /<RoundHighlightCard highlight=\{roundHighlight\} \/>/);
+  assert.match(page, /highlight\.side === game\.winner/);
+  assert.match(page, /highlight\.count >= 4/);
+  assert.match(page, /roundHighlight \? <RoundHighlightCard highlight=\{roundHighlight\} \/> : <RoundObjectiveHighlightCard/);
   assert.match(css, /\.multikill-fx/);
   assert.match(css, /\.round-highlight/);
   assert.match(css, /@keyframes multikillReveal/);
@@ -1024,14 +1032,17 @@ test("AI preserves movement intent and aims holds at predicted approach lanes", 
 
 test("postplant AI backs off, watches the objective, and rejects inward idle holds", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function postplantRetakeRoutes/);
+  assert.match(page, /function postplantBodyExposure/);
+  assert.match(page, /function postplantLaneWaitScore/);
   assert.match(page, /function attackPostplantWaypoints/);
   assert.match(page, /SITE_REGIONS\[site\]\.includes\(a\) \? 1 : 0/);
-  assert.match(page, /candidates\.includes\(agent\.region\) && agent\.waitDirs\.includes\(spikeRegion\)/);
+  assert.match(page, /candidates\.includes\(agent\.region\) && agent\.waitDirs\.some/);
   assert.match(page, /if \(agent && attackPlanPhase\(game\) === "postplant"/);
-  assert.match(page, /if \(region === spikeRegion\) score \+= 190/);
+  assert.match(page, /if \(region === spikeRegion\) score \+= bodyExposure === 0 \? 72 : -58/);
   assert.match(page, /const coveringPlantedSpike = agent\.team === "attack"/);
   assert.match(page, /function aiPostplantHoldIsUseful/);
-  assert.match(page, /directSpikeCoverage\.length >= Math\.min\(1, alive\.length\)/);
+  assert.match(page, /retakeLaneCoverage\.length >= Math\.min\(1, alive\.length\)/);
   assert.match(page, /설치 후 후방 사격 위치에서 스파이크와 재진입 통로를 교차 대기합니다/);
 });
 
@@ -1059,7 +1070,9 @@ test("combat presentation holds automatic actions above, reveals final AI result
   assert.match(page, /className=\{`transition-wait-cone/);
   assert.match(page, /scene\.offAngle \? "AMBUSH" : "CONTACT"/);
   assert.match(page, /scene\.offAngle \? "HOLD AWAY"/);
-  assert.match(page, /connectionStyle\(scene\.waiting \? holderContactId : moverContactId, scene\.waiting \? moverContactId : holderContactId\)/);
+  assert.match(page, /const contactSource = scene\.waiting \? holderVisual : moverVisual/);
+  assert.match(page, /style=\{directedHalfStyle\(contactSource, contactTarget\)\}/);
+  assert.match(page, /className="transition-retreat-arrow"/);
   assert.match(page, /retreatedIds\?: string\[\]/);
   assert.match(page, /fighter\.hpAfter <= 0[\s\S]{0,80}\? "dead"/);
   assert.match(page, /scene\.retreatedIds\?\.includes\(fighter\.id\)[\s\S]{0,50}\? "retreating"/);
