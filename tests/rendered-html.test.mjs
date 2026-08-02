@@ -111,9 +111,9 @@ test("distance-one sight is optional while same-region and new-entry waits stay 
   assert.match(page, /기습 우선도/);
   assert.match(page, /양쪽 보너스 없음/);
   assert.match(page, /다른 방향 대기 · 일반 대응/);
-  assert.match(page, /같은 구역에서는 대기 방향과 무관하게 대기 우선도 1/);
+  assert.match(page, /거리 0 자동 교전에서는 공격 가능한 양쪽 요원이 첫 공격을 마쳐야 이탈할 수 있습니다/);
   assert.match(css, /\.combat-location \.off-angle-tag/);
-  assert.match(css, /\.ambush-ribbon/);
+  assert.match(css, /\.combat-modifier-strip \.modifier-ambush/);
 });
 
 test("AI turns keep the human viewer perspective and hide stale enemy intel", async () => {
@@ -304,9 +304,9 @@ test("trade bonuses can be created and consumed by either side of a continuing e
   assert.match(page, /scene\.holderAimBonus/);
   assert.match(page, /if \(attacker\) \{\s*addTrade\(game, \{ enemyId: attacker\.id, team: defender\.team/);
   assert.doesNotMatch(page, /defender\.team === game\.turnSide/);
-  assert.match(page, /TRADE · 우선도 \+\{tradePriorityBonus\}단계 지속/);
+  assert.match(page, /<b>TRADE<\/b><em>PRIO -\{tradePriorityBonus\}/);
   assert.match(page, /moverTradePriorityBonus: moverTradePriority/);
-  assert.match(css, /\.trade-ribbon/);
+  assert.match(css, /\.combat-modifier-strip \.modifier-trade/);
 });
 
 test("attack AI rotates through direct, mid, fake, and adaptive split plans before committing", async () => {
@@ -710,8 +710,20 @@ test("same-priority retreat gains temporary movement and wait claimants cannot r
   assert.match(page, /moverChoice\.type === "retreat" \? 2 : 0/);
   assert.match(page, /holderChoice\.type === "retreat" \? 2 : 0/);
   assert.match(page, /scene\.moverMoveBonus \+ moverRetreatMoveBonus/);
-  assert.match(page, /scene\.retreatLockedIds\.includes\(actor\.id\)/);
+  assert.match(page, /combatRetreatIsLocked\(scene, actor\.id\)/);
   assert.match(page, /대기 확보 교전 · 시도자 후퇴 불가/);
+});
+
+test("voluntary range-one contacts and range-zero openings require an attack before retreat", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /openingAttackRequiredIds: string\[\]/);
+  assert.match(page, /openingAttackRequiredIds: range === 0 \? \[/);
+  assert.match(page, /\.\.\.\(canAttack \? \[mover\.id\] : \[\]\)/);
+  assert.match(page, /scene\.range === 1 && contact\.canAttack/);
+  assert.match(page, /scene\.openingAttackRequiredIds\.push\(agent\.id\)/);
+  assert.match(page, /function combatRetreatIsLocked/);
+  assert.match(page, /satisfyOpeningAttackRequirement\(scene, actor\.id\)/);
+  assert.match(page, /첫 공격을 완료해야 이탈할 수 있습니다/);
 });
 
 test("turret attacks use the combat scene and weapon cards explain every modifier", async () => {
@@ -782,7 +794,10 @@ test("four health, two armor, weapons, and utility share the six-durability bala
   assert.match(page, /holderTradeTargetPenalty/);
   assert.match(page, /function combatShotIsWaiting[\s\S]{0,180}fighterId === scene\.holder\.id && scene\.waiting/);
   assert.match(page, /function combatShotGetsWaitAim[\s\S]{0,260}!\(scene\.holderTradeTargetPenalty && openingShot\)/);
-  assert.match(page, /TRADE TARGET · 우선도 \+1 지속 · 첫 사격 대기 에임 미적용/);
+  assert.match(page, /<b>VS TRADE<\/b><em>PRIO \+1<\/em>/);
+  assert.match(page, /WAIT AIM -1/);
+  assert.match(page, /weapon\.type === "sniper" && range === 0\) aim -= 2/);
+  assert.match(page, /거리 0 에임 -2/);
   assert.match(page, /judge: \{[^}]*body: 4, head: 5/);
   assert.match(page, /phantom: \{[^}]*body: 4, head: 5/);
   assert.match(page, /vandal: \{[^}]*body: 4, head: 6/);
@@ -1029,4 +1044,17 @@ test("combat presentation holds automatic actions above, reveals final AI result
   assert.match(page, /ref=\{combatResultRef\}/);
   assert.match(page, /ref=\{combatActionRef\} className="combat-actions"/);
   assert.doesNotMatch(page, /\[currentCombatPhase, currentCombatResult\]/);
+});
+
+test("AI evaluates optional distance-one combat before accepting contact", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /interface AiOptionalContactAssessment/);
+  assert.match(page, /function assessAiOptionalContact/);
+  assert.match(page, /const simulation = structuredClone\(game\) as GameState/);
+  assert.match(page, /const duel = aiCombatDuelOdds\(simulation, scene, first, second\)/);
+  assert.match(page, /winChance - lossChance/);
+  assert.match(page, /const urgentObjective = aiRetreatReentryIsUrgent\(game, actor\)/);
+  assert.match(page, /const assessment = chooseAiOptionalContact\(draft, contact\)/);
+  assert.match(page, /acceptPendingContact\(draft, assessment\.enemyId\)/);
+  assert.match(page, /AI 요원.*거리 1 교전 조건을 계산하고 교전을 보류합니다/);
 });
