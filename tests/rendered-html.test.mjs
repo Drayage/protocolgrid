@@ -623,14 +623,16 @@ test("combat retreat closes the result scene before replaying movement on the ta
   assert.match(css, /\.post-combat-move-banner/);
 });
 
-test("AI remembers a conceded entry and only re-enters after regrouping or utility", async () => {
+test("AI remembers a conceded entry and only re-enters after applied disruption or a ready trade", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /interface AiRetreatMemory/);
   assert.match(page, /avoidedRegion: from/);
   assert.match(page, /expiresTeamTurn: draft\.teamTurns\[agent\.team\] \+ 2/);
   assert.match(page, /function aiTargetsAfterRetreatMemory/);
   assert.match(page, /!path\.slice\(1\)\.includes\(memory\.avoidedRegion\)/);
-  assert.match(page, /hasBreachUtility \|\| support\.length > blockers\.length/);
+  assert.match(page, /const blockerDisrupted =/);
+  assert.match(page, /const tradeReady = support\.length > blockers\.length && game\.actionsUsed < 3/);
+  assert.match(page, /return blockerDisrupted \|\| tradeReady/);
   assert.match(page, /memory\.plan === "flank" && memory\.flankRegion !== undefined/);
   assert.match(page, /function aiTradeRelayMemoryForAgent/);
   assert.match(page, /function aiTradeFollowupDestination/);
@@ -1053,13 +1055,41 @@ test("postplant AI backs off, watches the objective, and rejects inward idle hol
   assert.match(page, /function postplantLaneWaitScore/);
   assert.match(page, /function attackPostplantWaypoints/);
   assert.match(page, /SITE_REGIONS\[site\]\.includes\(a\) \? 1 : 0/);
-  assert.match(page, /candidates\.includes\(agent\.region\) && agent\.waitDirs\.some/);
+  assert.match(page, /const currentHoldDirections = agent\.waitDirs\.length/);
+  assert.match(page, /candidates\.includes\(agent\.region\) && currentHoldDirections\.some/);
   assert.match(page, /if \(agent && attackPlanPhase\(game\) === "postplant"/);
   assert.match(page, /if \(region === spikeRegion\) score \+= bodyExposure === 0 \? 72 : -58/);
   assert.match(page, /const coveringPlantedSpike = agent\.team === "attack"/);
   assert.match(page, /function aiPostplantHoldIsUseful/);
+  assert.match(page, /function aiPostplantWaitDirection/);
+  assert.match(page, /function aiPostplantNeedsWait/);
+  assert.match(page, /if \(postplantAttacker\)/);
+  assert.match(page, /const mustStopDefuse = game\.spike\.status === "defusing"/);
   assert.match(page, /retakeLaneCoverage\.length >= Math\.min\(1, alive\.length\)/);
   assert.match(page, /설치 후 후방 사격 위치에서 스파이크와 재진입 통로를 교차 대기합니다/);
+});
+
+test("basic actions can hold position while AI establishes safe sniper waits and remembers blocked routes", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /tag: "MOVE \/ HOLD"/);
+  assert.match(page, /card\.kind === "basic" \|\| range > 0/);
+  assert.match(page, /if \(target === agent\.region\) return cardKind === "basic"/);
+  assert.match(page, /제자리에서 기본 행동/);
+  assert.match(page, /function aiSafeStrategicWaitDirections/);
+  assert.match(page, /function aiSniperWaitDestination/);
+  assert.match(page, /function aiSniperNeedsWait/);
+  assert.match(page, /WEAPONS\[agent\.weapon\]\.type !== "sniper"/);
+  assert.match(page, /const holdSetupAgents =/);
+  assert.match(page, /aHoldSetupPlayable/);
+  assert.match(page, /postplantWaitDestination \?\? sniperWaitDestination/);
+  assert.match(page, /enemy\.confidence >= 0\.35/);
+  assert.match(page, /const blockerDisrupted =/);
+  assert.match(page, /const tradeReady = support\.length > blockers\.length && game\.actionsUsed < 3/);
+  assert.doesNotMatch(page, /item\.objectiveKey === aiMovementObjectiveKey\(game, agent\)/);
+  assert.match(css, /\.stationary-basic-action/);
 });
 
 test("combat presentation holds automatic actions above, reveals final AI results, and stages retreat after the outro", async () => {

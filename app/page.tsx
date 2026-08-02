@@ -681,7 +681,7 @@ function WeaponSilhouette({ weapon, compact = false }: { weapon: WeaponId; compa
 }
 
 const CARD_DATA: Record<CardKind, { name: string; tag: string; description: string }> = {
-  basic: { name: "기본 행동", tag: "MOVE", description: "인접 구역 1칸 이동 · 교전 우선도 3 · 이후 한 방향 대기" },
+  basic: { name: "기본 행동", tag: "MOVE / HOLD", description: "제자리 유지 또는 인접 구역 1칸 이동 · 추가행동 +1 · 이후 한 방향 대기" },
   peek: { name: "피킹", tag: "SCOUT", description: "이번 행동 무빙 +2 · 공격하지 않고 첫 홀드를 빼낸 뒤 후퇴" },
   entry: { name: "엔트리", tag: "BREACH", description: "타격대 전용 · 최대 2칸 · 중간 공격 불가 · 도착 우선도 2" },
   follow: { name: "추종", tag: "FOLLOW", description: "척후대·전략가 전용 · 거리 2 아군 위치까지 합류" },
@@ -1436,7 +1436,10 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
         - (onSiteB * 38 + backB * 9 + dangerB + exposedB * 82 + occupiedB * 12 + aiRecentMovementPenalty(game, agent, b) - laneB);
     });
   if (!candidates.length) return [spikeRegion];
-  if (candidates.includes(agent.region) && agent.waitDirs.some((region) =>
+  const currentHoldDirections = agent.waitDirs.length
+    ? agent.waitDirs
+    : aiSafeStrategicWaitDirections(game, agent).slice(0, 1);
+  if (candidates.includes(agent.region) && currentHoldDirections.some((region) =>
     postplantLaneWaitScore(game, agent.region, region, spikeRegion) > 0
     || (region === spikeRegion && postplantBodyExposure(game, agent.region, spikeRegion) === 0))) return [agent.region];
   const alive = game.teams.attack.agents.filter((ally) => ally.alive);
@@ -1555,7 +1558,8 @@ function recordAiMovementHistory(game: GameState, agent: Agent, origin: number) 
   if (origin === agent.region) return;
   ensureAiTacticalState(game);
   const objectiveKey = aiMovementObjectiveKey(game, agent);
-  const existing = game.aiMovementHistories.find((history) => history.agentId === agent.id && history.objectiveKey === objectiveKey);
+  const existing = game.aiMovementHistories.find((history) =>
+    history.agentId === agent.id && game.teamTurns[agent.team] <= history.expiresTeamTurn);
   const regions = existing
     ? [...existing.regions, agent.region].slice(-5)
     : [origin, agent.region];
@@ -1574,7 +1578,6 @@ function aiRecentMovementPenalty(game: GameState, agent: Agent, target: number) 
   ensureAiTacticalState(game);
   const history = game.aiMovementHistories.find((item) =>
     item.agentId === agent.id
-    && item.objectiveKey === aiMovementObjectiveKey(game, agent)
     && game.teamTurns[agent.team] <= item.expiresTeamTurn);
   if (!history) return 0;
   const priorRegion = history.regions.at(-2);
@@ -2444,7 +2447,10 @@ function applyActionStartFire(game: GameState, agent: Agent): boolean {
 function cardTargets(game: GameState, agent: Agent, card: ActionCard): number[] {
   const rangeBonus = agent.status.moveRangeBonus;
   if (card.kind === "basic" || card.kind === "peek") return REGIONS
-    .filter((region) => distance(agent.region, region.id) > 0 && distance(agent.region, region.id) <= 1 + rangeBonus)
+    .filter((region) => {
+      const range = distance(agent.region, region.id);
+      return range <= 1 + rangeBonus && (card.kind === "basic" || range > 0);
+    })
     .map((region) => region.id);
   if (card.kind === "entry") return REGIONS.filter((region) => distance(agent.region, region.id) > 0 && distance(agent.region, region.id) <= 2 + rangeBonus).map((region) => region.id);
   if (card.kind === "follow") {
@@ -2839,18 +2845,21 @@ interface AiKnownWaitEntryAssessment {
   breakChance: number;
   score: number;
   acceptable: boolean;
+  support: number;
+  tradeAvailable: boolean;
+  disrupted: boolean;
 }
 
 function aiKnownWaitEntryAssessment(game: GameState, agent: Agent, region: number, afterRetreat = false): AiKnownWaitEntryAssessment {
   const waitingEnemies = aiEnemyIntel(game, agent.team).filter((enemy) => {
-    if (enemy.confidence < 0.5) return false;
+    if (enemy.confidence < 0.35) return false;
     if (enemy.region === region) return true;
     if (!enemy.waitDirs.includes(region)) return false;
     const waitRange = WEAPONS[enemy.weapon].type === "sniper" ? 2 : 1;
     const range = distance(enemy.region, region);
     return range > 0 && range <= waitRange && !isWaitPathSmokeBlocked(game, enemy.region, region);
   });
-  if (!waitingEnemies.length) return { waitingEnemies, survivalChance: 100, breakChance: 100, score: 100, acceptable: true };
+  if (!waitingEnemies.length) return { waitingEnemies, survivalChance: 100, breakChance: 100, score: 100, acceptable: true, support: 0, tradeAvailable: false, disrupted: false };
 
   const enteringAgent = structuredClone(agent) as Agent;
   enteringAgent.region = region;
@@ -2884,27 +2893,40 @@ function aiKnownWaitEntryAssessment(game: GameState, agent: Agent, region: numbe
   const score = survivalChance + bestBreakChance + support * 14 + (tradeAvailable ? 10 : 0) + (disruption ? 18 : 0) - expectedPressure;
   const acceptable = survivalChance >= (support ? 28 : 42)
     && score >= (tradeAvailable ? 18 : 32);
-  return { waitingEnemies, survivalChance, breakChance: Math.round(bestBreakChance), score, acceptable };
+  return { waitingEnemies, survivalChance, breakChance: Math.round(bestBreakChance), score, acceptable, support, tradeAvailable, disrupted: disruption };
 }
 
 function aiMovementDestinationAcceptable(game: GameState, agent: Agent, target: number, cardKind: CardKind) {
+  if (target === agent.region) return cardKind === "basic";
   const path = shortestAiMovementPath(game, agent, target);
   if (path.length < 2) return false;
   const urgentObjective = aiRetreatReentryIsUrgent(game, agent);
   const committedBreach = !!aiRecoveryOrderForAgent(game, agent)?.mode && aiRecoveryOrderForAgent(game, agent)?.mode === "breach";
+  const postplantAttacker = agent.team === "attack" && ["planted", "half", "defusing"].includes(game.spike.status);
+  const lastChanceEntry = agent.team === "defense"
+    ? defenseRetakeForceEntry(game, agent)
+    : attackForcedPlantMode(game) && game.cycle >= PRE_PLANT_CYCLE_LIMIT;
   return path.slice(1).every((region, index) => {
     const assessment = aiKnownWaitEntryAssessment(game, agent, region);
     if (!assessment.waitingEnemies.length) return true;
     const isFinal = index === path.length - 2;
     const cannotFightHere = cardKind === "peek" || ((cardKind === "entry" || agent.status.highGear) && !isFinal);
+    if (postplantAttacker) {
+      const mustStopDefuse = game.spike.status === "defusing";
+      return mustStopDefuse
+        && assessment.survivalChance >= 25
+        && (assessment.acceptable || assessment.disrupted || assessment.tradeAvailable);
+    }
     if (cannotFightHere) {
       const supportedProbe = game.teams[agent.team].agents.some((ally) =>
         ally.alive && ally.id !== agent.id && distance(ally.region, region) <= 1);
       return (agent.status.evadeReady || supportedProbe) && assessment.survivalChance >= 25;
     }
     if (assessment.acceptable) return true;
-    return (urgentObjective || committedBreach || (agent.team === "attack" && attackOperatorBreachActive(game)))
-      && assessment.survivalChance >= 18;
+    const preparedBreach = assessment.disrupted || assessment.tradeAvailable;
+    return ((urgentObjective || committedBreach || (agent.team === "attack" && attackOperatorBreachActive(game))) && preparedBreach
+      || lastChanceEntry)
+      && assessment.survivalChance >= (lastChanceEntry ? 18 : 25);
   });
 }
 
@@ -3210,21 +3232,28 @@ function aiRetreatReentryIsUrgent(game: GameState, agent: Agent) {
 function aiCanReenterRetreatRegion(game: GameState, agent: Agent, memory: AiRetreatMemory) {
   if (game.teamTurns[agent.team] <= memory.createdTeamTurn) return false;
   const blockerRegion = memory.blockerRegion ?? memory.avoidedRegion;
-  const blockers = aiEnemyIntel(game, agent.team).filter((enemy) => enemy.exact && enemy.region === blockerRegion);
+  const blockers = aiEnemyIntel(game, agent.team).filter((enemy) =>
+    enemy.confidence >= 0.35
+    && (enemy.region === blockerRegion || enemy.waitDirs.includes(memory.avoidedRegion)));
   if (!blockers.length) return true;
   const support = game.teams[agent.team].agents.filter((ally) =>
-    ally.alive && ally.id !== agent.id && distance(ally.region, blockerRegion) <= 1);
-  const breachSkillIds = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark"]);
-  const hasBreachUtility = game.teams[agent.team].agents.some((ally) =>
-    ally.alive
-    && distance(ally.region, blockerRegion) <= 2
-    && AGENTS[ally.name].skills.some((skill) => breachSkillIds.has(skill.id) && (ally.skills[skill.id] ?? 0) > 0));
-  return hasBreachUtility || support.length > blockers.length;
+    ally.alive && ally.id !== agent.id && !isChanneling(game, ally) && distance(ally.region, blockerRegion) <= 1);
+  const blockerDisrupted = blockers.some((enemy) => {
+    const timedPenalty = game.statusEffects
+      .filter((effect) => effect.targetId === enemy.agent.id)
+      .reduce((total, effect) => total + (effect.aimPenalty ?? 0), 0);
+    return enemy.agent.status.aimPenalty + timedPenalty >= 2;
+  });
+  const tradeReady = support.length > blockers.length && game.actionsUsed < 3;
+  return blockerDisrupted || tradeReady;
 }
 
 function aiTargetsAfterRetreatMemory(game: GameState, agent: Agent, targets: number[]) {
   pruneAiRetreatMemories(game);
-  if (agent.team === "attack" && attackForcedPlantMode(game)) return targets;
+  const lastChanceEntry = agent.team === "attack"
+    ? attackForcedPlantMode(game) && game.cycle >= PRE_PLANT_CYCLE_LIMIT
+    : defenseRetakeForceEntry(game, agent);
+  if (lastChanceEntry) return targets;
   const memory = game.aiRetreatMemories.find((item) => item.agentId === agent.id);
   if (!memory) return targets;
   if (memory.plan === "flank" && memory.flankRegion !== undefined && agent.region !== memory.flankRegion) {
@@ -3498,7 +3527,6 @@ function aiLastMovementOrigin(game: GameState, agent: Agent) {
   ensureAiTacticalState(game);
   const history = game.aiMovementHistories.find((item) =>
     item.agentId === agent.id
-    && item.objectiveKey === aiMovementObjectiveKey(game, agent)
     && game.teamTurns[agent.team] <= item.expiresTeamTurn);
   return history?.regions.at(-2) ?? null;
 }
@@ -3583,6 +3611,74 @@ function aiStrategicWaitDirections(game: GameState, agent: Agent, count: number)
   return [...options]
     .sort((a, b) => aiStrategicWaitScore(game, agent, b, intel) - aiStrategicWaitScore(game, agent, a, intel) || a - b)
     .slice(0, count);
+}
+
+function aiSafeStrategicWaitDirections(game: GameState, agent: Agent) {
+  const exactEnemyRegions = new Set(aiEnemyIntel(game, agent.team)
+    .filter((enemy) => enemy.exact)
+    .map((enemy) => enemy.region));
+  const alliedRegions = new Set(game.teams[agent.team].agents
+    .filter((ally) => ally.alive && ally.id !== agent.id)
+    .map((ally) => ally.region));
+  return waitTargetsFor(agent)
+    .filter((region) => {
+      const coveringPlantedSpike = agent.team === "attack"
+        && game.spike.region === region
+        && ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+      return (coveringPlantedSpike || !alliedRegions.has(region))
+        && !exactEnemyRegions.has(region)
+        && !isWaitPathSmokeBlocked(game, agent.region, region);
+    })
+    .sort((a, b) => aiStrategicWaitScore(game, agent, b) - aiStrategicWaitScore(game, agent, a) || a - b);
+}
+
+function aiPostplantWaitDirection(game: GameState, agent: Agent) {
+  if (agent.team !== "attack" || game.spike.region === null || !["planted", "half", "defusing"].includes(game.spike.status)) return null;
+  return aiSafeStrategicWaitDirections(game, agent).find((region) =>
+    postplantLaneWaitScore(game, agent.region, region, game.spike.region!) > 0
+    || (region === game.spike.region && postplantBodyExposure(game, agent.region, game.spike.region!) === 0)) ?? null;
+}
+
+function aiPostplantNeedsWait(game: GameState, agent: Agent) {
+  return !agent.waitDirs.length && aiPostplantWaitDirection(game, agent) !== null;
+}
+
+function aiSniperWaitDestination(game: GameState, agent: Agent, targets: number[]) {
+  if (WEAPONS[agent.weapon].type !== "sniper" || agent.waitDirs.length || isChanneling(game, agent)) return null;
+  if (agent.team === "defense" && defenseRetakeMustAdvance(game, agent)) return null;
+  if (agent.team === "attack" && attackForcedPlantMode(game)) return null;
+  const nearbyEnemy = aiEnemyIntel(game, agent.team).some((enemy) =>
+    enemy.exact && distance(agent.region, enemy.region) <= 1 && !isWaitPathSmokeBlocked(game, agent.region, enemy.region));
+  if (nearbyEnemy) return null;
+
+  const postplantAttacker = agent.team === "attack"
+    && game.spike.region !== null
+    && ["planted", "half", "defusing"].includes(game.spike.status);
+  const candidates = targets.map((region) => {
+    const positionedAgent = { ...agent, region };
+    const direction = aiSafeStrategicWaitDirections(game, positionedAgent)[0];
+    if (direction === undefined) return null;
+    const waitScore = aiStrategicWaitScore(game, positionedAgent, direction);
+    const controlsPostplant = !postplantAttacker || (
+      direction === game.spike.region
+      || postplantLaneWaitScore(game, region, direction, game.spike.region!) > 0
+    );
+    if (!controlsPostplant) return null;
+    const danger = knownThreatScoreAtRegion(game, agent.team, region);
+    const movementCost = distance(agent.region, region) * 8 + aiRecentMovementPenalty(game, agent, region);
+    const stability = region === agent.region ? 22 : 0;
+    const score = waitScore + (postplantAttacker ? 75 : 0) + stability - danger * 2 - movementCost;
+    return { region, direction, score };
+  }).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate)
+    .sort((a, b) => b.score - a.score);
+  return candidates[0]?.score >= 30 ? candidates[0].region : null;
+}
+
+function aiSniperNeedsWait(game: GameState, agent: Agent) {
+  if (WEAPONS[agent.weapon].type !== "sniper" || agent.waitDirs.length) return false;
+  const basicTargets = [agent.region, ...(GRAPH.get(agent.region) ?? [])]
+    .filter((region) => aiMovementDestinationAcceptable(game, agent, region, "basic"));
+  return aiSniperWaitDestination(game, agent, basicTargets) !== null;
 }
 
 function defenseAssignedLane(game: GameState, agent: Agent): TacticalLane {
@@ -5113,6 +5209,7 @@ interface AiPreCardActionPlan {
 function aiCardHasLegalResolution(game: GameState, card: ActionCard, agent: Agent) {
   if (!agent.alive || isChanneling(game, agent) || !canUseCard(card, agent)) return false;
   if (card.kind === "control") return aiStrategicWaitDirections(game, agent, 2).length >= 2;
+  if (card.kind === "basic") return cardTargets(game, agent, card).includes(agent.region);
   return cardTargets(game, agent, card).some((region) => region !== agent.region);
 }
 
@@ -7509,7 +7606,9 @@ export default function Home() {
     if (draft.pendingWait) {
       const agent = getAgent(draft, draft.pendingWait);
       if (agent?.alive) {
-        const preferred = aiStrategicWaitDirections(draft, agent, 1)[0];
+        const preferred = aiPostplantWaitDirection(draft, agent)
+          ?? aiSafeStrategicWaitDirections(draft, agent)[0]
+          ?? aiStrategicWaitDirections(draft, agent, 1)[0];
         const legalTargets = waitTargetsFor(agent);
         const target = preferred !== undefined && legalTargets.includes(preferred) ? preferred : undefined;
         if (target !== undefined) startWaitAttempt(draft, agent, target);
@@ -7624,13 +7723,16 @@ export default function Home() {
     if (draft.actionsUsed >= 3 && !resolvingCommittedAiCard) return;
     const team = draft.teams[side];
     const forcedPlant = side === "attack" && attackForcedPlantMode(draft);
+    const attackPostplant = side === "attack" && attackPlanPhase(draft) === "postplant";
     const attackExecuting = side === "attack" && (
       attackPlanPhase(draft) === "execute"
       || attackSiteSituation(draft, draft.attackPlan.targetSite).alliesOnSite.length > 0
       || attackEntryIsOpen(draft, draft.attackPlan.targetSite)
     );
     const priority: Record<CardKind, number> = side === "attack"
-      ? attackExecuting
+      ? attackPostplant
+        ? { control: 0, basic: 1, follow: 2, peek: 3, entry: 4 }
+        : attackExecuting
         ? { entry: 0, peek: 1, follow: 2, basic: 3, control: 4 }
         : { peek: 0, basic: 1, follow: 2, control: 3, entry: 4 }
       : { control: 0, basic: 1, follow: 2, peek: 3, entry: 4 };
@@ -7638,13 +7740,18 @@ export default function Home() {
       agent.alive && !isChanneling(draft, agent) && isAiRecoveryFrontlineLeader(draft, agent));
     const classicWeaponClaimants = forcedPlant ? [] : team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && agent.weapon === "classic" && !!aiWeaponPickupObjective(draft, agent));
+    const holdSetupAgents = team.agents.filter((agent) =>
+      agent.alive && !isChanneling(draft, agent) && (aiSniperNeedsWait(draft, agent) || aiPostplantNeedsWait(draft, agent)));
     const cards = (committedAiCard ? [committedAiCard] : team.hand.filter((card) => !card.used)).sort((a, b) => {
       const aWeaponPlayable = classicWeaponClaimants.some((agent) => canUseCard(a, agent)) ? 0 : 1;
       const bWeaponPlayable = classicWeaponClaimants.some((agent) => canUseCard(b, agent)) ? 0 : 1;
       const aFrontlinePlayable = recoveryFrontliners.some((agent) => canUseCard(a, agent)) ? 0 : 1;
       const bFrontlinePlayable = recoveryFrontliners.some((agent) => canUseCard(b, agent)) ? 0 : 1;
+      const aHoldSetupPlayable = a.kind === "basic" && holdSetupAgents.some((agent) => canUseCard(a, agent)) ? 0 : 1;
+      const bHoldSetupPlayable = b.kind === "basic" && holdSetupAgents.some((agent) => canUseCard(b, agent)) ? 0 : 1;
       return aWeaponPlayable - bWeaponPlayable
         || aFrontlinePlayable - bFrontlinePlayable
+        || aHoldSetupPlayable - bHoldSetupPlayable
         || priority[a.kind] - priority[b.kind];
     });
     for (const card of cards) {
@@ -7671,6 +7778,9 @@ export default function Home() {
             + sniperTrailBias;
         }
         if (aiTradeRelayMemoryForAgent(draft, agent)) return -140;
+        if (aiPostplantNeedsWait(draft, agent)) return -118;
+        if (aiSniperNeedsWait(draft, agent)) return side === "attack" && ["planted", "half", "defusing"].includes(draft.spike.status) ? -126 : -84;
+        if (side === "attack" && ["planted", "half", "defusing"].includes(draft.spike.status) && aiPostplantHoldIsUseful(draft, agent)) return 150;
         if (aiWaitShouldBePreserved(draft, agent)) return 92;
         if (draft.aiRetreatMemories.some((memory) =>
           memory.plan === "trade"
@@ -7748,7 +7858,7 @@ export default function Home() {
           playCard(draft, card, agent);
           return;
         }
-        const legalTargets = cardTargets(draft, agent, card).filter((region) => region !== agent.region);
+        const legalTargets = cardTargets(draft, agent, card);
         const safeTargets = legalTargets.filter((region) => aiMovementDestinationAcceptable(draft, agent, region, card.kind));
         const rawTargets = committedAiCard && !safeTargets.length
           ? [...legalTargets].sort((a, b) => knownThreatScoreAtRegion(draft, agent.team, a) - knownThreatScoreAtRegion(draft, agent.team, b))
@@ -7763,25 +7873,19 @@ export default function Home() {
           ? aiRecoveryOrderDestination(draft, agent, recoveryObjective, targets)
           : null;
         const tradeDestination = aiTradeFollowupDestination(draft, agent, targets);
+        const sniperWaitDestination = card.kind === "basic" ? aiSniperWaitDestination(draft, agent, targets) : null;
+        const postplantWaitDestination = card.kind === "basic" && aiPostplantNeedsWait(draft, agent) ? agent.region : null;
         if (recoveryDecision?.order && recoveryDecision.destination === null && tradeDestination === null) continue;
-        const objectiveRegion = side === "defense" && ["planted", "half", "defusing"].includes(draft.spike.status) ? draft.spike.region : null;
-        const destination = [...targets].sort((a, b) => side === "attack"
-          ? 0
-          : objectiveRegion !== null
-            ? distance(a, objectiveRegion) - distance(b, objectiveRegion)
-            : 0)[0];
         const escortDestination = side === "attack" ? aiSpikeEscortDestination(draft, agent, targets) : null;
         const weaponDestination = forcedPlant || operatorBreach ? null : aiWeaponDestination(draft, agent, targets);
         const recoveryEscortDestination = forcedPlant || operatorBreach ? null : aiRecoveryEscortDestination(draft, agent, targets);
         const priorityDestination = agent.weapon === "classic"
           ? weaponDestination ?? escortDestination
           : escortDestination ?? weaponDestination;
-        const safePriorityDestination = tradeDestination ?? recoveryDecision?.destination ?? priorityDestination;
+        const safePriorityDestination = tradeDestination ?? recoveryDecision?.destination ?? postplantWaitDestination ?? sniperWaitDestination ?? priorityDestination;
         const tacticalDestination = safePriorityDestination ?? recoveryEscortDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
-          : objectiveRegion === null
-            ? aiDefenseDestination(draft, agent, targets)
-            : destination);
+          : aiDefenseDestination(draft, agent, targets));
         if (tacticalDestination === null || tacticalDestination === undefined) continue;
         if (recoveryDecision?.order) {
           const order = recoveryDecision.order;
@@ -8091,6 +8195,9 @@ export default function Home() {
 
           <div className="hand-zone">
             <div className="hand-label"><span>TACTICAL HAND</span><small>카드 선택 → 요원 선택 → 지도 구역 선택</small></div>
+            {!isAiControlledTurn && selectedAgent && selectedCard?.kind === "basic" && !game.pendingWait && !game.pendingContact && <button className="stationary-basic-action" onClick={() => handleRegionClick(selectedAgent.region)}>
+              <b>제자리에서 기본 행동</b><small>이동하지 않고 추가행동을 얻은 뒤 대기 방향 선택</small>
+            </button>}
             <div className="card-row">
               {viewerTeam.hand.map((card, index) => {
                 const unusable = displayedAgent ? !canUseCard(card, displayedAgent) : false;
