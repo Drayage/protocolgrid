@@ -579,7 +579,7 @@ test("AI identifies known Operators and avoids unsupported head-on lanes", async
   assert.match(page, /operatorPressure/);
   assert.match(page, /attackPlanRushDestination[\s\S]{0,700}aiOperatorRoutePenalty/);
   assert.match(page, /function aiAttackDestination[\s\S]{0,2600}const operatorA = aiOperatorRoutePenalty/);
-  assert.match(page, /function aiDefenseDestination[\s\S]{0,1800}const operatorA = aiOperatorRoutePenalty/);
+  assert.match(page, /function aiDefenseDestination[\s\S]{0,3200}const operatorA = aiOperatorRoutePenalty/);
   assert.match(page, /const operatorHeadOn = opponent\.weapon === "operator"/);
   assert.match(page, /const operatorRetreatBias = operatorHeadOn && !objectiveCommit \? 24 : 0/);
   assert.match(page, /returnFire\.killChance >= 60[\s\S]{0,80}attackOdds\.killChance < 35/);
@@ -653,14 +653,30 @@ test("defense retake deadline forces a paired trade entry before two-stage defus
   assert.match(page, /const interactionTurns = game\.spike\.status === "planted" \? 2 : 1/);
   assert.match(page, /spikeTravelTurns \+ interactionTurns \+ combatBuffer/);
   assert.match(page, /function defenseRetakePair/);
+  assert.match(page, /function defenseRetakeEntryScore/);
+  assert.match(page, /agent\.weapon === "operator"[\s\S]{0,40}\? -120/);
+  assert.match(page, /const nonSniperEntries = alive\.filter/);
+  assert.match(page, /game\.spike\.explosion >= defenseRetakeSiteDistance\(game, agent\) \+ interactionTurns/);
   assert.match(page, /alive\.length < 2/);
   assert.match(page, /distance\(a\.region, leader\.region\)/);
   assert.match(page, /pairSeparated && agent\.id === pair\.leader\.id && !urgentRetake/);
   assert.match(page, /distance\(a, pair\.leader\.region\) \* 8/);
+  assert.match(page, /const trailingSniper = urgentRetake/);
+  assert.match(page, /const sniperMustTrail = WEAPONS\[agent\.weapon\]\.type === "sniper"/);
   assert.match(page, /separated && agent\.id === retakePair\.escort\.id/);
   assert.match(page, /forceEntry \? -280 : -180/);
   assert.match(page, /\$\{DEFENSE_RETAKE_SITE_ENTRY_TARGET\}턴 전 사이트 진입 목표/);
   assert.match(page, /\$\{DEFENSE_RETAKE_FORCE_ENTRY_BUFFER\}턴 전 강제 돌파/);
+});
+
+test("urgent retakes keep zero-detour weapon upgrades without sacrificing defuse time", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function defenseRetakeWeaponPickupIsSafe/);
+  assert.match(page, /if \(item\.region === agent\.region\) return true/);
+  assert.match(page, /if \(travelThroughWeapon > directTravel\) return false/);
+  assert.match(page, /return slackAfterPickup >= 1/);
+  assert.match(page, /activeDefenseRetake && aiPickupWeaponAtCurrentRegion\(draft, side\)/);
+  assert.match(page, /defenseRetakeWeaponPickupIsSafe\(game, agent, item\)/);
 });
 
 test("Omen keeps every active dark smoke until its normal expiry", async () => {

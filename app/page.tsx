@@ -3090,7 +3090,9 @@ function aiWeaponPickupObjective(game: GameState, agent: Agent): DroppedWeapon |
   const known = game.droppedWeapons.filter((item) =>
     item.knownBy.includes(agent.team)
     && weaponUpgradeValue(agent, item.weapon) >= 6
-    && (!criticalObjective || aiClassicCanDelayObjectiveForWeapon(game, agent, item)));
+    && (!criticalObjective
+      || defenseRetakeWeaponPickupIsSafe(game, agent, item)
+      || aiClassicCanDelayObjectiveForWeapon(game, agent, item)));
   const assigned = known.filter((item) => {
     const claimant = game.teams[agent.team].agents
       .filter((ally) => ally.alive && weaponUpgradeValue(ally, item.weapon) >= 6)
@@ -3449,7 +3451,9 @@ function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
         item.region === agent.region
         && item.knownBy.includes(side)
         && weaponUpgradeValue(agent, item.weapon) > 0
-        && (!criticalObjective || aiClassicCanDelayObjectiveForWeapon(game, agent, item)))
+        && (!criticalObjective
+          || defenseRetakeWeaponPickupIsSafe(game, agent, item)
+          || aiClassicCanDelayObjectiveForWeapon(game, agent, item)))
       .map((item) => ({ agent, item, upgrade: weaponUpgradeValue(agent, item.weapon) })))
     .sort((a, b) => (b.agent.weapon === "classic" ? 1 : 0) - (a.agent.weapon === "classic" ? 1 : 0) || b.upgrade - a.upgrade)[0];
   if (!candidates) return false;
@@ -3656,6 +3660,42 @@ function defenseRetakeCombatBuffer(game: GameState, agent: Agent) {
   return pressure ? 1 : 0;
 }
 
+function defenseRetakeWeaponPickupIsSafe(game: GameState, agent: Agent, item: DroppedWeapon) {
+  if (agent.team !== "defense" || !defenseRetakeIsActive(game) || game.spike.region === null) return false;
+  if (item.region === agent.region) return true;
+  const directTravel = distance(agent.region, game.spike.region);
+  const travelThroughWeapon = distance(agent.region, item.region) + distance(item.region, game.spike.region);
+  if (travelThroughWeapon > directTravel) return false;
+  const interactionTurns = game.spike.status === "planted" ? 2 : 1;
+  const slackAfterPickup = game.spike.explosion
+    - distance(item.region, game.spike.region)
+    - interactionTurns
+    - defenseRetakeCombatBuffer(game, agent);
+  return slackAfterPickup >= 1;
+}
+
+function defenseRetakeEntryScore(game: GameState, agent: Agent) {
+  const weapon = WEAPONS[agent.weapon];
+  const stats = finalStats(game, agent);
+  const breachSkills = new Set(["paint", "blast", "curve", "relay", "flash", "aftershock", "shock", "tailwind", "gear", "smoke", "dark"]);
+  const readyBreachUtility = AGENTS[agent.name].skills.some((skill) =>
+    breachSkills.has(skill.id) && (agent.skills[skill.id] ?? 0) > 0);
+  const roleScore = agent.role === "duelist" ? 28 : agent.role === "initiator" ? 18 : agent.role === "controller" ? 10 : 4;
+  const weaponScore = agent.weapon === "operator"
+    ? -120
+    : weapon.type === "sniper"
+      ? -58
+      : weapon.type === "shotgun"
+        ? 28
+        : 18;
+  return roleScore
+    + weaponScore
+    + (agent.hp + agent.armor) * 8
+    + stats.move * 7
+    + (readyBreachUtility ? 24 : 0)
+    - defenseRetakeSiteDistance(game, agent) * 10;
+}
+
 function defenseRetakeMustAdvance(game: GameState, agent: Agent) {
   if (!defenseRetakeIsActive(game) || game.spike.region === null) return false;
   const siteEntryTurns = defenseRetakeSiteDistance(game, agent);
@@ -3678,13 +3718,17 @@ function defenseRetakePair(game: GameState) {
   if (!defenseRetakeIsActive(game) || game.spike.region === null) return null;
   const alive = game.teams.defense.agents.filter((agent) => agent.alive);
   if (alive.length < 2) return null;
-  const ordered = [...alive].sort((a, b) =>
-    distance(a.region, game.spike.region!) - distance(b.region, game.spike.region!)
-    || aiRecoveryUnitReadiness(game, b) - aiRecoveryUnitReadiness(game, a));
-  const leader = ordered[0];
-  const escort = ordered.slice(1).sort((a, b) =>
-    distance(a.region, leader.region) - distance(b.region, leader.region)
-    || aiRecoveryUnitReadiness(game, b) - aiRecoveryUnitReadiness(game, a))[0];
+  const minimumDistance = Math.min(...alive.map((agent) => defenseRetakeSiteDistance(game, agent)));
+  const entryWindow = alive.filter((agent) => defenseRetakeSiteDistance(game, agent) <= minimumDistance + 1);
+  const interactionTurns = game.spike.status === "planted" ? 2 : 1;
+  const nonSniperEntries = alive.filter((agent) =>
+    WEAPONS[agent.weapon].type !== "sniper"
+    && game.spike.explosion >= defenseRetakeSiteDistance(game, agent) + interactionTurns);
+  const leaderPool = nonSniperEntries.length ? nonSniperEntries : entryWindow;
+  const leader = [...leaderPool].sort((a, b) => defenseRetakeEntryScore(game, b) - defenseRetakeEntryScore(game, a))[0];
+  const escort = alive.filter((agent) => agent.id !== leader.id).sort((a, b) =>
+    distance(a.region, leader.region) * 12 - aiRecoveryUnitReadiness(game, a) - (WEAPONS[a.weapon].type === "sniper" ? 22 : 0)
+    - (distance(b.region, leader.region) * 12 - aiRecoveryUnitReadiness(game, b) - (WEAPONS[b.weapon].type === "sniper" ? 22 : 0)))[0];
   return { leader, escort };
 }
 
@@ -3775,6 +3819,17 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
   const safeTargets = guardingDroppedSpike || flanking || urgentRetake ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
   if (!safeTargets.length) return null;
   if (pair && pairSeparated && agent.id === pair.leader.id && !urgentRetake) return null;
+  const trailingSniper = urgentRetake
+    && !!pair
+    && agent.id !== pair.leader.id
+    && WEAPONS[agent.weapon].type === "sniper";
+  if (trailingSniper) {
+    const coverTargets = safeTargets.filter((region) => distance(region, pair.leader.region) <= 1);
+    const coverPool = coverTargets.length ? coverTargets : safeTargets;
+    return [...coverPool].sort((a, b) =>
+      distance(a, pair.leader.region) * 10 + distance(a, game.spike.region!) * 2
+      - (distance(b, pair.leader.region) * 10 + distance(b, game.spike.region!) * 2))[0];
+  }
   if (pair && agent.id === pair.escort.id) {
     const escortTargets = safeTargets.filter((region) => distance(region, pair.leader.region) <= 1);
     if (game.spike.region !== null) {
@@ -7496,6 +7551,7 @@ export default function Home() {
         return;
       }
     }
+    if (activeDefenseRetake && aiPickupWeaponAtCurrentRegion(draft, side)) return;
     if (side === "attack" && draft.spike.status === "dropped") {
       const retriever = draft.teams.attack.agents.find((agent) =>
         agent.alive
@@ -7602,7 +7658,17 @@ export default function Home() {
           const siteDistance = defenseRetakeSiteDistance(draft, agent);
           const entrySlack = draft.spike.explosion - DEFENSE_RETAKE_SITE_ENTRY_TARGET - siteDistance;
           const forceEntry = defenseRetakeForceEntry(draft, agent);
-          return (forceEntry ? -280 : -180) - siteDistance * 12 - Math.max(0, -entrySlack) * 18;
+          const pair = defenseRetakePair(draft);
+          const isLeader = pair?.leader.id === agent.id;
+          const isEscort = pair?.escort.id === agent.id;
+          const sniperMustTrail = WEAPONS[agent.weapon].type === "sniper" && !!pair && !isLeader;
+          const formationBias = isLeader ? -80 : isEscort ? -28 : 0;
+          const sniperTrailBias = sniperMustTrail ? 140 : 0;
+          return (forceEntry ? -280 : -180)
+            - siteDistance * 12
+            - Math.max(0, -entrySlack) * 18
+            + formationBias
+            + sniperTrailBias;
         }
         if (aiTradeRelayMemoryForAgent(draft, agent)) return -140;
         if (aiWaitShouldBePreserved(draft, agent)) return 92;
