@@ -430,7 +430,7 @@ test("attack AI abandons scouting and forces site clear, carrier entry, plant, a
   assert.match(page, /sameRegionEnemy && queueCurrentEncounter\(draft, carrier, 3, true, 0, true, "turn-start"\)/);
   assert.match(page, /if \(siteContested && agent\.role === "duelist"/);
   assert.match(page, /if \(agent\.id === carrier\?\.id\) return -100/);
-  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \? null : aiWeaponDestination/);
+  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \|\| contestingPostplant \? null : aiWeaponDestination/);
   assert.match(page, /\(forcedPlant && draft\.spike\.status === "carried"\) \|\| operatorBreach/);
 });
 
@@ -490,7 +490,7 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
   assert.match(page, /!\(side === "attack" && attackForcedPlantMode\(draft\)\) && aiPickupWeaponAtCurrentRegion\(draft, side\)/);
   assert.match(page, /&& !aiCurrentWeaponPickup\(draft, agent\)/);
-  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \? null : aiWeaponDestination/);
+  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \|\| contestingPostplant \? null : aiWeaponDestination/);
   assert.match(page, /const classicWeaponClaimants = forcedPlant \? \[\] : team\.agents\.filter/);
   assert.match(page, /if \(weaponObjective && agent\.weapon === "classic"\) return -48/);
   assert.match(page, /const priorityDestination = agent\.weapon === "classic"/);
@@ -640,7 +640,7 @@ test("AI remembers a conceded entry and only re-enters after applied disruption 
   assert.match(page, /function aiTradeRelayMemoryForAgent/);
   assert.match(page, /function aiTradeFollowupDestination/);
   assert.match(page, /if \(aiTradeRelayMemoryForAgent\(draft, agent\)\) return -140/);
-  assert.match(page, /const safePriorityDestination = tradeDestination \?\? recoveryDecision\?\.destination/);
+  assert.match(page, /const safePriorityDestination = postplantContestDestination \?\? tradeDestination \?\? recoveryDecision\?\.destination/);
   assert.match(page, /if \(aiRetreatReentryIsUrgent\(game, agent\)\) return false/);
   assert.match(page, /shouldAiRetreat\(game, actor, retreatRegion\)/);
 });
@@ -1067,7 +1067,15 @@ test("postplant AI backs off, watches the objective, and rejects inward idle hol
   assert.match(page, /function aiPostplantWaitDirection/);
   assert.match(page, /function aiPostplantNeedsWait/);
   assert.match(page, /if \(postplantAttacker\)/);
-  assert.match(page, /const mustStopDefuse = game\.spike\.status === "defusing"/);
+  assert.match(page, /function attackPostplantPressure/);
+  assert.match(page, /observedRegions\(game, "attack"\)\.has\(spikeRegion\)/);
+  assert.match(page, /SITE_REGIONS\[site\]\.includes\(enemy\.region\)/);
+  assert.match(page, /game\.spike\.status === "half"/);
+  assert.match(page, /game\.spike\.status === "defusing"[\s\S]{0,60}\? "final-defuse"/);
+  assert.match(page, /function attackPostplantMustContest/);
+  assert.match(page, /function attackPostplantContestDestination/);
+  assert.match(page, /if \(attackPostplantPressure\(game\)\.needsAction\) return null/);
+  assert.match(page, /postplantContestDestination \?\? tradeDestination/);
   assert.match(page, /retakeLaneCoverage\.length >= Math\.min\(1, alive\.length\)/);
   assert.match(page, /설치 후 후방 사격 위치에서 스파이크와 재진입 통로를 교차 대기합니다/);
 });
