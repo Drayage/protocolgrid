@@ -217,8 +217,10 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .node-label b { color: var(--amber); margin-right: 4px; }
 .region-node.dark-zone::before { content: ""; position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(circle, rgba(120,86,224,.34) 0%, rgba(120,86,224,.12) 62%, rgba(120,86,224,0) 100%); border: 1px dashed rgba(167,138,255,.5); pointer-events: none; z-index: 0; }
 
-.unit-stack { position: absolute; z-index: 9; display: flex; gap: 2px; pointer-events: none; }
-.ally-stack { bottom: 24px; left: 19px; }.enemy-stack { top: 24px; right: 19px; flex-direction: row-reverse; }
+.unit-stack { position: absolute; z-index: 9; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 2px; width: 82px; pointer-events: none; }
+.unit-stack:has(> :nth-child(4)) { width: 60px; }
+.unit-stack:has(> :nth-child(4)) .unit-token { width: 18px; height: 18px; font-size: 6px; }
+.ally-stack { bottom: 22px; left: 14px; }.enemy-stack { top: 22px; right: 14px; flex-direction: row-reverse; justify-content: flex-end; }
 .unit-token { position: relative; z-index: 2; display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; font-style: normal; font-size: 8px; font-weight: 900; color: #07110f; background: var(--team-color); border: 2px solid #d8fffa; box-shadow: 0 2px 8px #000; pointer-events: auto; cursor: pointer; }
 .unit-token.agent-art { background-color: #0a171b !important; }
 .wait-cone { position: absolute; z-index: 1; height: 34px; transform-origin: 0 50%; clip-path: polygon(0 42%,100% 0,100% 100%,0 58%); pointer-events: none; opacity: .76; }
