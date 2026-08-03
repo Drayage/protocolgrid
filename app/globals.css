@@ -219,6 +219,8 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 
 .unit-stack { position: absolute; z-index: 9; display: flex; gap: 2px; pointer-events: none; }
 .ally-stack { bottom: 24px; left: 19px; }.enemy-stack { top: 24px; right: 19px; flex-direction: row-reverse; }
+.unit-token.overflow-badge { background: #1c2a2f; border-color: #567077; color: #cfe4e2; font-size: 7px; }
+.unit-token.hostile.overflow-badge { background: #2f151a; border-color: #a85764; color: #ffd7dc; }
 .unit-token { position: relative; z-index: 2; display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; font-style: normal; font-size: 8px; font-weight: 900; color: #07110f; background: var(--team-color); border: 2px solid #d8fffa; box-shadow: 0 2px 8px #000; pointer-events: auto; cursor: pointer; }
 .unit-token.agent-art { background-color: #0a171b !important; }
 .wait-cone { position: absolute; z-index: 1; height: 34px; transform-origin: 0 50%; clip-path: polygon(0 42%,100% 0,100% 100%,0 58%); pointer-events: none; opacity: .76; }

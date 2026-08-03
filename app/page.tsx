@@ -8870,6 +8870,13 @@ export default function Home() {
                  return observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id));
                }), ...rememberedEnemies.filter((agent) => !enemies.some((enemy) => enemy.id === agent.id))];
               const revealedEnemies = shownEnemies.filter((agent) => observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)));
+              // Cap how many tokens stack out from a region node — an uncapped row of
+              // 5 icons can sprawl far enough to bury the connection lines it sits on.
+              const STACK_ICON_CAP = 3;
+              const visibleAllies = allies.slice(0, STACK_ICON_CAP);
+              const overflowAllies = allies.slice(STACK_ICON_CAP);
+              const visibleShownEnemies = shownEnemies.slice(0, STACK_ICON_CAP);
+              const overflowShownEnemies = shownEnemies.slice(STACK_ICON_CAP);
               const isValid = !isAiControlledTurn && validTargets.has(region.id);
               const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const fire = game.fires.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
@@ -8896,10 +8903,12 @@ export default function Home() {
                   <span className="node-core">{region.id}</span>
                   <span className="node-label">{region.site && <b>{region.site}</b>}{region.name}</span>
                   <span className="unit-stack ally-stack">
-                    {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${agentArtClass(agent.name)} ${game.selectedAgentId === agent.id ? "selected" : ""} ${arrivingAgentId === agent.id ? "movement-arriving" : ""}`} style={arrivingAgentId === agent.id ? movementArrivalStyle : undefined} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`} aria-label={`${agent.name} 지도 토큰`}><AgentStatusBadges game={game} agent={agent} compact /></i>)}
+                    {visibleAllies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${agentArtClass(agent.name)} ${game.selectedAgentId === agent.id ? "selected" : ""} ${arrivingAgentId === agent.id ? "movement-arriving" : ""}`} style={arrivingAgentId === agent.id ? movementArrivalStyle : undefined} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`} aria-label={`${agent.name} 지도 토큰`}><AgentStatusBadges game={game} agent={agent} compact /></i>)}
+                    {overflowAllies.length > 0 && <i className="unit-token overflow-badge" onClick={(event) => { event.stopPropagation(); selectAgent(overflowAllies[0].id); }} title={overflowAllies.map((agent) => agent.name).join(", ")} aria-label={`추가 아군 ${overflowAllies.length}명`}>+{overflowAllies.length}</i>}
                   </span>
                   <span className="unit-stack enemy-stack">
-                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); const arriving = arrivingAgentId === agent.id; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""} ${arriving ? "movement-arriving" : ""}`} style={arriving ? movementArrivalStyle : undefined} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <AgentStatusBadges game={game} agent={agent} compact />}{lastKnown && <small>잔상</small>}</i>; })}
+                    {visibleShownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); const arriving = arrivingAgentId === agent.id; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""} ${arriving ? "movement-arriving" : ""}`} style={arriving ? movementArrivalStyle : undefined} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <AgentStatusBadges game={game} agent={agent} compact />}{lastKnown && <small>잔상</small>}</i>; })}
+                    {overflowShownEnemies.length > 0 && <i className="unit-token hostile overflow-badge" title={`추가 적 ${overflowShownEnemies.length}명`} aria-label={`추가 적 ${overflowShownEnemies.length}명`}>+{overflowShownEnemies.length}</i>}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}
                   {floatingHere.length > 0 && <span className="floating-number-stack">
