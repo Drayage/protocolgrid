@@ -5783,6 +5783,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "smoke" || definition.id === "dark") {
+        // A previous cast from this agent is still up doing its job (smoke/dark now
+        // lasts three enemy turns) — don't burn another charge to lay a second one.
+        if (game.smokes.some((smoke) => smoke.sourceAgentId === agent.id)) continue;
         const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
         if (side === "attack" && !spikeActive) {
           const targetSite = game.attackPlan.targetSite;
