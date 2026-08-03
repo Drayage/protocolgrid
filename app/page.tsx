@@ -3791,13 +3791,22 @@ function aiRecoveryFlankTurns(objectiveRegion: number, route: number[]): number 
   return (route.length - 1) + distance(route[route.length - 1], objectiveRegion);
 }
 
+// The flank route is only as good as known intel — an unscouted watcher
+// along the way costs extra turns to detect and reroute around. Require a
+// turn of slack beyond the bare ETA before committing to a detour.
+const AI_FLANK_SAFETY_MARGIN = 1;
+
+function aiFlankFitsDeadline(deadline: number | null, flankTurns: number, interactionTurns: number): boolean {
+  return deadline === null || flankTurns + interactionTurns + AI_FLANK_SAFETY_MARGIN <= deadline;
+}
+
 function createAiRecoveryOrder(game: GameState, agent: Agent, objective: AiRecoveryObjective, blockers: AiEnemyIntel[]) {
   const assaultScore = aiRecoveryAssaultScore(game, agent, objective.region, blockers);
   const deadline = aiRecoveryDeadlineTurns(game, agent, objective.kind);
   const interactionTurns = aiRecoveryInteractionTurns(game, objective.kind);
   const flankRoute = assaultScore < 0 ? aiRecoveryFlankRoute(game, agent, objective.region, blockers) : [];
   const flankTurns = aiRecoveryFlankTurns(objective.region, flankRoute);
-  const flankViable = flankRoute.length > 1 && (deadline === null || flankTurns + interactionTurns <= deadline);
+  const flankViable = flankRoute.length > 1 && aiFlankFitsDeadline(deadline, flankTurns, interactionTurns);
   const mode: AiRecoveryOrder["mode"] = assaultScore >= 0 || !flankViable ? "breach" : "flank";
   const order: AiRecoveryOrder = {
     side: agent.team,
@@ -3847,16 +3856,18 @@ function refreshAiRecoveryOrder(game: GameState, agent: Agent, order: AiRecovery
   if (order.mode === "breach" && shouldFlank) {
     const flankRoute = aiRecoveryFlankRoute(game, agent, order.objectiveRegion, blockers);
     const flankTurns = aiRecoveryFlankTurns(order.objectiveRegion, flankRoute);
-    if (flankRoute.length > 1 && (deadline === null || flankTurns + interactionTurns <= deadline)) {
+    if (flankRoute.length > 1 && aiFlankFitsDeadline(deadline, flankTurns, interactionTurns)) {
       setAiRecoveryOrderRoute(game, agent, order, "flank", blockers);
     }
   } else if (order.mode === "flank" && shouldBreach) {
     setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
   } else if (order.mode === "flank" && deadline !== null) {
     // The clock keeps ticking while flanking — if what's left of the route no
-    // longer fits before the deadline, abandon the detour and push directly.
-    const remainingTurns = order.route.length - 1 - order.progress;
-    if (remainingTurns + interactionTurns > deadline) setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
+    // longer fits before the deadline (with margin for a surprise contact),
+    // abandon the detour and push directly.
+    const lastRouteRegion = order.route[order.route.length - 1];
+    const remainingTurns = (order.route.length - 1 - order.progress) + distance(lastRouteRegion, order.objectiveRegion);
+    if (!aiFlankFitsDeadline(deadline, remainingTurns, interactionTurns)) setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
   }
   order.assaultScore = nextScore;
 }
@@ -4587,9 +4598,12 @@ function attackForcedEntryDetourBonus(game: GameState, agent: Agent, region: num
   if (objectiveRegion === undefined) return 0;
   const blockers = aiRecoveryBlockers(game, "attack", objectiveRegion);
   if (!blockers.length) return 0;
+  // Only worth detouring when the squad doesn't already have the numbers to
+  // just push through the blockers — otherwise trading straight in is better.
+  if (aiRecoveryAssaultScore(game, agent, objectiveRegion, blockers) >= 0) return 0;
   const deadline = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
   const flankRoute = aiRecoveryFlankRoute(game, agent, objectiveRegion, blockers);
-  if (flankRoute.length < 2 || aiRecoveryFlankTurns(objectiveRegion, flankRoute) > deadline) return 0;
+  if (flankRoute.length < 2 || !aiFlankFitsDeadline(deadline, aiRecoveryFlankTurns(objectiveRegion, flankRoute), 0)) return 0;
   return flankRoute[1] === region ? -45 : 0;
 }
 
