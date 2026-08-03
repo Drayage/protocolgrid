@@ -2409,14 +2409,14 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   }
 
   // Walking into a dark-zoned region an enemy already occupies is a blind
-  // ambush: the occupant (holder) didn't see the entry coming, so they take
-  // a priority penalty; and since neither side necessarily has the other
-  // detected, shooting a non-detected opponent through the dark carries an
-  // aim penalty for whichever side that applies to.
+  // ambush: the occupant (holder) already had position and cover, so they
+  // get a priority advantage over the entrant; and since neither side
+  // necessarily has the other detected, shooting a non-detected opponent
+  // through the dark carries an aim penalty for whichever side that applies to.
   const isDarkAmbush = range === 0 && game.smokes.some((smoke) => smoke.sourceSkill === "dark" && smoke.region === mover.region);
   const moverDarkAimPenalty = isDarkAmbush && !enemy.detected ? -2 : 0;
   const holderDarkAimPenalty = isDarkAmbush && !mover.detected ? -2 : 0;
-  const holderDarkPriorityPenalty = isDarkAmbush ? 1 : 0;
+  const holderDarkPriorityBonus = isDarkAmbush ? 1 : 0;
   if (isDarkAmbush) addLog(game, `${mover.name}이 어둠의 장막 안으로 진입해 ${enemy.name}과 기습 교전합니다. ${enemy.name} 우선도 -1.`);
 
   const moverStats = finalStats(game, mover);
@@ -2427,7 +2427,7 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const moverSniperNonWaitPenalty = WEAPONS[mover.weapon].type === "sniper" ? 1 : 0;
   const holderSniperNonWaitPenalty = WEAPONS[enemy.weapon].type === "sniper" && !waiting ? 1 : 0;
   const moverPrio = Math.max(1, moverPriority + moverSniperNonWaitPenalty + (moverTradeTargetPenalty ? 1 : 0) + moverStats.priorityPenalty - moverStats.priorityBoost - moverTradePriority - surprisePriority);
-  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + holderSniperNonWaitPenalty + (holderTradeTargetPenalty ? 1 : 0) + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority + holderDarkPriorityPenalty);
+  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + holderSniperNonWaitPenalty + (holderTradeTargetPenalty ? 1 : 0) + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority - holderDarkPriorityBonus);
   const simultaneous = moverPrio === enemyPrio;
   const firstActorId = moverPrio <= enemyPrio ? mover.id : enemy.id;
   const secondActorId = firstActorId === mover.id ? enemy.id : mover.id;
