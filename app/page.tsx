@@ -37,6 +37,37 @@ interface Region {
   site?: "A" | "B";
 }
 
+// A door lives on an edge and can gate movement across it. Not wired into
+// gameplay yet (no map declares one) — this is the schema hook a future map
+// with closable/breakable doors plugs into without another shape change.
+interface DoorDefinition {
+  edge: [number, number];
+  breakable: boolean;
+  startsOpen: boolean;
+}
+
+// Everything that makes one battlefield different from another: layout,
+// connectivity, and the tactical zone tags AI strategy code reads (which
+// regions are site A, which edges are chokepoints, where each side spawns).
+// A second map is added by writing a new MapDefinition, not by editing logic.
+interface MapDefinition {
+  id: string;
+  name: string;
+  regions: Region[];
+  edges: [number, number][];
+  doors: DoorDefinition[];
+  attackSpawn: number;
+  defenseSpawn: number;
+  defenseDeploymentRegions: number[];
+  siteRegions: Record<"A" | "B", number[]>;
+  siteApproachRegions: Record<"A" | "B", number[]>;
+  tacticalRegionsBySite: Record<"A" | "B", number[]>;
+  defenseOperatingRegions: number[];
+  waitChokeRegions: number[];
+  attackEntryEdges: Record<"A" | "B", [number, number][]>;
+  defenderBackEdges: Record<"A" | "B", [number, number][]>;
+}
+
 interface Weapon {
   id: WeaponId;
   name: string;
@@ -574,58 +605,90 @@ const createAnalytics = (): GameAnalytics => ({
   timeline: [],
 });
 
-const REGIONS: Region[] = [
-  { id: 1, name: "공격팀 시작 지점", x: 49.5, y: 90 },
-  { id: 2, name: "하단 좌측 분기", x: 24.5, y: 75 },
-  { id: 3, name: "폐쇄 구역", x: 8, y: 78 },
-  { id: 4, name: "하단 우측 분기", x: 75.5, y: 76 },
-  { id: 5, name: "중앙 하부", x: 49, y: 65 },
-  { id: 6, name: "중앙 상부", x: 49, y: 49 },
-  { id: 7, name: "수비팀 시작 지점", x: 49.5, y: 11 },
-  { id: 8, name: "왼쪽 긴 진입로", x: 34, y: 47 },
-  { id: 9, name: "왼쪽 사이트 입구", x: 23, y: 47, site: "A" },
-  { id: 10, name: "왼쪽 사이트 전방", x: 19, y: 31, site: "A" },
-  { id: 11, name: "왼쪽 사이트 후방", x: 8.5, y: 39, site: "A" },
-  { id: 12, name: "왼쪽 수비 연결로", x: 16, y: 58 },
-  { id: 13, name: "오른쪽 긴 진입로", x: 67.5, y: 50 },
-  { id: 14, name: "오른쪽 사이트 입구", x: 80, y: 40, site: "B" },
-  { id: 15, name: "오른쪽 사이트 전방", x: 84, y: 25, site: "B" },
-  { id: 16, name: "오른쪽 사이트 후방", x: 94, y: 36, site: "B" },
-  { id: 17, name: "오른쪽 수비 연결로", x: 84, y: 61 },
-];
+const GRID_01: MapDefinition = {
+  id: "grid-01",
+  name: "GRID-01",
+  regions: [
+    { id: 1, name: "공격팀 시작 지점", x: 49.5, y: 90 },
+    { id: 2, name: "하단 좌측 분기", x: 24.5, y: 75 },
+    { id: 3, name: "폐쇄 구역", x: 8, y: 78 },
+    { id: 4, name: "하단 우측 분기", x: 75.5, y: 76 },
+    { id: 5, name: "중앙 하부", x: 49, y: 65 },
+    { id: 6, name: "중앙 상부", x: 49, y: 49 },
+    { id: 7, name: "수비팀 시작 지점", x: 49.5, y: 11 },
+    { id: 8, name: "왼쪽 긴 진입로", x: 34, y: 47 },
+    { id: 9, name: "왼쪽 사이트 입구", x: 23, y: 47, site: "A" },
+    { id: 10, name: "왼쪽 사이트 전방", x: 19, y: 31, site: "A" },
+    { id: 11, name: "왼쪽 사이트 후방", x: 8.5, y: 39, site: "A" },
+    { id: 12, name: "왼쪽 수비 연결로", x: 16, y: 58 },
+    { id: 13, name: "오른쪽 긴 진입로", x: 67.5, y: 50 },
+    { id: 14, name: "오른쪽 사이트 입구", x: 80, y: 40, site: "B" },
+    { id: 15, name: "오른쪽 사이트 전방", x: 84, y: 25, site: "B" },
+    { id: 16, name: "오른쪽 사이트 후방", x: 94, y: 36, site: "B" },
+    { id: 17, name: "오른쪽 수비 연결로", x: 84, y: 61 },
+  ],
+  edges: [
+    [1, 2], [1, 4], [1, 5], [2, 5], [2, 12], [4, 5], [4, 17], [5, 6], [5, 17],
+    [6, 8], [6, 13], [7, 10], [7, 13], [8, 9], [8, 10], [9, 10], [9, 12], [10, 11],
+    [11, 12], [13, 14], [13, 15], [13, 17], [14, 15], [14, 16], [14, 17], [15, 16],
+  ],
+  // No closable/breakable doors on this map — future maps declare them here.
+  doors: [],
+  attackSpawn: 1,
+  defenseSpawn: 7,
+  defenseDeploymentRegions: [7, 10, 13],
+  siteRegions: { A: [9, 10, 11], B: [14, 15, 16] },
+  siteApproachRegions: { A: [8, 12], B: [13, 17] },
+  tacticalRegionsBySite: { A: [8, 9, 10, 11, 12], B: [13, 14, 15, 16, 17] },
+  defenseOperatingRegions: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+  waitChokeRegions: [2, 4, 5, 6, 8, 9, 12, 13, 14, 17],
+  attackEntryEdges: {
+    A: [[8, 9], [9, 12], [11, 12]],
+    B: [[13, 14], [14, 17], [13, 15]],
+  },
+  defenderBackEdges: {
+    A: [[7, 10], [10, 11]],
+    B: [[7, 13], [13, 15], [15, 16]],
+  },
+};
+
+const MAPS: Record<string, MapDefinition> = { [GRID_01.id]: GRID_01 };
+// Only one map is playable today; swapping this binding (or making it
+// player-selected) is the seam a future second map plugs into. Everything
+// below is derived from it so the rest of the file never reads map data by
+// literal region number again — that migration is tracked separately.
+const ACTIVE_MAP: MapDefinition = MAPS[GRID_01.id];
+
+function buildRegionGraph(map: MapDefinition): Map<number, number[]> {
+  const graph = new Map<number, number[]>();
+  for (const region of map.regions) graph.set(region.id, []);
+  for (const [a, b] of map.edges) {
+    graph.get(a)?.push(b);
+    graph.get(b)?.push(a);
+  }
+  return graph;
+}
+
+const REGIONS = ACTIVE_MAP.regions;
+const EDGES = ACTIVE_MAP.edges;
+const GRAPH = buildRegionGraph(ACTIVE_MAP);
+const ATTACK_SPAWN_REGION = ACTIVE_MAP.attackSpawn;
+const DEFENSE_SPAWN_REGION = ACTIVE_MAP.defenseSpawn;
+const DEFENSE_DEPLOYMENT_REGIONS = ACTIVE_MAP.defenseDeploymentRegions;
+const DEFENSE_OPERATING_REGIONS = new Set(ACTIVE_MAP.defenseOperatingRegions);
+const A_TACTICAL_REGIONS = new Set(ACTIVE_MAP.tacticalRegionsBySite.A);
+const B_TACTICAL_REGIONS = new Set(ACTIVE_MAP.tacticalRegionsBySite.B);
+const SITE_REGIONS = ACTIVE_MAP.siteRegions;
+const SITE_APPROACH_REGIONS = ACTIVE_MAP.siteApproachRegions;
+const ATTACK_ENTRY_EDGES = ACTIVE_MAP.attackEntryEdges;
+const DEFENDER_BACK_EDGES = ACTIVE_MAP.defenderBackEdges;
+const AI_WAIT_CHOKE_REGIONS = new Set(ACTIVE_MAP.waitChokeRegions);
 
 function audioPanForRegion(regionId: number | null | undefined) {
   if (regionId === null || regionId === undefined) return 0;
   const region = REGIONS.find((item) => item.id === regionId);
   return region ? Math.max(-1, Math.min(1, (region.x - 50) / 44)) : 0;
 }
-
-const EDGES: [number, number][] = [
-  [1, 2], [1, 4], [1, 5], [2, 5], [2, 12], [4, 5], [4, 17], [5, 6], [5, 17],
-  [6, 8], [6, 13], [7, 10], [7, 13], [8, 9], [8, 10], [9, 10], [9, 12], [10, 11],
-  [11, 12], [13, 14], [13, 15], [13, 17], [14, 15], [14, 16], [14, 17], [15, 16],
-];
-
-const GRAPH = new Map<number, number[]>();
-for (const region of REGIONS) GRAPH.set(region.id, []);
-for (const [a, b] of EDGES) {
-  GRAPH.get(a)?.push(b);
-  GRAPH.get(b)?.push(a);
-}
-
-const DEFENSE_OPERATING_REGIONS = new Set([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
-const A_TACTICAL_REGIONS = new Set([8, 9, 10, 11, 12]);
-const B_TACTICAL_REGIONS = new Set([13, 14, 15, 16, 17]);
-const SITE_REGIONS: Record<"A" | "B", number[]> = { A: [9, 10, 11], B: [14, 15, 16] };
-const SITE_APPROACH_REGIONS: Record<"A" | "B", number[]> = { A: [8, 12], B: [13, 17] };
-const ATTACK_ENTRY_EDGES: Record<"A" | "B", [number, number][]> = {
-  A: [[8, 9], [9, 12], [11, 12]],
-  B: [[13, 14], [14, 17], [13, 15]],
-};
-const DEFENDER_BACK_EDGES: Record<"A" | "B", [number, number][]> = {
-  A: [[7, 10], [10, 11]],
-  B: [[7, 13], [13, 15], [15, 16]],
-};
 
 const WEAPONS: Record<WeaponId, Weapon> = {
   classic: { id: "classic", name: "클래식", type: "normal", body: 2, head: 3, price: 0, aim: 0, move: 0, unlock: 1 },
@@ -812,7 +875,7 @@ function createAgent(name: string, team: Side): Agent {
     name,
     role: template.role,
     team,
-    region: team === "attack" ? 1 : 7,
+    region: team === "attack" ? ATTACK_SPAWN_REGION : DEFENSE_SPAWN_REGION,
     hp: AGENT_MAX_HP,
     armor: 0,
     armorType: "none",
@@ -969,7 +1032,7 @@ function resetAgentForRound(agent: Agent, side: Side, economyReset: boolean) {
   }
   agent.armorDamaged = false;
   agent.team = side;
-  agent.region = side === "attack" ? 1 : 7;
+  agent.region = side === "attack" ? ATTACK_SPAWN_REGION : DEFENSE_SPAWN_REGION;
   agent.hp = AGENT_MAX_HP;
   agent.alive = true;
   agent.extraActions = 0;
@@ -1206,28 +1269,31 @@ function shortestPath(start: number, end: number): number[] {
   return [];
 }
 
-// REGIONS/EDGES are a fixed, static map, so all pairwise distances can be
-// precomputed once (one BFS per node) instead of re-walking the graph on
-// every distance() call — this function is on the hot path for AI decisions.
-const DISTANCE_MATRIX: Record<number, Record<number, number>> = (() => {
+// A map's pairwise distances only change when its graph changes (never today,
+// potentially on a future map switch or a door opening/closing) — so this is
+// computed once per graph and cached, instead of re-walking it on every
+// distance() call, which is on the hot path for AI decisions.
+function buildDistanceMatrix(graph: Map<number, number[]>): Record<number, Record<number, number>> {
   const matrix: Record<number, Record<number, number>> = {};
-  for (const source of REGIONS) {
-    const dist = new Map<number, number>([[source.id, 0]]);
-    const queue = [source.id];
+  for (const source of graph.keys()) {
+    const dist = new Map<number, number>([[source, 0]]);
+    const queue = [source];
     while (queue.length) {
       const current = queue.shift()!;
       const currentDist = dist.get(current)!;
-      for (const next of GRAPH.get(current) ?? []) {
+      for (const next of graph.get(current) ?? []) {
         if (dist.has(next)) continue;
         dist.set(next, currentDist + 1);
         queue.push(next);
       }
     }
-    matrix[source.id] = {};
-    for (const target of REGIONS) matrix[source.id][target.id] = dist.get(target.id) ?? 99;
+    matrix[source] = {};
+    for (const target of graph.keys()) matrix[source][target] = dist.get(target) ?? 99;
   }
   return matrix;
-})();
+}
+
+const DISTANCE_MATRIX = buildDistanceMatrix(GRAPH);
 
 const distance = (a: number, b: number) => DISTANCE_MATRIX[a]?.[b] ?? 99;
 
@@ -3734,8 +3800,6 @@ function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiE
   return [...objectives].sort((a, b) => distance(from, a) - distance(from, b))[0];
 }
 
-const AI_WAIT_CHOKE_REGIONS = new Set([2, 4, 5, 6, 8, 9, 12, 13, 14, 17]);
-
 function aiLastMovementOrigin(game: GameState, agent: Agent) {
   ensureAiTacticalState(game);
   const history = game.aiMovementHistories.find((item) =>
@@ -6093,7 +6157,7 @@ interface DeploymentScreenProps {
 
 function DeploymentScreen({ game, selectedId, onSelect, onPlace, onBack, onStart }: DeploymentScreenProps) {
   const defenders = game.teams.defense.agents;
-  const allowed = [7, 10, 13];
+  const allowed = DEFENSE_DEPLOYMENT_REGIONS;
   return (
     <main className="setup-screen deployment-screen">
       <header className="setup-topbar"><button onClick={onBack}>← 수비 구매</button><div><span>STEP 03</span><strong>수비팀 사전 배치</strong></div><span className="deck-locked">15장 덱 잠금 완료</span></header>

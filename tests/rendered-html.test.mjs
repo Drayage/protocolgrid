@@ -397,9 +397,9 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
 
 test("mid-round AI replans, plants secured sites, and uses utility for entry and retake lanes", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /const SITE_REGIONS:/);
-  assert.match(page, /const ATTACK_ENTRY_EDGES:/);
-  assert.match(page, /const DEFENDER_BACK_EDGES:/);
+  assert.match(page, /const SITE_REGIONS = ACTIVE_MAP\.siteRegions/);
+  assert.match(page, /const ATTACK_ENTRY_EDGES = ACTIVE_MAP\.attackEntryEdges/);
+  assert.match(page, /const DEFENDER_BACK_EDGES = ACTIVE_MAP\.defenderBackEdges/);
   assert.match(page, /function aiPlantAssessment/);
   assert.match(page, /plantAssessment\?\.shouldPlant/);
   assert.match(page, /사이트 설치 판단 · 주변 아군/);
