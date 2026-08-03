@@ -898,7 +898,7 @@ test("combat odds, aftershock damage, condition badges, and weapon silhouettes s
   assert.match(page, /for \(let aimRoll = 1; aimRoll <= aim; aimRoll \+= 1\)/);
   assert.match(page, /combatAttackPreview\.hitChance/);
   assert.match(page, /combatAttackPreview\.expectedDamage/);
-  assert.match(page, /applyDamage\(draft, getAgent\(draft, effect\.ownerAgentId\), agent, SKILL_DAMAGE\.aftershock, "여진 폭발"\)/);
+  assert.match(page, /applyDamage\(draft, caster, enemy, SKILL_DAMAGE\.aftershock, "여진 폭발"\)/);
   assert.match(page, /function AgentStatusBadges/);
   assert.match(page, /effect\.kind === "blind"/);
   assert.match(page, /effect\.kind === "concussed"/);

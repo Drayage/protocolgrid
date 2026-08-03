@@ -375,12 +375,11 @@ interface GroupMovement {
   special: "rush" | "cover";
 }
 
-interface AftershockEffect {
+interface AftershockChannel {
   id: string;
   owner: Side;
   ownerAgentId: string;
   region: number;
-  targetIds: string[];
   readyOnTurn: number;
 }
 
@@ -549,7 +548,7 @@ interface GameState {
   stims: ZoneEffect[];
   smokes: SmokeEffect[];
   statusEffects: TimedStatusEffect[];
-  aftershocks: AftershockEffect[];
+  aftershocks: AftershockChannel[];
   trade: TradeState[];
   combatQueue: CombatScene[];
   pendingMovement: PendingMovement | null;
@@ -847,7 +846,7 @@ const AGENTS: Record<string, AgentTemplate> = {
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "2원 · 1회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
   "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 이내 구역을 지정합니다. 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.shock}(탐지 상태면 ${SKILL_DAMAGE.shock + 1}), 설치물을 파괴합니다.`)] },
-  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "adjacent", `인접 구역의 적에게 피해 ${SKILL_DAMAGE.aftershock}, 진행 행동을 취소합니다.`)] },
+  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "range2", `거리 2 이내 구역을 지정해 채널링합니다. 준비 중에는 무빙 -1, 우선도 +2, 이동하면 취소됩니다. 목표는 상대에게 보이지 않으며, 내 다음 턴이 시작할 때 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.aftershock}를 입힙니다.`)] },
   "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "목표 방향의 첫 연결을 다음 턴까지 차단합니다."), skill("stim", "전투 자극제", "2원 · 1회", "self", "현재 구역 아군의 에임과 우선도를 강화합니다.")] },
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
 };
@@ -2018,14 +2017,15 @@ function finalStats(game: GameState, agent: Agent, ignoreConsumedAttackEffects =
   const base = ROLE_STATS[agent.role];
   const weapon = WEAPONS[agent.weapon];
   const stimmed = game.stims.some((zone) => zone.owner === agent.team && zone.region === agent.region);
+  const aftershockCharging = game.aftershocks.some((channel) => channel.ownerAgentId === agent.id);
   const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id && (!ignoreConsumedAttackEffects || !effect.consumeOnAttack));
   const timedAimPenalty = timed.reduce((sum, effect) => sum + (effect.aimPenalty ?? 0), 0);
   const timedPriorityPenalty = timed.reduce((sum, effect) => sum + (effect.priorityPenalty ?? 0), 0);
   return {
     aim: Math.max(1, base.aim + weapon.aim - agent.status.aimPenalty - timedAimPenalty + (stimmed ? 1 : 0)),
-    move: Math.max(1, base.move + weapon.move + agent.status.moveBonus),
+    move: Math.max(1, base.move + weapon.move + agent.status.moveBonus - (aftershockCharging ? 1 : 0)),
     priorityBoost: stimmed ? 1 : 0,
-    priorityPenalty: agent.status.priorityPenalty + timedPriorityPenalty,
+    priorityPenalty: agent.status.priorityPenalty + timedPriorityPenalty + (aftershockCharging ? 2 : 0),
   };
 }
 
@@ -2188,17 +2188,23 @@ function makeShot(game: GameState, attacker: Agent, defender: Agent, range: numb
 }
 
 function cancelProgress(game: GameState, agent: Agent) {
-  if (game.spike.actorId !== agent.id) return;
-  if (game.spike.status === "planting") {
-    game.spike.status = "carried";
-    game.spike.carrierId = agent.id;
-    game.spike.region = null;
-    game.spikeKnownByDefense = false;
-    addLog(game, `${agent.name}의 스파이크 설치가 취소됐습니다.`);
-  } else if (game.spike.status === "defusing") {
-    game.spike.status = "half";
-    game.spike.actorId = null;
-    addLog(game, `${agent.name}의 최종 해체가 취소됐습니다. 반 해체는 유지됩니다.`);
+  if (game.spike.actorId === agent.id) {
+    if (game.spike.status === "planting") {
+      game.spike.status = "carried";
+      game.spike.carrierId = agent.id;
+      game.spike.region = null;
+      game.spikeKnownByDefense = false;
+      addLog(game, `${agent.name}의 스파이크 설치가 취소됐습니다.`);
+    } else if (game.spike.status === "defusing") {
+      game.spike.status = "half";
+      game.spike.actorId = null;
+      addLog(game, `${agent.name}의 최종 해체가 취소됐습니다. 반 해체는 유지됩니다.`);
+    }
+  }
+  const channelIndex = game.aftershocks.findIndex((channel) => channel.ownerAgentId === agent.id);
+  if (channelIndex >= 0) {
+    game.aftershocks.splice(channelIndex, 1);
+    addLog(game, `${agent.name}이 이동해 여진 준비가 취소됐습니다.`);
   }
 }
 
@@ -4749,7 +4755,7 @@ function aiAllyCanDisruptCombatHold(game: GameState, scene: CombatScene, actor: 
     return AGENTS[ally.name].skills.some((skillDefinition) => {
       if ((ally.skills[skillDefinition.id] ?? 0) <= 0) return false;
       const enemyRange = distance(ally.region, opponent.region);
-      if (["paint", "relay", "aftershock"].includes(skillDefinition.id)) return enemyRange <= 1;
+      if (["paint", "relay"].includes(skillDefinition.id)) return enemyRange <= 1;
       if (skillDefinition.id === "blast") return opponent.detected && enemyRange <= 1;
       if (skillDefinition.id === "curve") return distance(ally.region, actor.region) <= 1 && opponent.waitDirs.includes(actor.region);
       if (["recon", "shock", "flash"].includes(skillDefinition.id)) return enemyRange <= 2;
@@ -5532,24 +5538,31 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         return true;
       }
 
-      if (definition.id === "relay" || definition.id === "aftershock") {
+      if (definition.id === "relay") {
         const candidates = aiSkillRegions(agent, "adjacent").map((region) => ({
           region,
           targets: exactIntel.filter((item) => item.region === region),
-          entryScore: 0,
           recoveryScore: exactIntel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 4,
-        })).sort((a, b) => b.targets.length * 5 + b.entryScore + b.recoveryScore - (a.targets.length * 5 + a.entryScore + a.recoveryScore));
+        })).sort((a, b) => b.targets.length * 5 + b.recoveryScore - (a.targets.length * 5 + a.recoveryScore));
         const target = candidates[0];
         if (!target || !target.targets.length) continue;
         if (!begin()) return true;
-        if (definition.id === "relay") {
-          target.targets.forEach(({ agent: enemy }) => {
-            if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) game.statusEffects.push({ id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "concussed", priorityPenalty: 1 });
-          });
-        } else {
-          game.aftershocks.push({ id: `ai-aftershock-${game.turnSerial}-${target.region}`, owner: side, ownerAgentId: agent.id, region: target.region, targetIds: target.targets.map((item) => item.agent.id), readyOnTurn: game.teamTurns[otherSide(side)] + 1 });
-          target.targets.forEach(({ agent: enemy }) => cancelProgress(game, enemy));
-        }
+        target.targets.forEach(({ agent: enemy }) => {
+          if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) game.statusEffects.push({ id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "concussed", priorityPenalty: 1 });
+        });
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "aftershock") {
+        const target = aiSkillRegions(agent, "range2").map((region) => ({
+          region,
+          score: exactIntel.filter((item) => item.region === region).length * 4
+            + exactIntel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 8,
+        })).sort((a, b) => b.score - a.score)[0];
+        if (!target?.score) continue;
+        if (!begin()) return true;
+        game.aftershocks.push({ id: `ai-aftershock-${game.turnSerial}-${target.region}`, owner: side, ownerAgentId: agent.id, region: target.region, readyOnTurn: game.teamTurns[side] + 1 });
         finish(target.region);
         return true;
       }
@@ -5931,7 +5944,6 @@ function AgentStatusBadges({ game, agent, compact = false }: { game: GameState; 
     timed.some((effect) => effect.kind === "concussed" || (effect.priorityPenalty ?? 0) > 0) ? { key: "concussed", icon: "⌁", label: "충격 · 공격 우선도 지연" } : null,
     agent.detected ? { key: "detected", icon: "◎", label: "탐지됨" } : null,
     agent.status.vulnerable ? { key: "vulnerable", icon: "!", label: "취약 · 다음 피해 +1" } : null,
-    game.aftershocks.some((effect) => effect.targetIds.includes(agent.id) && effect.region === agent.region) ? { key: "aftershock", icon: "≋", label: `여진 · 이탈하지 않으면 피해 ${SKILL_DAMAGE.aftershock}` } : null,
     agent.status.aimPenalty > 0 ? { key: "aim-down", icon: "A↓", label: `에임 -${agent.status.aimPenalty}` } : null,
     agent.status.moveBonus < 0 ? { key: "move-down", icon: "M↓", label: `무빙 ${agent.status.moveBonus}` } : null,
   ].filter((badge): badge is { key: string; icon: string; label: string } => !!badge);
@@ -7220,8 +7232,7 @@ export default function Home() {
           draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team);
           break;
         case "aftershock":
-          draft.aftershocks.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, targetIds: enemies.map((enemy) => enemy.id), readyOnTurn: draft.teamTurns[otherSide(agent.team)] + 1 });
-          enemies.forEach((enemy) => cancelProgress(draft, enemy));
+          draft.aftershocks.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, readyOnTurn: draft.teamTurns[agent.team] + 1 });
           break;
         case "smoke": {
           const first = targeting.selected![0];
@@ -7325,26 +7336,6 @@ export default function Home() {
     draft.deployables = draft.deployables.filter((item) => item.id !== deployableId);
     agent.extraActions -= 1;
     addLog(draft, `${agent.name}이 적 ${device.kind} 설치물을 파괴했습니다.`);
-  });
-
-  const resolveAftershock = (effectId: string, agentId: string, destination?: number) => mutate((draft) => {
-    const effect = draft.aftershocks.find((item) => item.id === effectId);
-    const agent = getAgent(draft, agentId);
-    if (!effect || !agent?.alive || agent.team !== draft.turnSide || !effect.targetIds.includes(agent.id)) return;
-    if (destination !== undefined) {
-      if (!(GRAPH.get(agent.region) ?? []).includes(destination)) return;
-      effect.targetIds = effect.targetIds.filter((id) => id !== agent.id);
-      clearWait(agent);
-      cancelProgress(draft, agent);
-      moveAgent(draft, agent, destination, "forced");
-      addLog(draft, `${agent.name}이 여진 구역을 벗어났습니다.`);
-    } else {
-      effect.targetIds = effect.targetIds.filter((id) => id !== agent.id);
-      applyDamage(draft, getAgent(draft, effect.ownerAgentId), agent, SKILL_DAMAGE.aftershock, "여진 폭발");
-      addLog(draft, `${agent.name}이 이동하지 않고 여진 피해를 받았습니다.`);
-    }
-    draft.aftershocks = draft.aftershocks.filter((item) => item.targetIds.length > 0);
-    checkWinner(draft);
   });
 
   const handleRegionClick = (region: number) => {
@@ -7539,6 +7530,15 @@ export default function Home() {
       draft.selectedAgentId = startingTeam.agents.find((agent) => agent.alive)?.id ?? null;
       draft.fires = draft.fires.filter((zone) => !(zone.owner === newSide && zone.expiresOn === "owner-start" && draft.teamTurns[newSide] >= zone.expiresOwnerTurn));
       draft.stims = draft.stims.filter((zone) => !(zone.owner === newSide && zone.expiresOn === "owner-start" && draft.teamTurns[newSide] >= zone.expiresOwnerTurn));
+
+      draft.aftershocks.filter((channel) => channel.owner === newSide && draft.teamTurns[newSide] >= channel.readyOnTurn).forEach((channel) => {
+        const caster = getAgent(draft, channel.ownerAgentId);
+        draft.teams[otherSide(newSide)].agents.filter((enemy) => enemy.alive && enemy.region === channel.region).forEach((enemy) => {
+          applyDamage(draft, caster, enemy, SKILL_DAMAGE.aftershock, "여진 폭발");
+        });
+        addLog(draft, `${caster?.name ?? "요원"}의 여진이 ${regionName(channel.region)}에서 터졌습니다.`);
+      });
+      draft.aftershocks = draft.aftershocks.filter((channel) => !(channel.owner === newSide && draft.teamTurns[newSide] >= channel.readyOnTurn));
 
       if (newSide === "attack" && draft.spike.status === "planting") {
         const planter = getAgent(draft, draft.spike.actorId);
@@ -8036,19 +8036,6 @@ export default function Home() {
     } else updateDefensePlanReadout(draft);
     rememberObservedDroppedWeapons(draft, side);
     if (side === "defense") rememberObservedDroppedSpike(draft);
-    const pendingShock = draft.aftershocks
-      .filter((effect) => effect.owner !== side && draft.teamTurns[side] >= effect.readyOnTurn)
-      .flatMap((effect) => effect.targetIds.map((agentId) => ({ effect, agent: getAgent(draft, agentId) })))
-      .find((item) => item.agent?.alive && item.agent.team === side && item.agent.region === item.effect.region);
-    if (pendingShock?.agent) {
-      const options = GRAPH.get(pendingShock.agent.region) ?? [];
-      pendingShock.effect.targetIds = pendingShock.effect.targetIds.filter((id) => id !== pendingShock.agent!.id);
-      if (options[0] !== undefined) moveAgent(draft, pendingShock.agent, options[0], "forced");
-      else applyDamage(draft, getAgent(draft, pendingShock.effect.ownerAgentId), pendingShock.agent, SKILL_DAMAGE.aftershock, "여진 폭발");
-      draft.aftershocks = draft.aftershocks.filter((effect) => effect.targetIds.length);
-      checkWinner(draft);
-      return;
-    }
     if (draft.pendingWait) {
       const agent = getAgent(draft, draft.pendingWait);
       if (agent?.alive) {
@@ -8400,10 +8387,6 @@ export default function Home() {
   const nearbyEnemyDeployables = selectedAgent ? game.deployables.filter((item) => item.owner !== selectedAgent.team && distance(selectedAgent.region, item.region) <= 1 && visible.has(item.region)) : [];
   const friendlyCamera = selectedAgent?.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === selectedAgent.team) : null;
   const cameraTargets = friendlyCamera ? game.teams[otherSide(selectedAgent!.team)].agents.filter((enemy) => enemy.alive && !enemy.detected && [friendlyCamera.region, ...(GRAPH.get(friendlyCamera.region) ?? [])].includes(enemy.region)) : [];
-  const pendingAftershock = game.aftershocks
-    .filter((effect) => effect.owner !== game.turnSide && game.teamTurns[game.turnSide] >= effect.readyOnTurn)
-    .flatMap((effect) => effect.targetIds.map((agentId) => ({ effect, agent: getAgent(game, agentId) })))
-    .find((item) => item.agent?.alive && item.agent.team === game.turnSide && item.agent.region === item.effect.region) ?? null;
   const pendingContactAgent = getAgent(game, game.pendingContact?.agentId);
   const pendingContactEnemies = (game.pendingContact?.enemyIds ?? []).map((id) => getAgent(game, id)).filter((agent): agent is Agent => !!agent?.alive);
   const canPlant = selectedAgent?.team === "attack" && selectedRegion?.site && game.spike.status === "carried" && game.spike.carrierId === selectedAgent.id;
@@ -8728,13 +8711,11 @@ export default function Home() {
             <div className="log-heading"><span>전투 기록</span><i>LIVE</i></div>
             {isAiControlledTurn && !spectatorMode ? <div className="opponent-turn-note"><b>상대 작전 진행 중</b><span>아군의 거리 1 시야와 직접 교전으로 확인되는 정보만 표시합니다.</span></div> : <ol>{viewerLog.map((entry, index) => <li key={`${entry}-${index}`}><span>{String(viewerLog.length - index).padStart(2, "0")}</span>{entry}</li>)}</ol>}
           </div>
-          {spectatorMode ? <div className="spectator-status"><i className={spectatorPaused ? "paused" : ""} /><span>{spectatorPaused ? "시뮬레이션 일시정지" : `AI 자동 진행 · ×${spectatorSpeed}`}</span><small>전장 전체 정보 공개</small></div> : <button className="end-turn" disabled={isAiControlledTurn || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner || game.combatQueue.length > 0 || combatIntermission || !!pendingAftershock || !!(selectedCard?.used && selectedCard.committedAgentId)} onClick={endTurn}><span>턴 종료</span><small>{game.actionsUsed}/3 카드 사용 · 미사용 카드도 버림</small></button>}
+          {spectatorMode ? <div className="spectator-status"><i className={spectatorPaused ? "paused" : ""} /><span>{spectatorPaused ? "시뮬레이션 일시정지" : `AI 자동 진행 · ×${spectatorSpeed}`}</span><small>전장 전체 정보 공개</small></div> : <button className="end-turn" disabled={isAiControlledTurn || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner || game.combatQueue.length > 0 || combatIntermission || !!(selectedCard?.used && selectedCard.committedAgentId)} onClick={endTurn}><span>턴 종료</span><small>{game.actionsUsed}/3 카드 사용 · 미사용 카드도 버림</small></button>}
         </aside>
       </section>
 
       {game.winner && game.combatQueue.length === 0 && <div className="modal-backdrop victory-backdrop"><div className={`victory-card winner-${game.winner} ${spectatorMode ? "spectator-victory" : ""}`}><span className="eyebrow">ROUND {game.matchRound} COMPLETE</span><h1>{SIDE_LABEL[game.winner]} 승리</h1><p>{game.winReason}</p><RoundAccoladeSplash accolades={accolades} />{roundHighlight ? <RoundHighlightCard highlight={roundHighlight} /> : <RoundObjectiveHighlightCard side={game.winner} reason={game.winReason ?? "목표 달성"} />}{spectatorMode && <MatchAnalysisPanel game={game} />}<div className="round-economy"><article><span>{SIDE_LABEL[game.winner]}</span><b>+{winnerReward?.total}원</b><small>라운드 {winnerReward?.resultIncome} · 보너스 {winnerReward?.bonus}</small></article><article><span>{SIDE_LABEL[otherSide(game.winner)]}</span><b>+{loserReward?.total}원</b><small>라운드 {loserReward?.resultIncome} · 보너스 {loserReward?.bonus}</small></article></div><div className="victory-actions"><button onClick={() => startNextRound(false)}><span>{spectatorMode ? "AI 자동 구매 후 계속" : "장비·경제 유지"}</span><strong>다음 라운드</strong></button><button onClick={() => startNextRound(true)}><span>공수 교대 · 경제 초기화</span><strong>진영 교대</strong></button><button className="secondary" onClick={restartToTitle}>새 작전</button></div></div></div>}
-
-      {pendingAftershock && !combatScene && !combatIntermission && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">AFTERSHOCK // FORCED CHOICE</span><h2>{pendingAftershock.agent!.name} · 여진 해결</h2><p>{regionName(pendingAftershock.effect.region)}을 떠나거나 피해 {SKILL_DAMAGE.aftershock}를 받아야 합니다. 이동하면 대기와 설치·해체 진행을 잃습니다.</p><div className="choice-grid"><button className="danger-choice" onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id)}><b>위치 유지</b><small>피해 {SKILL_DAMAGE.aftershock} 받기</small></button>{(GRAPH.get(pendingAftershock.agent!.region) ?? []).map((region) => <button key={region} onClick={() => resolveAftershock(pendingAftershock.effect.id, pendingAftershock.agent!.id, region)}><b>{region}번 이동</b><small>{regionName(region)}</small></button>)}</div></section></div>}
 
       {game.targeting?.kind === "skill" && ((game.targeting.candidateAgentIds?.length ?? 0) > 0 || (game.targeting.candidateDeployableIds?.length ?? 0) > 0) && <div className="modal-backdrop"><section className="choice-modal"><span className="eyebrow">TARGET SELECT</span><h2>스킬 목표 선택</h2><div className="choice-grid">{game.targeting.candidateAgentIds?.map((id) => { const target = getAgent(game, id); return target ? <button key={id} onClick={() => resolveSkillCandidate(id, "agent")}><b>{target.name}</b><small>{target.team === game.turnSide ? "아군" : "탐지된 적"} · {target.region}번</small></button> : null; })}{game.targeting.candidateDeployableIds?.map((id) => { const device = game.deployables.find((item) => item.id === id); return device ? <button key={id} onClick={() => resolveSkillCandidate(id, "deployable")}><b>{device.kind}</b><small>설치물 · {device.region}번</small></button> : null; })}</div><button className="choice-cancel" onClick={cancelTargeting}>취소</button></section></div>}
 
