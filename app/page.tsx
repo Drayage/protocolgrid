@@ -59,6 +59,7 @@ interface MapDefinition {
   attackSpawn: number;
   defenseSpawn: number;
   defenseDeploymentRegions: number[];
+  defenseDeploymentByLane: Record<TacticalLane, number>;
   siteRegions: Record<"A" | "B", number[]>;
   siteApproachRegions: Record<"A" | "B", number[]>;
   tacticalRegionsBySite: Record<"A" | "B", number[]>;
@@ -655,6 +656,7 @@ const GRID_01: MapDefinition = {
   attackSpawn: 1,
   defenseSpawn: 7,
   defenseDeploymentRegions: [7, 10, 13],
+  defenseDeploymentByLane: { A: 10, MID: 7, B: 13 },
   siteRegions: { A: [9, 10, 11], B: [14, 15, 16] },
   siteApproachRegions: { A: [8, 12], B: [13, 17] },
   tacticalRegionsBySite: { A: [8, 9, 10, 11, 12], B: [13, 14, 15, 16, 17] },
@@ -684,12 +686,83 @@ const GRID_01: MapDefinition = {
   rifleOpeningWaitPreference: [2, 4, 5],
 };
 
-const MAPS: Record<string, MapDefinition> = { [GRID_01.id]: GRID_01 };
-// Only one map is playable today; swapping this binding (or making it
-// player-selected) is the seam a future second map plugs into. Everything
-// below is derived from it so the rest of the file never reads map data by
-// literal region number again — that migration is tracked separately.
-const ACTIVE_MAP: MapDefinition = MAPS[GRID_01.id];
+// A deliberately different-shaped map (13 regions instead of 17, 2-region
+// sites instead of 3, no long approach corridor, one closed vault, one
+// door) — exists to prove MapDefinition is a real seam and not just a
+// reshuffling of GRID-01's own numbers. Reachable via ?map=grid-02-test.
+const GRID_02_TEST: MapDefinition = {
+  id: "grid-02-test",
+  name: "GRID-02 (TEST)",
+  regions: [
+    { id: 1, name: "공격팀 시작 지점", x: 50, y: 92 },
+    { id: 2, name: "왼쪽 분기", x: 25, y: 74 },
+    { id: 3, name: "오른쪽 분기", x: 75, y: 74 },
+    { id: 4, name: "중앙 하부", x: 50, y: 60 },
+    { id: 5, name: "중앙 상부", x: 50, y: 44 },
+    { id: 6, name: "수비팀 시작 지점", x: 50, y: 10 },
+    { id: 7, name: "왼쪽 사이트 입구", x: 22, y: 40, site: "A" },
+    { id: 8, name: "왼쪽 사이트 내부", x: 15, y: 24, site: "A" },
+    { id: 9, name: "왼쪽 수비 연결로", x: 12, y: 56 },
+    { id: 10, name: "오른쪽 사이트 입구", x: 78, y: 40, site: "B" },
+    { id: 11, name: "오른쪽 사이트 내부", x: 85, y: 24, site: "B" },
+    { id: 12, name: "오른쪽 수비 연결로", x: 88, y: 56 },
+    { id: 13, name: "폐쇄 금고", x: 6, y: 80 },
+  ],
+  edges: [
+    [1, 2], [1, 3], [1, 4],
+    [2, 4], [2, 9],
+    [3, 4], [3, 12],
+    [4, 5],
+    [5, 7], [5, 10],
+    [6, 8], [6, 11],
+    [7, 8], [7, 9],
+    [8, 9],
+    [10, 11], [10, 12],
+    [11, 12],
+  ],
+  // One breakable door gating the A site's back connector, to prove the
+  // schema round-trips a populated doors array — not wired to gameplay yet.
+  doors: [{ edge: [8, 9], breakable: true, startsOpen: true }],
+  attackSpawn: 1,
+  defenseSpawn: 6,
+  defenseDeploymentRegions: [6, 7, 10],
+  defenseDeploymentByLane: { A: 7, MID: 6, B: 10 },
+  siteRegions: { A: [7, 8], B: [10, 11] },
+  siteApproachRegions: { A: [9], B: [12] },
+  tacticalRegionsBySite: { A: [7, 8, 9], B: [10, 11, 12] },
+  defenseOperatingRegions: [5, 6, 7, 8, 9, 10, 11, 12],
+  waitChokeRegions: [2, 3, 4, 5, 7, 9, 10, 12],
+  attackEntryEdges: {
+    A: [[5, 7], [9, 7]],
+    B: [[5, 10], [12, 10]],
+  },
+  defenderBackEdges: {
+    A: [[6, 8], [8, 9]],
+    B: [[6, 11], [11, 12]],
+  },
+  approachRoutes: { A: [2, 9], B: [3, 12] },
+  crossApproachRoutes: { A: [4, 9], B: [4, 12] },
+  midControlWaypoints: [4, 5],
+  midToSiteRoutes: { A: [5, 7], B: [5, 10] },
+  splitSpreadWaypoints: [2, 3, 4],
+  splitApproachRoutes: { A: [2, 9, 7], B: [3, 12, 10] },
+  lurkerDeepFlankRoutes: { A: [2, 9, 8, 6, 11, 10], B: [3, 12, 11, 6, 8, 7] },
+  defenseLaneAnchors: { A: [8, 7, 9], B: [11, 10, 12], MID: [6, 5, 9, 12] },
+  defenseFlankRoutes: { A: [10, 12, 4, 2, 9], B: [7, 9, 4, 3, 12] },
+  defenseFunnelWaypoints: { A: [9, 7], B: [12, 10] },
+  defenseRotationWaypoints: { A: [9], B: [12] },
+  postplantBackRoutes: { A: [9, 2, 4], B: [12, 3, 4] },
+  sniperOpeningWaitPreference: [9, 12, 5, 2, 3, 4],
+  rifleOpeningWaitPreference: [2, 3, 4],
+};
+
+const MAPS: Record<string, MapDefinition> = { [GRID_01.id]: GRID_01, [GRID_02_TEST.id]: GRID_02_TEST };
+// GRID-01 ships by default; ?map=<id> is a test/dev hook to boot straight
+// into another registered map (e.g. grid-02-test) without a UI picker yet.
+// Everything below is derived from this binding so the rest of the file
+// never reads map data by literal region number again.
+const requestedMapId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("map");
+const ACTIVE_MAP: MapDefinition = (requestedMapId && MAPS[requestedMapId]) || MAPS[GRID_01.id];
 
 function buildRegionGraph(map: MapDefinition): Map<number, number[]> {
   const graph = new Map<number, number[]>();
@@ -707,6 +780,7 @@ const GRAPH = buildRegionGraph(ACTIVE_MAP);
 const ATTACK_SPAWN_REGION = ACTIVE_MAP.attackSpawn;
 const DEFENSE_SPAWN_REGION = ACTIVE_MAP.defenseSpawn;
 const DEFENSE_DEPLOYMENT_REGIONS = ACTIVE_MAP.defenseDeploymentRegions;
+const DEFENSE_DEPLOYMENT_BY_LANE = ACTIVE_MAP.defenseDeploymentByLane;
 const DEFENSE_OPERATING_REGIONS = new Set(ACTIVE_MAP.defenseOperatingRegions);
 const A_TACTICAL_REGIONS = new Set(ACTIVE_MAP.tacticalRegionsBySite.A);
 const B_TACTICAL_REGIONS = new Set(ACTIVE_MAP.tacticalRegionsBySite.B);
@@ -6097,12 +6171,12 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
 
 function autoDeployDefense(game: GameState) {
   const positions = [
-    ...Array(game.defensePlan.distribution.A).fill(10),
-    ...Array(game.defensePlan.distribution.MID).fill(7),
-    ...Array(game.defensePlan.distribution.B).fill(13),
+    ...Array(game.defensePlan.distribution.A).fill(DEFENSE_DEPLOYMENT_BY_LANE.A),
+    ...Array(game.defensePlan.distribution.MID).fill(DEFENSE_DEPLOYMENT_BY_LANE.MID),
+    ...Array(game.defensePlan.distribution.B).fill(DEFENSE_DEPLOYMENT_BY_LANE.B),
   ];
   game.teams.defense.agents.forEach((agent, index) => {
-    agent.region = positions[index] ?? 7;
+    agent.region = positions[index] ?? DEFENSE_SPAWN_REGION;
   });
 }
 

@@ -312,7 +312,7 @@ test("defense AI deploys stack, balanced, mid-control, and weighted formations w
   assert.match(page, /game\.cycle >= 3/);
   assert.match(page, /laneIndex === laneAgents\.length - 1/);
   assert.match(page, /Math\.floor\(laneAgents\.length \/ 2\)/);
-  assert.match(page, /\.\.\.Array\(game\.defensePlan\.distribution\.A\)\.fill\(10\)/);
+  assert.match(page, /\.\.\.Array\(game\.defensePlan\.distribution\.A\)\.fill\(DEFENSE_DEPLOYMENT_BY_LANE\.A\)/);
   assert.match(page, /className="analysis-plan defense-plan"/);
   assert.match(css, /\.analysis-plan\.defense-plan/);
 });
