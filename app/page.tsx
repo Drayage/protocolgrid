@@ -5279,6 +5279,13 @@ function aiPhoenixShouldHoldOwnFire(game: GameState, agent: Agent) {
     && game.fires.some((fire) => fire.owner === agent.team && fire.ownerAgentId === agent.id && fire.region === agent.region);
 }
 
+// Any action card that moves this agent cancels their pending aftershock
+// (moveAgent -> cancelProgress), silently wasting the setup. Hold them out
+// of the candidate pool this turn unless something more urgent overrides it.
+function aiProtectingAftershockChannel(game: GameState, agent: Agent) {
+  return game.aftershocks.some((channel) => channel.ownerAgentId === agent.id) && !aiRetreatReentryIsUrgent(game, agent);
+}
+
 function aiShadowStepDestination(game: GameState, agent: Agent, objective: number, intel: AiEnemyIntel[]) {
   const exactIntel = intel.filter((item) => item.exact);
   const currentObjectiveDistance = distance(agent.region, objective);
@@ -8409,7 +8416,8 @@ export default function Home() {
             && agent.extraActions > 0
             && !!REGIONS.find((region) => region.id === agent.region)?.site;
           const holdingOwnFireForHealing = aiPhoenixShouldHoldOwnFire(draft, agent);
-          return agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent) && !holdingPlantSite && !holdingOwnFireForHealing;
+          const protectingAftershock = card.kind !== "control" && aiProtectingAftershockChannel(draft, agent);
+          return agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent) && !holdingPlantSite && !holdingOwnFireForHealing && !protectingAftershock;
         })
         .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
       for (const agent of candidates) {
