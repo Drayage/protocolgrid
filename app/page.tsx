@@ -66,6 +66,24 @@ interface MapDefinition {
   waitChokeRegions: number[];
   attackEntryEdges: Record<"A" | "B", [number, number][]>;
   defenderBackEdges: Record<"A" | "B", [number, number][]>;
+  // Hand-authored tactical lanes AI strategy code walks agents along. These
+  // are shaped for GRID-01's specific topology (rush lanes, mid chokepoint,
+  // flank routes around the back); a differently-shaped map needs its own
+  // values here, not a formula — that's why they're map data, not derived.
+  approachRoutes: Record<"A" | "B", number[]>;
+  crossApproachRoutes: Record<"A" | "B", number[]>;
+  midControlWaypoints: number[];
+  midToSiteRoutes: Record<"A" | "B", number[]>;
+  splitSpreadWaypoints: number[];
+  splitApproachRoutes: Record<"A" | "B", number[]>;
+  lurkerDeepFlankRoutes: Record<"A" | "B", number[]>;
+  defenseLaneAnchors: Record<TacticalLane, number[]>;
+  defenseFlankRoutes: Record<"A" | "B", number[]>;
+  defenseFunnelWaypoints: Record<"A" | "B", number[]>;
+  defenseRotationWaypoints: Record<"A" | "B", number[]>;
+  postplantBackRoutes: Record<"A" | "B", number[]>;
+  sniperOpeningWaitPreference: number[];
+  rifleOpeningWaitPreference: number[];
 }
 
 interface Weapon {
@@ -650,6 +668,20 @@ const GRID_01: MapDefinition = {
     A: [[7, 10], [10, 11]],
     B: [[7, 13], [13, 15], [15, 16]],
   },
+  approachRoutes: { A: [2, 12], B: [4, 17] },
+  crossApproachRoutes: { A: [5, 12], B: [5, 17] },
+  midControlWaypoints: [5, 6],
+  midToSiteRoutes: { A: [6, 8], B: [6, 13] },
+  splitSpreadWaypoints: [2, 4, 5],
+  splitApproachRoutes: { A: [2, 12, 8], B: [4, 17, 13] },
+  lurkerDeepFlankRoutes: { A: [2, 12, 11, 10, 7, 13, 14], B: [4, 17, 14, 13, 7, 10, 9] },
+  defenseLaneAnchors: { A: [10, 9, 11, 12, 8], B: [13, 14, 15, 16, 17], MID: [7, 6, 8, 13] },
+  defenseFlankRoutes: { A: [13, 17, 5, 2, 12], B: [10, 12, 2, 5, 17] },
+  defenseFunnelWaypoints: { A: [8, 10, 9], B: [13, 14, 15] },
+  defenseRotationWaypoints: { A: [8, 10], B: [13, 14] },
+  postplantBackRoutes: { A: [12, 8, 2, 5], B: [17, 13, 4, 5] },
+  sniperOpeningWaitPreference: [12, 17, 6, 2, 4, 5],
+  rifleOpeningWaitPreference: [2, 4, 5],
 };
 
 const MAPS: Record<string, MapDefinition> = { [GRID_01.id]: GRID_01 };
@@ -683,6 +715,20 @@ const SITE_APPROACH_REGIONS = ACTIVE_MAP.siteApproachRegions;
 const ATTACK_ENTRY_EDGES = ACTIVE_MAP.attackEntryEdges;
 const DEFENDER_BACK_EDGES = ACTIVE_MAP.defenderBackEdges;
 const AI_WAIT_CHOKE_REGIONS = new Set(ACTIVE_MAP.waitChokeRegions);
+const APPROACH_ROUTES = ACTIVE_MAP.approachRoutes;
+const CROSS_APPROACH_ROUTES = ACTIVE_MAP.crossApproachRoutes;
+const MID_CONTROL_WAYPOINTS = ACTIVE_MAP.midControlWaypoints;
+const MID_TO_SITE_ROUTES = ACTIVE_MAP.midToSiteRoutes;
+const SPLIT_SPREAD_WAYPOINTS = ACTIVE_MAP.splitSpreadWaypoints;
+const SPLIT_APPROACH_ROUTES = ACTIVE_MAP.splitApproachRoutes;
+const LURKER_DEEP_FLANK_ROUTES = ACTIVE_MAP.lurkerDeepFlankRoutes;
+const DEFENSE_LANE_ANCHORS = ACTIVE_MAP.defenseLaneAnchors;
+const DEFENSE_FLANK_ROUTES = ACTIVE_MAP.defenseFlankRoutes;
+const DEFENSE_FUNNEL_WAYPOINTS = ACTIVE_MAP.defenseFunnelWaypoints;
+const DEFENSE_ROTATION_WAYPOINTS = ACTIVE_MAP.defenseRotationWaypoints;
+const POSTPLANT_BACK_ROUTES = ACTIVE_MAP.postplantBackRoutes;
+const SNIPER_OPENING_WAIT_PREFERENCE = ACTIVE_MAP.sniperOpeningWaitPreference;
+const RIFLE_OPENING_WAIT_PREFERENCE = ACTIVE_MAP.rifleOpeningWaitPreference;
 
 function audioPanForRegion(regionId: number | null | undefined) {
   if (regionId === null || regionId === undefined) return 0;
@@ -1429,19 +1475,19 @@ function attackCoreWaypoints(game: GameState): number[] {
     || phase === "postplant"
     || attackSiteSituation(game, targetSite).alliesOnSite.length > 0
     || (game.cycle >= 2 && attackEntryIsOpen(game, targetSite))
-  ) return targetSite === "A" ? [9, 10] : [14, 15];
+  ) return SITE_REGIONS[targetSite].slice(0, 2);
   switch (game.attackPlan.kind) {
-    case "direct-a": return game.attackPlan.adapted && targetSite === "B" ? [5, 17] : [2, 12];
-    case "direct-b": return game.attackPlan.adapted && targetSite === "A" ? [5, 12] : [4, 17];
-    case "mid-a": return game.cycle <= 2 ? [5, 6] : targetSite === "A" ? [6, 8] : [6, 13];
-    case "mid-b": return game.cycle <= 2 ? [5, 6] : targetSite === "B" ? [6, 13] : [6, 8];
-    case "fake-a-b": return game.cycle < game.attackPlan.commitCycle - 2 ? [2, 12] : targetSite === "B" ? [5, 17] : [2, 12];
-    case "fake-b-a": return game.cycle < game.attackPlan.commitCycle - 2 ? [4, 17] : targetSite === "A" ? [5, 12] : [4, 17];
+    case "direct-a": return game.attackPlan.adapted && targetSite === "B" ? CROSS_APPROACH_ROUTES.B : APPROACH_ROUTES.A;
+    case "direct-b": return game.attackPlan.adapted && targetSite === "A" ? CROSS_APPROACH_ROUTES.A : APPROACH_ROUTES.B;
+    case "mid-a": return game.cycle <= 2 ? MID_CONTROL_WAYPOINTS : MID_TO_SITE_ROUTES[targetSite];
+    case "mid-b": return game.cycle <= 2 ? MID_CONTROL_WAYPOINTS : MID_TO_SITE_ROUTES[targetSite];
+    case "fake-a-b": return game.cycle < game.attackPlan.commitCycle - 2 ? APPROACH_ROUTES.A : targetSite === "B" ? CROSS_APPROACH_ROUTES.B : APPROACH_ROUTES.A;
+    case "fake-b-a": return game.cycle < game.attackPlan.commitCycle - 2 ? APPROACH_ROUTES.B : targetSite === "A" ? CROSS_APPROACH_ROUTES.A : APPROACH_ROUTES.B;
     case "split-read": {
       if (game.cycle <= 2) {
-        return [2, 4, 5];
+        return SPLIT_SPREAD_WAYPOINTS;
       }
-      return targetSite === "A" ? [2, 12, 8] : [4, 17, 13];
+      return SPLIT_APPROACH_ROUTES[targetSite];
     }
   }
   return [5];
@@ -1449,8 +1495,8 @@ function attackCoreWaypoints(game: GameState): number[] {
 
 function attackMidWaypoints(game: GameState) {
   const phase = attackPlanPhase(game);
-  if (game.cycle <= 2 || (phase === "pressure" && (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a"))) return [5, 6];
-  return game.attackPlan.targetSite === "A" ? [6, 8] : [6, 13];
+  if (game.cycle <= 2 || (phase === "pressure" && (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a"))) return MID_CONTROL_WAYPOINTS;
+  return MID_TO_SITE_ROUTES[game.attackPlan.targetSite];
 }
 
 function nextRouteWaypoint(current: number, route: number[]) {
@@ -1463,25 +1509,22 @@ function attackLurkerWaypoints(game: GameState, agent: Agent) {
   const plan = game.attackPlan;
   if (attackPlanPhase(game) === "postplant") {
     if (game.spike.region !== null) return [game.spike.region];
-    return plan.targetSite === "A" ? [9, 10] : [14, 15];
+    return SITE_REGIONS[plan.targetSite].slice(0, 2);
   }
   if (plan.lurkerMode === "deep-flank") {
-    const route = plan.lurkerProbeSite === "A"
-      ? [2, 12, 11, 10, 7, 13, 14]
-      : [4, 17, 14, 13, 7, 10, 9];
-    return [nextRouteWaypoint(agent.region, route)];
+    return [nextRouteWaypoint(agent.region, LURKER_DEEP_FLANK_ROUTES[plan.lurkerProbeSite])];
   }
   if (plan.lurkerMode === "rotate-call" || plan.lurkerMode === "regroup") {
-    return plan.targetSite === "A" ? [9, 10] : [14, 15];
+    return SITE_REGIONS[plan.targetSite].slice(0, 2);
   }
-  return plan.lurkerProbeSite === "A" ? [2, 12] : [4, 17];
+  return APPROACH_ROUTES[plan.lurkerProbeSite];
 }
 
 function postplantRetakeRoutes(game: GameState, spikeRegion: number) {
   const knownStarts = aiEnemyIntel(game, "attack")
     .filter((enemy) => enemy.agent.alive && enemy.confidence >= 0.45)
     .map((enemy) => enemy.region);
-  const starts = [...new Set(knownStarts.length ? knownStarts : [7])];
+  const starts = [...new Set(knownStarts.length ? knownStarts : [DEFENSE_SPAWN_REGION])];
   return starts
     .map((origin) => shortestPath(origin, spikeRegion))
     .filter((route) => route.length >= 2);
@@ -1507,7 +1550,7 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
   const spikeRegion = game.spike.region;
   const site = siteForRegion(spikeRegion) ?? game.attackPlan.targetSite;
   const waitRange = WEAPONS[agent.weapon].type === "sniper" ? 2 : 1;
-  const backRoute = site === "A" ? [12, 8, 2, 5] : [17, 13, 4, 5];
+  const backRoute = POSTPLANT_BACK_ROUTES[site];
   // Score each candidate once (decorate-sort-undecorate) instead of recomputing
   // every metric on every comparator call during the O(n log n) sort.
   const candidates = REGIONS
@@ -3796,7 +3839,7 @@ function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiE
     return [...SITE_REGIONS[threatSite]].sort((a, b) => distance(from, a) - distance(from, b))[0];
   }
   if (intel.length) return [...intel].sort((a, b) => distance(from, a.region) - distance(from, b.region))[0].region;
-  const objectives = [9, 14];
+  const objectives = [SITE_REGIONS.A[0], SITE_REGIONS.B[0]];
   return [...objectives].sort((a, b) => distance(from, a) - distance(from, b))[0];
 }
 
@@ -3856,7 +3899,7 @@ function aiStrategicWaitScore(game: GameState, agent: Agent, region: number, int
       if (route[1] === region) score += 62;
     }
     if (!intel.length) {
-      const defaultAttackRoute = shortestPath(1, agent.region);
+      const defaultAttackRoute = shortestPath(ATTACK_SPAWN_REGION, agent.region);
       if (defaultAttackRoute.length >= 2 && defaultAttackRoute.at(-2) === region) score += 52;
     }
   }
@@ -4010,14 +4053,11 @@ function defenseThreatStrength(game: GameState, site: "A" | "B") {
 }
 
 function defenseLaneAnchors(lane: TacticalLane) {
-  if (lane === "A") return [10, 9, 11, 12, 8];
-  if (lane === "B") return [13, 14, 15, 16, 17];
-  return [7, 6, 8, 13];
+  return DEFENSE_LANE_ANCHORS[lane];
 }
 
 function defenseFlankWaypoint(game: GameState, agent: Agent, threat: "A" | "B") {
-  const route = threat === "A" ? [13, 17, 5, 2, 12] : [10, 12, 2, 5, 17];
-  return nextRouteWaypoint(agent.region, route);
+  return nextRouteWaypoint(agent.region, DEFENSE_FLANK_ROUTES[threat]);
 }
 
 function defenseRetakeIsActive(game: GameState) {
@@ -4174,10 +4214,10 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
     const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
     if (!spikeActive && laneIndex === laneAgents.length - 1) return defenseLaneAnchors(lane);
     if (defenseShouldFlank(game, agent, threat)) return [defenseFlankWaypoint(game, agent, threat)];
-    return threat === "A" ? [8, 10, 9] : [13, 14, 15];
+    return DEFENSE_FUNNEL_WAYPOINTS[threat];
   }
   if (lane === threat) return defenseLaneAnchors(lane);
-  if (lane === "MID") return threat === "A" ? [8, 10, 9] : [13, 14, 15];
+  if (lane === "MID") return DEFENSE_FUNNEL_WAYPOINTS[threat];
   if (defenseShouldFlank(game, agent, threat)) return [defenseFlankWaypoint(game, agent, threat)];
 
   const strongSiteHitElsewhere = game.defensePlan.strongSite === lane && game.defensePlan.strongSite !== threat;
@@ -4185,7 +4225,7 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
     const laneAgents = defenseLaneAgents(game, lane);
     const laneIndex = laneAgents.findIndex((item) => item.id === agent.id);
     const rotationCount = Math.max(1, Math.floor(laneAgents.length / 2));
-    if (laneIndex < rotationCount) return threat === "A" ? [8, 10] : [13, 14];
+    if (laneIndex < rotationCount) return DEFENSE_ROTATION_WAYPOINTS[threat];
   }
   return defenseLaneAnchors(lane);
 }
@@ -4481,8 +4521,8 @@ function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) 
     const waitPenaltyA = waitA.waitingEnemies.length ? (waitA.acceptable ? 28 - waitA.score * .2 : 160 - waitA.survivalChance) : 0;
     const waitPenaltyB = waitB.waitingEnemies.length ? (waitB.acceptable ? 28 - waitB.score * .2 : 160 - waitB.survivalChance) : 0;
     const guardingDrop = agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null;
-    const territoryA = guardingDrop ? 8 - distance(a, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, 1);
-    const territoryB = guardingDrop ? 8 - distance(b, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, 1);
+    const territoryA = guardingDrop ? 8 - distance(a, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, ATTACK_SPAWN_REGION);
+    const territoryB = guardingDrop ? 8 - distance(b, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, ATTACK_SPAWN_REGION);
     return safetyB * 3 + territoryB - waitPenaltyB - (safetyA * 3 + territoryA - waitPenaltyA);
   })[0];
 }
@@ -5066,7 +5106,7 @@ function aiWatchDirection(game: GameState, agent: Agent, intel: AiEnemyIntel[], 
     const enemyDistanceA = intel.length ? Math.min(...intel.map((item) => distance(a, item.region))) : distance(a, objective);
     const enemyDistanceB = intel.length ? Math.min(...intel.map((item) => distance(b, item.region))) : distance(b, objective);
     const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
-    const likelySource = agent.team === "defense" || (agent.team === "attack" && kind === "trip" && !spikeActive) ? 1 : 7;
+    const likelySource = agent.team === "defense" || (agent.team === "attack" && kind === "trip" && !spikeActive) ? ATTACK_SPAWN_REGION : DEFENSE_SPAWN_REGION;
     const probabilityA = distance(a, likelySource);
     const probabilityB = distance(b, likelySource);
     const siteA = tacticalTarget && siteForRegion(a) === tacticalTarget ? -2 : 0;
@@ -6069,7 +6109,7 @@ function autoDeployDefense(game: GameState) {
 function autoSetAttackOpeningWaits(game: GameState) {
   const assigned = new Map<number, number>();
   game.teams.attack.agents.forEach((agent) => {
-    const preferred = WEAPONS[agent.weapon].type === "sniper" ? [12, 17, 6, 2, 4, 5] : [2, 4, 5];
+    const preferred = WEAPONS[agent.weapon].type === "sniper" ? SNIPER_OPENING_WAIT_PREFERENCE : RIFLE_OPENING_WAIT_PREFERENCE;
     const legal = waitTargetsFor(agent);
     const target = preferred
       .filter((region) => legal.includes(region))

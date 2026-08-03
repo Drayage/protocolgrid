@@ -363,10 +363,10 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /strategicBias/);
   assert.match(page, /function attackPlanWaypoints/);
   assert.match(page, /game\.cycle < game\.attackPlan\.commitCycle - 2 \? "pressure" : "rotate"/);
-  assert.match(page, /game\.attackPlan\.adapted && targetSite === "B" \? \[5, 17\] : \[2, 12\]/);
-  assert.match(page, /game\.attackPlan\.adapted && targetSite === "A" \? \[5, 12\] : \[4, 17\]/);
-  assert.match(page, /targetSite === "B" \? \[5, 17\] : \[2, 12\]/);
-  assert.match(page, /targetSite === "A" \? \[5, 12\] : \[4, 17\]/);
+  assert.match(page, /game\.attackPlan\.adapted && targetSite === "B" \? CROSS_APPROACH_ROUTES\.B : APPROACH_ROUTES\.A/);
+  assert.match(page, /game\.attackPlan\.adapted && targetSite === "A" \? CROSS_APPROACH_ROUTES\.A : APPROACH_ROUTES\.B/);
+  assert.match(page, /targetSite === "B" \? CROSS_APPROACH_ROUTES\.B : APPROACH_ROUTES\.A/);
+  assert.match(page, /targetSite === "A" \? CROSS_APPROACH_ROUTES\.A : APPROACH_ROUTES\.B/);
   assert.match(page, /function attackPlanRushDestination/);
   assert.match(page, /game\.attackPlan\.kind === "direct-b" \|\| game\.attackPlan\.kind === "fake-b-a"[\s\S]{0,80}\? 4[\s\S]{0,40}: 5/);
   assert.match(page, /if \(game\.cycle !== 1\) return null/);
@@ -744,7 +744,7 @@ test("attackers configure opening waits at spawn before the first defense turn",
   assert.match(page, /agent\.region !== 1/);
   assert.match(page, /waitTargetsFor\(agent\)\.includes\(region\)/);
   assert.match(page, /function autoSetAttackOpeningWaits/);
-  assert.match(page, /\[12, 17, 6, 2, 4, 5\] : \[2, 4, 5\]/);
+  assert.match(page, /SNIPER_OPENING_WAIT_PREFERENCE : RIFLE_OPENING_WAIT_PREFERENCE/);
   assert.match(page, /autoSetAttackOpeningWaits\(draft\)/);
   assert.match(page, /수비팀 첫 턴 시작/);
   assert.match(css, /\.opening-wait-line/);
