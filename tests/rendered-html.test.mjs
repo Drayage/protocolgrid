@@ -888,7 +888,7 @@ test("death selection, objective intel, and dropped weapons obey the active view
   assert.match(page, /const observed = observedRegions\(game, viewerSide\)/);
   assert.match(page, /const knownWeapons = game\.droppedWeapons\.filter\(\(item\) => item\.region === region\.id && observedNow\)/);
   assert.match(page, /const hasSpike = spikeVisible &&/);
-  assert.match(page, /!spikeVisible \? "정보 없음"/);
+  assert.match(page, /!spikeVisible\s*\n\s*\? \(spikeInstalled \? "설치됨" : "설치 전"\)/);
 });
 
 test("combat odds, aftershock damage, condition badges, and weapon silhouettes stay wired", async () => {
@@ -919,7 +919,7 @@ test("revised utility rules resolve tailwind before gunfire and use current sigh
   assert.match(page, /const openingTailwind = \[getAgent\(draft, scene\.mover\.id\), getAgent\(draft, scene\.holder\.id\)\]/);
   assert.match(page, /scene\.phase = "tailwind";[\s\S]{0,220}scene\.pendingShotActorId = null/);
   assert.match(page, /첫 총격 전에 순풍 이동 구역을 선택합니다/);
-  assert.match(page, /이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적/);
+  assert.match(page, /상대 턴이 끝날 때까지 선택 구역의 적과 그 구역을 대기 중인 적/);
   assert.match(page, /function reconArrowWatcher/);
   assert.match(page, /enemy\.alive && enemy\.waitDirs\.includes\(targetRegion\)/);
   assert.match(page, /addTrade\(draft, \{ enemyId: waitingEnemy\.id, team: agent\.team, sourceId: agent\.id \}\);[\s\S]{0,100}rememberEnemy\(draft, agent\.team, waitingEnemy\)/);
