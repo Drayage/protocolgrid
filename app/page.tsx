@@ -633,9 +633,9 @@ const WEAPONS: Record<WeaponId, Weapon> = {
   bucky: { id: "bucky", name: "버키", type: "shotgun", body: 3, head: 4, price: 8, aim: 0, move: 0, unlock: 2 },
   spectre: { id: "spectre", name: "스펙터", type: "normal", body: 3, head: 4, price: 10, aim: 0, move: 1, unlock: 2 },
   bulldog: { id: "bulldog", name: "불독", type: "normal", body: 3, head: 4, price: 12, aim: 1, move: 0, unlock: 2 },
-  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 5, head: 6, price: 20, aim: 0, move: 0, unlock: 2 },
+  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 5, head: 5, price: 20, aim: 0, move: 0, unlock: 2 },
   judge: { id: "judge", name: "저지", type: "shotgun", body: 4, head: 5, price: 16, aim: 0, move: 1, unlock: 3 },
-  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 4, head: 5, price: 24, aim: 1, move: 1, unlock: 3 },
+  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 4, head: 5, price: 24, aim: 1, move: 0, unlock: 3 },
   vandal: { id: "vandal", name: "밴달", type: "normal", body: 4, head: 6, price: 24, aim: 1, move: 0, unlock: 3 },
   operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 6, head: 8, price: 38, aim: 0, move: 0, unlock: 3 },
 };
@@ -1206,10 +1206,30 @@ function shortestPath(start: number, end: number): number[] {
   return [];
 }
 
-const distance = (a: number, b: number) => {
-  const path = shortestPath(a, b);
-  return path.length ? path.length - 1 : 99;
-};
+// REGIONS/EDGES are a fixed, static map, so all pairwise distances can be
+// precomputed once (one BFS per node) instead of re-walking the graph on
+// every distance() call — this function is on the hot path for AI decisions.
+const DISTANCE_MATRIX: Record<number, Record<number, number>> = (() => {
+  const matrix: Record<number, Record<number, number>> = {};
+  for (const source of REGIONS) {
+    const dist = new Map<number, number>([[source.id, 0]]);
+    const queue = [source.id];
+    while (queue.length) {
+      const current = queue.shift()!;
+      const currentDist = dist.get(current)!;
+      for (const next of GRAPH.get(current) ?? []) {
+        if (dist.has(next)) continue;
+        dist.set(next, currentDist + 1);
+        queue.push(next);
+      }
+    }
+    matrix[source.id] = {};
+    for (const target of REGIONS) matrix[source.id][target.id] = dist.get(target.id) ?? 99;
+  }
+  return matrix;
+})();
+
+const distance = (a: number, b: number) => DISTANCE_MATRIX[a]?.[b] ?? 99;
 
 function attackPlanPhase(game: GameState): AttackPlanPhase {
   if (["planting", "planted", "half", "defusing"].includes(game.spike.status)) return "postplant";
@@ -1422,6 +1442,8 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
   const site = siteForRegion(spikeRegion) ?? game.attackPlan.targetSite;
   const waitRange = WEAPONS[agent.weapon].type === "sniper" ? 2 : 1;
   const backRoute = site === "A" ? [12, 8, 2, 5] : [17, 13, 4, 5];
+  // Score each candidate once (decorate-sort-undecorate) instead of recomputing
+  // every metric on every comparator call during the O(n log n) sort.
   const candidates = REGIONS
     .map((region) => region.id)
     .filter((region) => region !== spikeRegion)
@@ -1429,22 +1451,18 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
       const range = distance(region, spikeRegion);
       return range >= 1 && range <= waitRange && !isWaitPathSmokeBlocked(game, region, spikeRegion);
     })
-    .sort((a, b) => {
-      const onSiteA = SITE_REGIONS[site].includes(a) ? 1 : 0;
-      const onSiteB = SITE_REGIONS[site].includes(b) ? 1 : 0;
-      const backA = Math.min(...backRoute.map((region) => distance(a, region)));
-      const backB = Math.min(...backRoute.map((region) => distance(b, region)));
-      const dangerA = knownThreatScoreAtRegion(game, "attack", a);
-      const dangerB = knownThreatScoreAtRegion(game, "attack", b);
-      const exposedA = postplantBodyExposure(game, a, spikeRegion);
-      const exposedB = postplantBodyExposure(game, b, spikeRegion);
-      const laneA = Math.max(0, ...(GRAPH.get(a) ?? []).map((region) => postplantLaneWaitScore(game, a, region, spikeRegion)));
-      const laneB = Math.max(0, ...(GRAPH.get(b) ?? []).map((region) => postplantLaneWaitScore(game, b, region, spikeRegion)));
-      const occupiedA = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
-      const occupiedB = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
-      return onSiteA * 38 + backA * 9 + dangerA + exposedA * 82 + occupiedA * 12 + aiRecentMovementPenalty(game, agent, a) - laneA
-        - (onSiteB * 38 + backB * 9 + dangerB + exposedB * 82 + occupiedB * 12 + aiRecentMovementPenalty(game, agent, b) - laneB);
-    });
+    .map((region) => {
+      const onSite = SITE_REGIONS[site].includes(region) ? 1 : 0;
+      const back = Math.min(...backRoute.map((target) => distance(region, target)));
+      const danger = knownThreatScoreAtRegion(game, "attack", region);
+      const exposed = postplantBodyExposure(game, region, spikeRegion);
+      const lane = Math.max(0, ...(GRAPH.get(region) ?? []).map((next) => postplantLaneWaitScore(game, region, next, spikeRegion)));
+      const occupied = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === region).length;
+      const score = onSite * 38 + back * 9 + danger + exposed * 82 + occupied * 12 + aiRecentMovementPenalty(game, agent, region) - lane;
+      return { region, score };
+    })
+    .sort((a, b) => a.score - b.score)
+    .map((entry) => entry.region);
   if (!candidates.length) return [spikeRegion];
   const currentHoldDirections = agent.waitDirs.length
     ? agent.waitDirs
@@ -1855,6 +1873,13 @@ function appliedMoveSize(game: GameState, defender: Agent, defenderMoveBonus: nu
   return Math.max(1, finalStats(game, defender).move + defenderMoveBonus);
 }
 
+// Phantom carries no standing move bonus; instead it gets +2 move specifically
+// on the opening round of an engagement (holding or pushing alike), so it never
+// loses value by holding an angle but rewards surviving the first exchange.
+function phantomOpeningMoveBonus(defender: Agent, isFirstRound: boolean) {
+  return defender.weapon === "phantom" && isFirstRound ? 2 : 0;
+}
+
 function appliedDamageProfile(attacker: Agent, defender: Agent, range: number, waiting: boolean, vulnerable = defender.status.vulnerable) {
   const weapon = WEAPONS[attacker.weapon];
   const rangeBonus = weapon.type === "shotgun" && range === 0 ? SHOTGUN_CLOSE_DAMAGE_BONUS : 0;
@@ -2066,7 +2091,9 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   }
   if (game.spike.carrierId === defender.id && game.spike.status === "carried") {
     game.spike = { ...game.spike, status: "dropped", carrierId: null, region: defender.region, actorId: null };
-    game.spikeKnownByDefense = true;
+    // Defense only learns the drop location immediately if they actually witnessed it;
+    // otherwise they must scout the region themselves (see rememberObservedDroppedSpike).
+    game.spikeKnownByDefense = observedRegions(game, "defense").has(defender.region);
     addLog(game, `스파이크가 ${REGIONS.find((region) => region.id === defender.region)?.name}에 떨어졌습니다.`);
     addAnalyticsEvent(game, "attack", "objective", `${defender.region}번 스파이크 드롭 · 회수 작전 전환`);
     addAnalyticsEvent(game, "defense", "objective", `${defender.region}번 스파이크 확보 · 회수 차단 전환`);
@@ -2479,11 +2506,12 @@ function showMovementFx(game: GameState, agent: Agent, path: number[]) {
 function finishMovement(game: GameState, agent: Agent, origin: number, stopped = false) {
   const movementKind = game.pendingMovement?.kind;
   game.pendingMovement = null;
-  agent.status.moveBonus = 0;
+  // Only strip the positive movement boost this move consumed (updraft/gear +1);
+  // negative penalties picked up mid-move (tripwire -1) must survive until turn end.
+  agent.status.moveBonus = Math.min(0, agent.status.moveBonus);
   agent.status.moveRangeBonus = 0;
   agent.status.ignoreGround = false;
   agent.status.highGear = false;
-  agent.status.evadeReady = false;
   if (agent.alive && movementKind !== "forced") recordAiMovementHistory(game, agent, origin);
   if (agent.alive) addLog(game, stopped
     ? `${agent.name}의 이동이 ${regionName(agent.region)}에서 중단되었습니다.`
@@ -3049,7 +3077,8 @@ function aiKnownWaitEntryAssessment(game: GameState, agent: Agent, region: numbe
     const enemy = { ...knownEnemy.agent, region: knownEnemy.region, waitDirs: [...knownEnemy.waitDirs], weapon: knownEnemy.weapon };
     const range = distance(enemy.region, region);
     const waiting = range > 0 || enemy.waitDirs.length > 0;
-    const incoming = calculateShotOdds(game, enemy, enteringAgent, range, waiting, 0, 0);
+    // Entering a fresh region always starts a new encounter, i.e. round 1.
+    const incoming = calculateShotOdds(game, enemy, enteringAgent, range, waiting, 0, phantomOpeningMoveBonus(enteringAgent, true));
     const response = calculateShotOdds(game, enteringAgent, enemy, range, false, 0, 0);
     survivalChance *= Math.max(0, 100 - incoming.killChance) / 100;
     bestBreakChance = Math.max(bestBreakChance, response.killChance + response.expectedDamage / Math.max(1, enemy.hp + enemy.armor) * 35);
@@ -3243,6 +3272,11 @@ function rememberObservedDroppedWeapons(game: GameState, side: Side) {
   game.droppedWeapons.forEach((item) => {
     if (observed.has(item.region) && !item.knownBy.includes(side)) item.knownBy.push(side);
   });
+}
+
+function rememberObservedDroppedSpike(game: GameState) {
+  if (game.spikeKnownByDefense || game.spike.status !== "dropped" || game.spike.region === null) return;
+  if (observedRegions(game, "defense").has(game.spike.region)) game.spikeKnownByDefense = true;
 }
 
 function weaponTacticalValue(weaponId: WeaponId) {
@@ -3488,8 +3522,8 @@ function aiRecoveryAssaultScore(game: GameState, agent: Agent, objectiveRegion: 
     aiRecoveryUnitReadiness(game, { ...b.agent, weapon: b.weapon }) - aiRecoveryUnitReadiness(game, { ...a.agent, weapon: a.weapon }))[0];
   const knownStrongestBlocker = { ...strongestBlocker.agent, weapon: strongestBlocker.weapon };
   const engagementRange = Math.max(0, Math.min(2, distance(strongestBlocker.region, objectiveRegion)));
-  const attackOdds = calculateShotOdds(game, agent, knownStrongestBlocker, engagementRange, false, 0, 0);
-  const holdOdds = calculateShotOdds(game, knownStrongestBlocker, agent, engagementRange, true, 0, 0);
+  const attackOdds = calculateShotOdds(game, agent, knownStrongestBlocker, engagementRange, false, 0, phantomOpeningMoveBonus(knownStrongestBlocker, true));
+  const holdOdds = calculateShotOdds(game, knownStrongestBlocker, agent, engagementRange, true, 0, phantomOpeningMoveBonus(agent, true));
   const friendlyPower = nearbyAllies.reduce((total, ally) => total + aiRecoveryUnitReadiness(game, ally), 0);
   const defenderPower = knownDefenders.reduce((total, defender) => total + aiRecoveryUnitReadiness(game, defender), 0);
   const tradePressure = Math.max(0, nearbyAllies.length - 1) * 5;
@@ -4425,11 +4459,11 @@ function aiCombatTradeFollowup(game: GameState, scene: CombatScene, actor: Agent
       && canUseCard(card, ally)
       && cardTargets(game, ally, card).some((region) => distance(region, opponent.region) <= 1));
     if (!canFollow) return best;
-    const odds = calculateShotOdds(game, ally, opponent, range, false, 1, 0);
+    const odds = calculateShotOdds(game, ally, opponent, range, false, 1, phantomOpeningMoveBonus(opponent, true));
     const allyDurability = Math.max(1, ally.hp + ally.armor);
     const holderWaiting = opponent.waitDirs.includes(ally.region) && !isWaitPathSmokeBlocked(game, opponent.region, ally.region);
     const sniperTradeTargetPenalty = WEAPONS[opponent.weapon].type === "sniper";
-    const returnFire = calculateShotOdds(game, opponent, ally, range, holderWaiting, 0, 0, holderWaiting && !sniperTradeTargetPenalty);
+    const returnFire = calculateShotOdds(game, opponent, ally, range, holderWaiting, 0, phantomOpeningMoveBonus(ally, true), holderWaiting && !sniperTradeTargetPenalty);
     const weaponCondition = Math.max(-8, Math.min(12, (WEAPONS[ally.weapon].price - WEAPONS[actor.weapon].price) / 2));
     const tradePriorityValue = 16;
     const sniperTradeCounterValue = sniperTradeTargetPenalty ? (opponent.weapon === "operator" ? 28 : 18) : 0;
@@ -4543,7 +4577,7 @@ function aiCombatOdds(game: GameState, scene: CombatScene, attacker: Agent, defe
     scene.range,
     combatShotIsWaiting(scene, attacker.id),
     attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus,
-    defenderIsMover ? scene.moverMoveBonus : 0,
+    (defenderIsMover ? scene.moverMoveBonus : 0) + phantomOpeningMoveBonus(defender, scene.round === 1),
     combatShotGetsWaitAim(scene, attacker.id),
   );
 }
@@ -4585,7 +4619,7 @@ function addCombatDuelState(states: Map<string, CombatDuelState>, state: CombatD
   else states.set(key, state);
 }
 
-function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: Agent, defender: Agent, firstShot: boolean, defenderVulnerable: boolean) {
+function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: Agent, defender: Agent, firstShot: boolean, defenderVulnerable: boolean, isFirstRound: boolean) {
   const attackerIsMover = attacker.id === scene.mover.id;
   const defenderIsMover = defender.id === scene.mover.id;
   return calculateShotOutcomeProbabilities(
@@ -4595,7 +4629,7 @@ function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: A
     scene.range,
     combatShotIsWaiting(scene, attacker.id),
     firstShot ? attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus : 0,
-    defenderIsMover ? scene.moverMoveBonus : 0,
+    (defenderIsMover ? scene.moverMoveBonus : 0) + phantomOpeningMoveBonus(defender, isFirstRound),
     !firstShot,
     defenderVulnerable,
     combatShotGetsWaitAim(scene, attacker.id, firstShot),
@@ -4619,11 +4653,15 @@ function aiCombatDuelOdds(game: GameState, scene: CombatScene, actor: Agent, opp
   });
 
   for (let exchange = 0; exchange < 64 && states.size; exchange += 1) {
+    // Two sequential shots (attacker then defender) make up one combat round;
+    // simultaneous exchanges advance a full round each time.
+    const roundOffset = scene.simultaneous ? exchange : Math.floor(exchange / 2);
+    const isFirstRound = scene.round + roundOffset === 1;
     const next = new Map<string, CombatDuelState>();
     for (const state of states.values()) {
       if (scene.simultaneous) {
-        const actorOutcomes = combatDuelShotOutcomes(game, scene, actor, opponent, state.actorFirstShot, state.opponentVulnerable);
-        const opponentOutcomes = combatDuelShotOutcomes(game, scene, opponent, actor, state.opponentFirstShot, state.actorVulnerable);
+        const actorOutcomes = combatDuelShotOutcomes(game, scene, actor, opponent, state.actorFirstShot, state.opponentVulnerable, isFirstRound);
+        const opponentOutcomes = combatDuelShotOutcomes(game, scene, opponent, actor, state.opponentFirstShot, state.actorVulnerable, isFirstRound);
         for (const actorOutcome of actorOutcomes) {
           for (const opponentOutcome of opponentOutcomes) {
             const probability = state.probability * actorOutcome.probability * opponentOutcome.probability;
@@ -4651,7 +4689,7 @@ function aiCombatDuelOdds(game: GameState, scene: CombatScene, actor: Agent, opp
       const defender = state.actorTurn ? opponent : actor;
       const firstShot = state.actorTurn ? state.actorFirstShot : state.opponentFirstShot;
       const defenderVulnerable = state.actorTurn ? state.opponentVulnerable : state.actorVulnerable;
-      for (const outcome of combatDuelShotOutcomes(game, scene, attacker, defender, firstShot, defenderVulnerable)) {
+      for (const outcome of combatDuelShotOutcomes(game, scene, attacker, defender, firstShot, defenderVulnerable, isFirstRound)) {
         const probability = state.probability * outcome.probability;
         const actorDurability = state.actorDurability - (state.actorTurn ? 0 : outcome.damage);
         const opponentDurability = state.opponentDurability - (state.actorTurn ? outcome.damage : 0);
@@ -4778,8 +4816,8 @@ function aiShotgunApproachRegion(game: GameState, scene: CombatScene, actor: Age
   const currentReturnFire = aiCombatOdds(game, scene, opponent, actor);
   const retreatAimDelta = actor.status.aimPenalty > 0 ? 0 : -1;
   const retreatMoveDelta = Math.min(-1, actor.status.moveBonus) - actor.status.moveBonus;
-  const closeOdds = calculateShotOdds(game, actor, opponent, 0, false, retreatAimDelta, 0);
-  const closeReturnFire = calculateShotOdds(game, opponent, actor, 0, opponent.waitDirs.length > 0, 0, retreatMoveDelta);
+  const closeOdds = calculateShotOdds(game, actor, opponent, 0, false, retreatAimDelta, phantomOpeningMoveBonus(opponent, scene.round === 1));
+  const closeReturnFire = calculateShotOdds(game, opponent, actor, 0, opponent.waitDirs.length > 0, 0, retreatMoveDelta + phantomOpeningMoveBonus(actor, scene.round === 1));
   const actorDurability = Math.max(1, actor.hp + actor.armor);
   const opponentDurability = Math.max(1, opponent.hp + opponent.armor);
   const currentValue = currentOdds.killChance * 1.4
@@ -6301,7 +6339,6 @@ export default function Home() {
   const [setupAgentId, setSetupAgentId] = useState<string | null>(null);
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [showHelp, setShowHelp] = useState(false);
-  const [showShop, setShowShop] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem("protocol-grid-sound-enabled") !== "false");
   const [soundVolume, setSoundVolume] = useState(() => {
     if (typeof window === "undefined") return 0.5;
@@ -6348,19 +6385,19 @@ export default function Home() {
   const mapWaitCones = useMemo(() => waitConeViews(game, visibilityContext), [game, visibilityContext]);
   const viewerLog = useMemo(() => {
     const canSeeSpike = spikeVisibleTo(game, viewerSide, spectatorMode);
-    const hiddenAgentNames = aiSide ? game.teams[aiSide].agents.map((agent) => agent.name) : [];
+    // Only hide a name if it belongs exclusively to the AI's roster — a name shared
+    // with the human's own team must never be filtered out of their own combat log.
+    const hiddenAgentNames = aiSide
+      ? game.teams[aiSide].agents
+        .map((agent) => agent.name)
+        .filter((name) => !game.teams[otherSide(aiSide)].agents.some((ally) => ally.name === name))
+      : [];
     return game.log.filter((entry) => {
       if (!canSeeSpike && /(스파이크|설치 중|설치 완료|반 해체|최종 해체)/.test(entry)) return false;
       if (spectatorMode || !aiSide) return true;
       return !hiddenAgentNames.some((name) => entry.includes(name)) && !entry.includes(`${SIDE_LABEL[aiSide]} AI`);
     });
   }, [game, aiSide, spectatorMode, viewerSide]);
-
-  useEffect(() => {
-    if (!isAiControlledTurn) return;
-    const timer = window.setTimeout(() => setShowShop(false), 0);
-    return () => window.clearTimeout(timer);
-  }, [isAiControlledTurn]);
 
   useEffect(() => {
     const unlock = () => unlockTacticalAudio();
@@ -6754,7 +6791,6 @@ export default function Home() {
     setSpectatorStep(0);
     setDeploymentAgentId(null);
     setSetupAgentId(null);
-    setShowShop(false);
     setShowHelp(false);
     setStage("title");
   };
@@ -6773,7 +6809,6 @@ export default function Home() {
     setHumanSide(nextHumanSide);
     setSetupAgentId(nextSetupTeam.agents[0]?.id ?? null);
     setDeploymentAgentId(nextAiSide === "defense" ? null : futureDefenseTeam.agents[0]?.id ?? null);
-    setShowShop(false);
     setStage(spectatorMode ? "play" : nextAiSide === "defense" ? "buy_attack" : "buy_defense");
   };
 
@@ -7313,32 +7348,6 @@ export default function Home() {
     });
   };
 
-  const buyWeapon = (weapon: Weapon) => {
-    if (!selectedAgent || activeTeam.buyLocked || weapon.unlock > game.matchRound || activeTeam.funds < weapon.price) return;
-    mutate((draft) => {
-      const team = draft.teams[draft.turnSide];
-      const agent = getAgent(draft, selectedAgent.id);
-      if (!agent || team.funds < weapon.price || team.buyLocked) return;
-      agent.weapon = weapon.id;
-      team.funds -= weapon.price;
-      addLog(draft, `${agent.name} 구매: ${weapon.name} · 팀 자금 ${team.funds}원.`);
-    });
-  };
-
-  const buyArmor = (type: "light" | "regen" | "heavy", price: number, value: number) => {
-    if (!selectedAgent || activeTeam.buyLocked || activeTeam.funds < price) return;
-    mutate((draft) => {
-      const team = draft.teams[draft.turnSide];
-      const agent = getAgent(draft, selectedAgent.id);
-      if (!agent || team.funds < price || team.buyLocked) return;
-      agent.armorType = type;
-      agent.armor = value;
-      agent.armorDamaged = false;
-      team.funds -= price;
-      addLog(draft, `${agent.name} 방어구 구매 · 팀 자금 ${team.funds}원.`);
-    });
-  };
-
   const cancelTargeting = () => mutate((draft) => { draft.targeting = null; const card = draft.teams[draft.turnSide].hand.find((item) => item.id === draft.selectedCardId); if (!card?.used) draft.selectedCardId = null; });
   const skipWait = () => mutate((draft) => { const agent = getAgent(draft, draft.pendingWait); if (agent) clearWait(agent); draft.pendingWait = null; });
   const engageOptionalContact = (enemyId: string) => mutate((draft) => acceptPendingContact(draft, enemyId));
@@ -7370,7 +7379,7 @@ export default function Home() {
     }
     scene.evaded = false;
     const shooterIsMover = shooter.id === scene.mover.id;
-    const targetMoveBonus = target.id === scene.mover.id ? scene.moverMoveBonus : 0;
+    const targetMoveBonus = (target.id === scene.mover.id ? scene.moverMoveBonus : 0) + phantomOpeningMoveBonus(target, scene.round === 1);
     const waitingShot = combatShotIsWaiting(scene, shooter.id);
     const shot = makeShot(draft, shooter, target, scene.range, waitingShot, shooterIsMover ? scene.moverAimBonus : scene.holderAimBonus, targetMoveBonus, combatShotGetsWaitAim(scene, shooter.id));
     if (shooterIsMover) scene.moverShotsFired += 1;
@@ -7396,7 +7405,7 @@ export default function Home() {
     }
     const targetBefore = { hp: target.hp, armor: target.armor };
     const aimRoll = roll(5);
-    const moveSize = Math.max(1, finalStats(draft, target).move + scene.moverMoveBonus);
+    const moveSize = Math.max(1, finalStats(draft, target).move + scene.moverMoveBonus + phantomOpeningMoveBonus(target, scene.round === 1));
     const moveRoll = roll(moveSize);
     const hit = aimRoll - moveRoll > 0;
     const vulnerableBonus = target.status.vulnerable ? 1 : 0;
@@ -7511,17 +7520,19 @@ export default function Home() {
     let holderShot: ShotResult | null = null;
     const moverRetreatMoveBonus = moverChoice.type === "retreat" ? 2 : 0;
     const holderRetreatMoveBonus = holderChoice.type === "retreat" ? 2 : 0;
+    const holderPhantomBonus = phantomOpeningMoveBonus(holder, scene.round === 1);
+    const moverPhantomBonus = phantomOpeningMoveBonus(mover, scene.round === 1);
     if (moverChoice.type === "attack" && scene.canMoverAttack) {
       if (holder.status.evadeReady) { holder.status.evadeReady = false; scene.evaded = true; lines.push(`${holder.name} 회피`); }
       else {
-        moverShot = makeShot(draft, mover, holder, scene.range, combatShotIsWaiting(scene, mover.id), scene.moverAimBonus, holderRetreatMoveBonus, combatShotGetsWaitAim(scene, mover.id));
+        moverShot = makeShot(draft, mover, holder, scene.range, combatShotIsWaiting(scene, mover.id), scene.moverAimBonus, holderRetreatMoveBonus + holderPhantomBonus, combatShotGetsWaitAim(scene, mover.id));
         scene.moverShotsFired += 1;
       }
     }
     if (holderChoice.type === "attack") {
       if (mover.status.evadeReady) { mover.status.evadeReady = false; scene.evaded = true; lines.push(`${mover.name} 회피`); }
       else {
-        holderShot = makeShot(draft, holder, mover, scene.range, combatShotIsWaiting(scene, holder.id), scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus, combatShotGetsWaitAim(scene, holder.id));
+        holderShot = makeShot(draft, holder, mover, scene.range, combatShotIsWaiting(scene, holder.id), scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus + moverPhantomBonus, combatShotGetsWaitAim(scene, holder.id));
         scene.holderShotsFired += 1;
       }
     }
@@ -7780,6 +7791,7 @@ export default function Home() {
       refreshAttackOperatorResponse(draft);
     } else updateDefensePlanReadout(draft);
     rememberObservedDroppedWeapons(draft, side);
+    if (side === "defense") rememberObservedDroppedSpike(draft);
     const pendingShock = draft.aftershocks
       .filter((effect) => effect.owner !== side && draft.teamTurns[side] >= effect.readyOnTurn)
       .flatMap((effect) => effect.targetIds.map((agentId) => ({ effect, agent: getAgent(draft, agentId) })))
@@ -8167,7 +8179,7 @@ export default function Home() {
       combatScene.range,
       combatShotIsWaiting(combatScene, combatActor.id),
       combatActorIsMover ? combatScene.moverAimBonus : combatScene.holderAimBonus,
-      combatOpponent.id === combatScene.mover.id ? combatScene.moverMoveBonus : 0,
+      (combatOpponent.id === combatScene.mover.id ? combatScene.moverMoveBonus : 0) + phantomOpeningMoveBonus(combatOpponent, combatScene.round === 1),
       combatShotGetsWaitAim(combatScene, combatActor.id),
     )
     : null;
@@ -8288,9 +8300,6 @@ export default function Home() {
               {game.teams[otherSide(viewerSide)].agents.map((agent) => { const revealed = observed.has(agent.region) || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); return <i key={agent.id} className={`${agent.alive ? "" : "down"} ${revealed ? "detected" : ""}`} title={`${agent.name}${revealed ? " · 위치 공개" : ""}`} />; })}
             </div>
           </div>
-          <button className="shop-trigger" disabled={isAiControlledTurn || viewerTeam.buyLocked || !!game.winner} onClick={() => setShowShop(true)}>
-            <span>장비 구매</span><small>{isAiControlledTurn ? "상대 작전 중" : viewerTeam.buyLocked ? "행동 시작 후 잠김" : "무기 · 방어구"}</small>
-          </button>
           <div className="deck-status"><span>덱 {viewerTeam.deck.length}</span><span>버림 {viewerTeam.discard.length}</span><span>손패 5</span></div>
         </aside>
 
@@ -8609,14 +8618,7 @@ export default function Home() {
         {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>{combatRetreatLocked ? "첫 공격을 완료해야 이탈할 수 있습니다" : "이번 교전 차례를 선택하세요"}</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>이번 사격 · 기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>{combatScene.retreatLockedIds.includes(combatActor.id) ? "대기 구역 확보 시도 중" : combatScene.range === 0 ? "거리 0 첫 교전 사이클" : "거리 1 선택 교전의 첫 공격 전"}</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
-      {showShop && !isAiControlledTurn && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-head"><div><span className="eyebrow">TEAM ARMORY</span><h2>{selectedAgent?.name} 장비 구매</h2></div><div><strong>¤ {activeTeam.funds}</strong><button onClick={() => setShowShop(false)}>닫기</button></div></div>
-        <p className="shop-note">매치 1라운드: 클래식과 셰리프만 해금 · 구매 자금은 팀 공동입니다. 기존 장비 환불은 없습니다.</p>
-        <div className="weapon-grid">{Object.values(WEAPONS).map((weapon) => <button key={weapon.id} className={selectedAgent?.weapon === weapon.id ? "equipped" : ""} disabled={weapon.unlock > game.matchRound || weapon.price > activeTeam.funds || activeTeam.buyLocked} onClick={() => buyWeapon(weapon)} title={weaponRuleSummary(weapon)}><WeaponSilhouette weapon={weapon.id} /><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "RFL"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{weapon.price ? `${weapon.price}원` : "기본"}</b></button>)}</div>
-        <h3>방어구</h3><div className="armor-grid"><button onClick={() => buyArmor("light", 2, 1)} disabled={activeTeam.funds < 2}><strong>소형 방어구</strong><small>방어 1 · 2원</small></button><button onClick={() => buyArmor("regen", 4, 1)} disabled={activeTeam.funds < 4}><strong>회복 방어구</strong><small>팀 턴 종료 회복 · 4원</small></button><button onClick={() => buyArmor("heavy", 6, 2)} disabled={activeTeam.funds < 6}><strong>대형 방어구</strong><small>방어 2 · 6원</small></button></div>
-      </div></div>}
-
-      {showHelp && <div className="modal-backdrop" onMouseDown={() => setShowHelp(false)}><div className="rules-modal" onMouseDown={(event) => event.stopPropagation()}>
+      {showHelp &&<div className="modal-backdrop" onMouseDown={() => setShowHelp(false)}><div className="rules-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">FIELD MANUAL // V0.1</span><h2>핵심 규칙</h2></div><button onClick={() => setShowHelp(false)}>닫기</button></div>
         <div className="rules-grid">
           <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 → 공격 본진 대기 설정 후 수비가 먼저 행동합니다. 공격 요원은 1번에 고정된 채 초반 진입로를 대기합니다.</p></article>

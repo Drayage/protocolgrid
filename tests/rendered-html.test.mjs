@@ -853,7 +853,7 @@ test("four health, two armor, weapons, and utility share the six-durability bala
   assert.match(page, /bucky: \{[^}]*body: 3, head: 4/);
   assert.match(page, /spectre: \{[^}]*body: 3, head: 4/);
   assert.match(page, /bulldog: \{[^}]*body: 3, head: 4/);
-  assert.match(page, /outlaw: \{[^}]*body: 5, head: 6, price: 20/);
+  assert.match(page, /outlaw: \{[^}]*body: 5, head: 5, price: 20/);
   assert.match(page, /const sniperNonWaitDamagePenalty = weapon\.type === "sniper" && !waiting \? 1 : 0/);
   assert.match(page, /비대기 공격 몸통·헤드 피해 -1/);
   assert.match(page, /트레이드 상대 페널티: 교전 동안 우선도 \+1·첫 사격 대기 에임 \+1 미적용/);
@@ -1057,7 +1057,7 @@ test("postplant AI backs off, watches the objective, and rejects inward idle hol
   assert.match(page, /function postplantBodyExposure/);
   assert.match(page, /function postplantLaneWaitScore/);
   assert.match(page, /function attackPostplantWaypoints/);
-  assert.match(page, /SITE_REGIONS\[site\]\.includes\(a\) \? 1 : 0/);
+  assert.match(page, /SITE_REGIONS\[site\]\.includes\(region\) \? 1 : 0/);
   assert.match(page, /const currentHoldDirections = agent\.waitDirs\.length/);
   assert.match(page, /candidates\.includes\(agent\.region\) && currentHoldDirections\.some/);
   assert.match(page, /if \(agent && attackPlanPhase\(game\) === "postplant"/);
