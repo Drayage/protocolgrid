@@ -5360,7 +5360,9 @@ function aiDarkRegion(game: GameState, agent: Agent, intel: AiEnemyIntel[]): num
     enemy.exact && SITE_REGIONS[targetSite].includes(enemy.region),
   );
   const candidates = REGIONS
-    .filter((region) => !game.smokes.some((smoke) => smoke.region === region.id) && region.id !== agent.region)
+    .filter((region) => !game.smokes.some((smoke) => smoke.region === region.id)
+      && region.id !== agent.region
+      && !game.teams[agent.team].agents.some((ally) => ally.alive && ally.id !== agent.id && ally.region === region.id))
     .map((region) => {
       let score = Math.max(0, 5 - distance(region.id, objective));
       const onSite = SITE_REGIONS[targetSite].includes(region.id);
@@ -5630,6 +5632,12 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "aftershock") {
+        // The payoff only lands on the caster's own next turn start — not
+        // worth committing to when the round could end (to the clock or the
+        // spike) before that turn ever arrives.
+        const noNextTurnLikely = (side === "attack" && attackForcedPlantMode(game))
+          || (side === "defense" && defenseRetakeIsActive(game) && game.spike.explosion <= 1);
+        if (noNextTurnLikely) continue;
         const target = aiSkillRegions(agent, "range2").map((region) => ({
           region,
           score: exactIntel.filter((item) => item.region === region).length * 4
