@@ -312,7 +312,7 @@ test("defense AI deploys stack, balanced, mid-control, and weighted formations w
   assert.match(page, /game\.cycle >= 3/);
   assert.match(page, /laneIndex === laneAgents\.length - 1/);
   assert.match(page, /Math\.floor\(laneAgents\.length \/ 2\)/);
-  assert.match(page, /\.\.\.Array\(game\.defensePlan\.distribution\.A\)\.fill\(10\)/);
+  assert.match(page, /\.\.\.Array\(game\.defensePlan\.distribution\.A\)\.fill\(DEFENSE_DEPLOYMENT_BY_LANE\.A\)/);
   assert.match(page, /className="analysis-plan defense-plan"/);
   assert.match(css, /\.analysis-plan\.defense-plan/);
 });
@@ -363,10 +363,10 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
   assert.match(page, /strategicBias/);
   assert.match(page, /function attackPlanWaypoints/);
   assert.match(page, /game\.cycle < game\.attackPlan\.commitCycle - 2 \? "pressure" : "rotate"/);
-  assert.match(page, /game\.attackPlan\.adapted && targetSite === "B" \? \[5, 17\] : \[2, 12\]/);
-  assert.match(page, /game\.attackPlan\.adapted && targetSite === "A" \? \[5, 12\] : \[4, 17\]/);
-  assert.match(page, /targetSite === "B" \? \[5, 17\] : \[2, 12\]/);
-  assert.match(page, /targetSite === "A" \? \[5, 12\] : \[4, 17\]/);
+  assert.match(page, /game\.attackPlan\.adapted && targetSite === "B" \? CROSS_APPROACH_ROUTES\.B : APPROACH_ROUTES\.A/);
+  assert.match(page, /game\.attackPlan\.adapted && targetSite === "A" \? CROSS_APPROACH_ROUTES\.A : APPROACH_ROUTES\.B/);
+  assert.match(page, /targetSite === "B" \? CROSS_APPROACH_ROUTES\.B : APPROACH_ROUTES\.A/);
+  assert.match(page, /targetSite === "A" \? CROSS_APPROACH_ROUTES\.A : APPROACH_ROUTES\.B/);
   assert.match(page, /function attackPlanRushDestination/);
   assert.match(page, /game\.attackPlan\.kind === "direct-b" \|\| game\.attackPlan\.kind === "fake-b-a"[\s\S]{0,80}\? 4[\s\S]{0,40}: 5/);
   assert.match(page, /if \(game\.cycle !== 1\) return null/);
@@ -397,9 +397,9 @@ test("attack AI rotates through direct, mid, fake, and adaptive split plans befo
 
 test("mid-round AI replans, plants secured sites, and uses utility for entry and retake lanes", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /const SITE_REGIONS:/);
-  assert.match(page, /const ATTACK_ENTRY_EDGES:/);
-  assert.match(page, /const DEFENDER_BACK_EDGES:/);
+  assert.match(page, /const SITE_REGIONS = ACTIVE_MAP\.siteRegions/);
+  assert.match(page, /const ATTACK_ENTRY_EDGES = ACTIVE_MAP\.attackEntryEdges/);
+  assert.match(page, /const DEFENDER_BACK_EDGES = ACTIVE_MAP\.defenderBackEdges/);
   assert.match(page, /function aiPlantAssessment/);
   assert.match(page, /plantAssessment\?\.shouldPlant/);
   assert.match(page, /사이트 설치 판단 · 주변 아군/);
@@ -744,7 +744,7 @@ test("attackers configure opening waits at spawn before the first defense turn",
   assert.match(page, /agent\.region !== 1/);
   assert.match(page, /waitTargetsFor\(agent\)\.includes\(region\)/);
   assert.match(page, /function autoSetAttackOpeningWaits/);
-  assert.match(page, /\[12, 17, 6, 2, 4, 5\] : \[2, 4, 5\]/);
+  assert.match(page, /SNIPER_OPENING_WAIT_PREFERENCE : RIFLE_OPENING_WAIT_PREFERENCE/);
   assert.match(page, /autoSetAttackOpeningWaits\(draft\)/);
   assert.match(page, /수비팀 첫 턴 시작/);
   assert.match(css, /\.opening-wait-line/);
@@ -853,7 +853,7 @@ test("four health, two armor, weapons, and utility share the six-durability bala
   assert.match(page, /bucky: \{[^}]*body: 3, head: 4/);
   assert.match(page, /spectre: \{[^}]*body: 3, head: 4/);
   assert.match(page, /bulldog: \{[^}]*body: 3, head: 4/);
-  assert.match(page, /outlaw: \{[^}]*body: 5, head: 6, price: 20/);
+  assert.match(page, /outlaw: \{[^}]*body: 5, head: 5, price: 20/);
   assert.match(page, /const sniperNonWaitDamagePenalty = weapon\.type === "sniper" && !waiting \? 1 : 0/);
   assert.match(page, /비대기 공격 몸통·헤드 피해 -1/);
   assert.match(page, /트레이드 상대 페널티: 교전 동안 우선도 \+1·첫 사격 대기 에임 \+1 미적용/);
@@ -1057,7 +1057,7 @@ test("postplant AI backs off, watches the objective, and rejects inward idle hol
   assert.match(page, /function postplantBodyExposure/);
   assert.match(page, /function postplantLaneWaitScore/);
   assert.match(page, /function attackPostplantWaypoints/);
-  assert.match(page, /SITE_REGIONS\[site\]\.includes\(a\) \? 1 : 0/);
+  assert.match(page, /SITE_REGIONS\[site\]\.includes\(region\) \? 1 : 0/);
   assert.match(page, /const currentHoldDirections = agent\.waitDirs\.length/);
   assert.match(page, /candidates\.includes\(agent\.region\) && currentHoldDirections\.some/);
   assert.match(page, /if \(agent && attackPlanPhase\(game\) === "postplant"/);

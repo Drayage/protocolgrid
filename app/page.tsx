@@ -37,6 +37,56 @@ interface Region {
   site?: "A" | "B";
 }
 
+// A door lives on an edge and can gate movement across it. Not wired into
+// gameplay yet (no map declares one) — this is the schema hook a future map
+// with closable/breakable doors plugs into without another shape change.
+interface DoorDefinition {
+  edge: [number, number];
+  breakable: boolean;
+  startsOpen: boolean;
+}
+
+// Everything that makes one battlefield different from another: layout,
+// connectivity, and the tactical zone tags AI strategy code reads (which
+// regions are site A, which edges are chokepoints, where each side spawns).
+// A second map is added by writing a new MapDefinition, not by editing logic.
+interface MapDefinition {
+  id: string;
+  name: string;
+  regions: Region[];
+  edges: [number, number][];
+  doors: DoorDefinition[];
+  attackSpawn: number;
+  defenseSpawn: number;
+  defenseDeploymentRegions: number[];
+  defenseDeploymentByLane: Record<TacticalLane, number>;
+  siteRegions: Record<"A" | "B", number[]>;
+  siteApproachRegions: Record<"A" | "B", number[]>;
+  tacticalRegionsBySite: Record<"A" | "B", number[]>;
+  defenseOperatingRegions: number[];
+  waitChokeRegions: number[];
+  attackEntryEdges: Record<"A" | "B", [number, number][]>;
+  defenderBackEdges: Record<"A" | "B", [number, number][]>;
+  // Hand-authored tactical lanes AI strategy code walks agents along. These
+  // are shaped for GRID-01's specific topology (rush lanes, mid chokepoint,
+  // flank routes around the back); a differently-shaped map needs its own
+  // values here, not a formula — that's why they're map data, not derived.
+  approachRoutes: Record<"A" | "B", number[]>;
+  crossApproachRoutes: Record<"A" | "B", number[]>;
+  midControlWaypoints: number[];
+  midToSiteRoutes: Record<"A" | "B", number[]>;
+  splitSpreadWaypoints: number[];
+  splitApproachRoutes: Record<"A" | "B", number[]>;
+  lurkerDeepFlankRoutes: Record<"A" | "B", number[]>;
+  defenseLaneAnchors: Record<TacticalLane, number[]>;
+  defenseFlankRoutes: Record<"A" | "B", number[]>;
+  defenseFunnelWaypoints: Record<"A" | "B", number[]>;
+  defenseRotationWaypoints: Record<"A" | "B", number[]>;
+  postplantBackRoutes: Record<"A" | "B", number[]>;
+  sniperOpeningWaitPreference: number[];
+  rifleOpeningWaitPreference: number[];
+}
+
 interface Weapon {
   id: WeaponId;
   name: string;
@@ -574,25 +624,185 @@ const createAnalytics = (): GameAnalytics => ({
   timeline: [],
 });
 
-const REGIONS: Region[] = [
-  { id: 1, name: "공격팀 시작 지점", x: 49.5, y: 90 },
-  { id: 2, name: "하단 좌측 분기", x: 24.5, y: 75 },
-  { id: 3, name: "폐쇄 구역", x: 8, y: 78 },
-  { id: 4, name: "하단 우측 분기", x: 75.5, y: 76 },
-  { id: 5, name: "중앙 하부", x: 49, y: 65 },
-  { id: 6, name: "중앙 상부", x: 49, y: 49 },
-  { id: 7, name: "수비팀 시작 지점", x: 49.5, y: 11 },
-  { id: 8, name: "왼쪽 긴 진입로", x: 34, y: 47 },
-  { id: 9, name: "왼쪽 사이트 입구", x: 23, y: 47, site: "A" },
-  { id: 10, name: "왼쪽 사이트 전방", x: 19, y: 31, site: "A" },
-  { id: 11, name: "왼쪽 사이트 후방", x: 8.5, y: 39, site: "A" },
-  { id: 12, name: "왼쪽 수비 연결로", x: 16, y: 58 },
-  { id: 13, name: "오른쪽 긴 진입로", x: 67.5, y: 50 },
-  { id: 14, name: "오른쪽 사이트 입구", x: 80, y: 40, site: "B" },
-  { id: 15, name: "오른쪽 사이트 전방", x: 84, y: 25, site: "B" },
-  { id: 16, name: "오른쪽 사이트 후방", x: 94, y: 36, site: "B" },
-  { id: 17, name: "오른쪽 수비 연결로", x: 84, y: 61 },
-];
+const GRID_01: MapDefinition = {
+  id: "grid-01",
+  name: "GRID-01",
+  regions: [
+    { id: 1, name: "공격팀 시작 지점", x: 49.5, y: 90 },
+    { id: 2, name: "하단 좌측 분기", x: 24.5, y: 75 },
+    { id: 3, name: "폐쇄 구역", x: 8, y: 78 },
+    { id: 4, name: "하단 우측 분기", x: 75.5, y: 76 },
+    { id: 5, name: "중앙 하부", x: 49, y: 65 },
+    { id: 6, name: "중앙 상부", x: 49, y: 49 },
+    { id: 7, name: "수비팀 시작 지점", x: 49.5, y: 11 },
+    { id: 8, name: "왼쪽 긴 진입로", x: 34, y: 47 },
+    { id: 9, name: "왼쪽 사이트 입구", x: 23, y: 47, site: "A" },
+    { id: 10, name: "왼쪽 사이트 전방", x: 19, y: 31, site: "A" },
+    { id: 11, name: "왼쪽 사이트 후방", x: 8.5, y: 39, site: "A" },
+    { id: 12, name: "왼쪽 수비 연결로", x: 16, y: 58 },
+    { id: 13, name: "오른쪽 긴 진입로", x: 67.5, y: 50 },
+    { id: 14, name: "오른쪽 사이트 입구", x: 80, y: 40, site: "B" },
+    { id: 15, name: "오른쪽 사이트 전방", x: 84, y: 25, site: "B" },
+    { id: 16, name: "오른쪽 사이트 후방", x: 94, y: 36, site: "B" },
+    { id: 17, name: "오른쪽 수비 연결로", x: 84, y: 61 },
+  ],
+  edges: [
+    [1, 2], [1, 4], [1, 5], [2, 5], [2, 12], [4, 5], [4, 17], [5, 6], [5, 17],
+    [6, 8], [6, 13], [7, 10], [7, 13], [8, 9], [8, 10], [9, 10], [9, 12], [10, 11],
+    [11, 12], [13, 14], [13, 15], [13, 17], [14, 15], [14, 16], [14, 17], [15, 16],
+  ],
+  // No closable/breakable doors on this map — future maps declare them here.
+  doors: [],
+  attackSpawn: 1,
+  defenseSpawn: 7,
+  defenseDeploymentRegions: [7, 10, 13],
+  defenseDeploymentByLane: { A: 10, MID: 7, B: 13 },
+  siteRegions: { A: [9, 10, 11], B: [14, 15, 16] },
+  siteApproachRegions: { A: [8, 12], B: [13, 17] },
+  tacticalRegionsBySite: { A: [8, 9, 10, 11, 12], B: [13, 14, 15, 16, 17] },
+  defenseOperatingRegions: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+  waitChokeRegions: [2, 4, 5, 6, 8, 9, 12, 13, 14, 17],
+  attackEntryEdges: {
+    A: [[8, 9], [9, 12], [11, 12]],
+    B: [[13, 14], [14, 17], [13, 15]],
+  },
+  defenderBackEdges: {
+    A: [[7, 10], [10, 11]],
+    B: [[7, 13], [13, 15], [15, 16]],
+  },
+  approachRoutes: { A: [2, 12], B: [4, 17] },
+  crossApproachRoutes: { A: [5, 12], B: [5, 17] },
+  midControlWaypoints: [5, 6],
+  midToSiteRoutes: { A: [6, 8], B: [6, 13] },
+  splitSpreadWaypoints: [2, 4, 5],
+  splitApproachRoutes: { A: [2, 12, 8], B: [4, 17, 13] },
+  lurkerDeepFlankRoutes: { A: [2, 12, 11, 10, 7, 13, 14], B: [4, 17, 14, 13, 7, 10, 9] },
+  defenseLaneAnchors: { A: [10, 9, 11, 12, 8], B: [13, 14, 15, 16, 17], MID: [7, 6, 8, 13] },
+  defenseFlankRoutes: { A: [13, 17, 5, 2, 12], B: [10, 12, 2, 5, 17] },
+  defenseFunnelWaypoints: { A: [8, 10, 9], B: [13, 14, 15] },
+  defenseRotationWaypoints: { A: [8, 10], B: [13, 14] },
+  postplantBackRoutes: { A: [12, 8, 2, 5], B: [17, 13, 4, 5] },
+  sniperOpeningWaitPreference: [12, 17, 6, 2, 4, 5],
+  rifleOpeningWaitPreference: [2, 4, 5],
+};
+
+// A deliberately different-shaped map (13 regions instead of 17, 2-region
+// sites instead of 3, no long approach corridor, one closed vault, one
+// door) — exists to prove MapDefinition is a real seam and not just a
+// reshuffling of GRID-01's own numbers. Reachable via ?map=grid-02-test.
+const GRID_02_TEST: MapDefinition = {
+  id: "grid-02-test",
+  name: "GRID-02 (TEST)",
+  regions: [
+    { id: 1, name: "공격팀 시작 지점", x: 50, y: 92 },
+    { id: 2, name: "왼쪽 분기", x: 25, y: 74 },
+    { id: 3, name: "오른쪽 분기", x: 75, y: 74 },
+    { id: 4, name: "중앙 하부", x: 50, y: 60 },
+    { id: 5, name: "중앙 상부", x: 50, y: 44 },
+    { id: 6, name: "수비팀 시작 지점", x: 50, y: 10 },
+    { id: 7, name: "왼쪽 사이트 입구", x: 22, y: 40, site: "A" },
+    { id: 8, name: "왼쪽 사이트 내부", x: 15, y: 24, site: "A" },
+    { id: 9, name: "왼쪽 수비 연결로", x: 12, y: 56 },
+    { id: 10, name: "오른쪽 사이트 입구", x: 78, y: 40, site: "B" },
+    { id: 11, name: "오른쪽 사이트 내부", x: 85, y: 24, site: "B" },
+    { id: 12, name: "오른쪽 수비 연결로", x: 88, y: 56 },
+    { id: 13, name: "폐쇄 금고", x: 6, y: 80 },
+  ],
+  edges: [
+    [1, 2], [1, 3], [1, 4],
+    [2, 4], [2, 9],
+    [3, 4], [3, 12],
+    [4, 5],
+    [5, 7], [5, 10],
+    [6, 8], [6, 11],
+    [7, 8], [7, 9],
+    [8, 9],
+    [10, 11], [10, 12],
+    [11, 12],
+  ],
+  // One breakable door gating the A site's back connector, to prove the
+  // schema round-trips a populated doors array — not wired to gameplay yet.
+  doors: [{ edge: [8, 9], breakable: true, startsOpen: true }],
+  attackSpawn: 1,
+  defenseSpawn: 6,
+  defenseDeploymentRegions: [6, 7, 10],
+  defenseDeploymentByLane: { A: 7, MID: 6, B: 10 },
+  siteRegions: { A: [7, 8], B: [10, 11] },
+  siteApproachRegions: { A: [9], B: [12] },
+  tacticalRegionsBySite: { A: [7, 8, 9], B: [10, 11, 12] },
+  defenseOperatingRegions: [5, 6, 7, 8, 9, 10, 11, 12],
+  waitChokeRegions: [2, 3, 4, 5, 7, 9, 10, 12],
+  attackEntryEdges: {
+    A: [[5, 7], [9, 7]],
+    B: [[5, 10], [12, 10]],
+  },
+  defenderBackEdges: {
+    A: [[6, 8], [8, 9]],
+    B: [[6, 11], [11, 12]],
+  },
+  approachRoutes: { A: [2, 9], B: [3, 12] },
+  crossApproachRoutes: { A: [4, 9], B: [4, 12] },
+  midControlWaypoints: [4, 5],
+  midToSiteRoutes: { A: [5, 7], B: [5, 10] },
+  splitSpreadWaypoints: [2, 3, 4],
+  splitApproachRoutes: { A: [2, 9, 7], B: [3, 12, 10] },
+  lurkerDeepFlankRoutes: { A: [2, 9, 8, 6, 11, 10], B: [3, 12, 11, 6, 8, 7] },
+  defenseLaneAnchors: { A: [8, 7, 9], B: [11, 10, 12], MID: [6, 5, 9, 12] },
+  defenseFlankRoutes: { A: [10, 12, 4, 2, 9], B: [7, 9, 4, 3, 12] },
+  defenseFunnelWaypoints: { A: [9, 7], B: [12, 10] },
+  defenseRotationWaypoints: { A: [9], B: [12] },
+  postplantBackRoutes: { A: [9, 2, 4], B: [12, 3, 4] },
+  sniperOpeningWaitPreference: [9, 12, 5, 2, 3, 4],
+  rifleOpeningWaitPreference: [2, 3, 4],
+};
+
+const MAPS: Record<string, MapDefinition> = { [GRID_01.id]: GRID_01, [GRID_02_TEST.id]: GRID_02_TEST };
+// GRID-01 ships by default; ?map=<id> is a test/dev hook to boot straight
+// into another registered map (e.g. grid-02-test) without a UI picker yet.
+// Everything below is derived from this binding so the rest of the file
+// never reads map data by literal region number again.
+const requestedMapId = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("map");
+const ACTIVE_MAP: MapDefinition = (requestedMapId && MAPS[requestedMapId]) || MAPS[GRID_01.id];
+
+function buildRegionGraph(map: MapDefinition): Map<number, number[]> {
+  const graph = new Map<number, number[]>();
+  for (const region of map.regions) graph.set(region.id, []);
+  for (const [a, b] of map.edges) {
+    graph.get(a)?.push(b);
+    graph.get(b)?.push(a);
+  }
+  return graph;
+}
+
+const REGIONS = ACTIVE_MAP.regions;
+const EDGES = ACTIVE_MAP.edges;
+const GRAPH = buildRegionGraph(ACTIVE_MAP);
+const ATTACK_SPAWN_REGION = ACTIVE_MAP.attackSpawn;
+const DEFENSE_SPAWN_REGION = ACTIVE_MAP.defenseSpawn;
+const DEFENSE_DEPLOYMENT_REGIONS = ACTIVE_MAP.defenseDeploymentRegions;
+const DEFENSE_DEPLOYMENT_BY_LANE = ACTIVE_MAP.defenseDeploymentByLane;
+const DEFENSE_OPERATING_REGIONS = new Set(ACTIVE_MAP.defenseOperatingRegions);
+const A_TACTICAL_REGIONS = new Set(ACTIVE_MAP.tacticalRegionsBySite.A);
+const B_TACTICAL_REGIONS = new Set(ACTIVE_MAP.tacticalRegionsBySite.B);
+const SITE_REGIONS = ACTIVE_MAP.siteRegions;
+const SITE_APPROACH_REGIONS = ACTIVE_MAP.siteApproachRegions;
+const ATTACK_ENTRY_EDGES = ACTIVE_MAP.attackEntryEdges;
+const DEFENDER_BACK_EDGES = ACTIVE_MAP.defenderBackEdges;
+const AI_WAIT_CHOKE_REGIONS = new Set(ACTIVE_MAP.waitChokeRegions);
+const APPROACH_ROUTES = ACTIVE_MAP.approachRoutes;
+const CROSS_APPROACH_ROUTES = ACTIVE_MAP.crossApproachRoutes;
+const MID_CONTROL_WAYPOINTS = ACTIVE_MAP.midControlWaypoints;
+const MID_TO_SITE_ROUTES = ACTIVE_MAP.midToSiteRoutes;
+const SPLIT_SPREAD_WAYPOINTS = ACTIVE_MAP.splitSpreadWaypoints;
+const SPLIT_APPROACH_ROUTES = ACTIVE_MAP.splitApproachRoutes;
+const LURKER_DEEP_FLANK_ROUTES = ACTIVE_MAP.lurkerDeepFlankRoutes;
+const DEFENSE_LANE_ANCHORS = ACTIVE_MAP.defenseLaneAnchors;
+const DEFENSE_FLANK_ROUTES = ACTIVE_MAP.defenseFlankRoutes;
+const DEFENSE_FUNNEL_WAYPOINTS = ACTIVE_MAP.defenseFunnelWaypoints;
+const DEFENSE_ROTATION_WAYPOINTS = ACTIVE_MAP.defenseRotationWaypoints;
+const POSTPLANT_BACK_ROUTES = ACTIVE_MAP.postplantBackRoutes;
+const SNIPER_OPENING_WAIT_PREFERENCE = ACTIVE_MAP.sniperOpeningWaitPreference;
+const RIFLE_OPENING_WAIT_PREFERENCE = ACTIVE_MAP.rifleOpeningWaitPreference;
 
 function audioPanForRegion(regionId: number | null | undefined) {
   if (regionId === null || regionId === undefined) return 0;
@@ -600,42 +810,15 @@ function audioPanForRegion(regionId: number | null | undefined) {
   return region ? Math.max(-1, Math.min(1, (region.x - 50) / 44)) : 0;
 }
 
-const EDGES: [number, number][] = [
-  [1, 2], [1, 4], [1, 5], [2, 5], [2, 12], [4, 5], [4, 17], [5, 6], [5, 17],
-  [6, 8], [6, 13], [7, 10], [7, 13], [8, 9], [8, 10], [9, 10], [9, 12], [10, 11],
-  [11, 12], [13, 14], [13, 15], [13, 17], [14, 15], [14, 16], [14, 17], [15, 16],
-];
-
-const GRAPH = new Map<number, number[]>();
-for (const region of REGIONS) GRAPH.set(region.id, []);
-for (const [a, b] of EDGES) {
-  GRAPH.get(a)?.push(b);
-  GRAPH.get(b)?.push(a);
-}
-
-const DEFENSE_OPERATING_REGIONS = new Set([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
-const A_TACTICAL_REGIONS = new Set([8, 9, 10, 11, 12]);
-const B_TACTICAL_REGIONS = new Set([13, 14, 15, 16, 17]);
-const SITE_REGIONS: Record<"A" | "B", number[]> = { A: [9, 10, 11], B: [14, 15, 16] };
-const SITE_APPROACH_REGIONS: Record<"A" | "B", number[]> = { A: [8, 12], B: [13, 17] };
-const ATTACK_ENTRY_EDGES: Record<"A" | "B", [number, number][]> = {
-  A: [[8, 9], [9, 12], [11, 12]],
-  B: [[13, 14], [14, 17], [13, 15]],
-};
-const DEFENDER_BACK_EDGES: Record<"A" | "B", [number, number][]> = {
-  A: [[7, 10], [10, 11]],
-  B: [[7, 13], [13, 15], [15, 16]],
-};
-
 const WEAPONS: Record<WeaponId, Weapon> = {
   classic: { id: "classic", name: "클래식", type: "normal", body: 2, head: 3, price: 0, aim: 0, move: 0, unlock: 1 },
   sheriff: { id: "sheriff", name: "셰리프", type: "normal", body: 3, head: 4, price: 6, aim: 0, move: 0, unlock: 1 },
   bucky: { id: "bucky", name: "버키", type: "shotgun", body: 3, head: 4, price: 8, aim: 0, move: 0, unlock: 2 },
   spectre: { id: "spectre", name: "스펙터", type: "normal", body: 3, head: 4, price: 10, aim: 0, move: 1, unlock: 2 },
   bulldog: { id: "bulldog", name: "불독", type: "normal", body: 3, head: 4, price: 12, aim: 1, move: 0, unlock: 2 },
-  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 5, head: 6, price: 20, aim: 0, move: 0, unlock: 2 },
+  outlaw: { id: "outlaw", name: "아웃로", type: "sniper", body: 5, head: 5, price: 20, aim: 0, move: 0, unlock: 2 },
   judge: { id: "judge", name: "저지", type: "shotgun", body: 4, head: 5, price: 16, aim: 0, move: 1, unlock: 3 },
-  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 4, head: 5, price: 24, aim: 1, move: 1, unlock: 3 },
+  phantom: { id: "phantom", name: "팬텀", type: "normal", body: 4, head: 5, price: 24, aim: 1, move: 0, unlock: 3 },
   vandal: { id: "vandal", name: "밴달", type: "normal", body: 4, head: 6, price: 24, aim: 1, move: 0, unlock: 3 },
   operator: { id: "operator", name: "오퍼레이터", type: "sniper", body: 6, head: 8, price: 38, aim: 0, move: 0, unlock: 3 },
 };
@@ -812,7 +995,7 @@ function createAgent(name: string, team: Side): Agent {
     name,
     role: template.role,
     team,
-    region: team === "attack" ? 1 : 7,
+    region: team === "attack" ? ATTACK_SPAWN_REGION : DEFENSE_SPAWN_REGION,
     hp: AGENT_MAX_HP,
     armor: 0,
     armorType: "none",
@@ -969,7 +1152,7 @@ function resetAgentForRound(agent: Agent, side: Side, economyReset: boolean) {
   }
   agent.armorDamaged = false;
   agent.team = side;
-  agent.region = side === "attack" ? 1 : 7;
+  agent.region = side === "attack" ? ATTACK_SPAWN_REGION : DEFENSE_SPAWN_REGION;
   agent.hp = AGENT_MAX_HP;
   agent.alive = true;
   agent.extraActions = 0;
@@ -1206,10 +1389,33 @@ function shortestPath(start: number, end: number): number[] {
   return [];
 }
 
-const distance = (a: number, b: number) => {
-  const path = shortestPath(a, b);
-  return path.length ? path.length - 1 : 99;
-};
+// A map's pairwise distances only change when its graph changes (never today,
+// potentially on a future map switch or a door opening/closing) — so this is
+// computed once per graph and cached, instead of re-walking it on every
+// distance() call, which is on the hot path for AI decisions.
+function buildDistanceMatrix(graph: Map<number, number[]>): Record<number, Record<number, number>> {
+  const matrix: Record<number, Record<number, number>> = {};
+  for (const source of graph.keys()) {
+    const dist = new Map<number, number>([[source, 0]]);
+    const queue = [source];
+    while (queue.length) {
+      const current = queue.shift()!;
+      const currentDist = dist.get(current)!;
+      for (const next of graph.get(current) ?? []) {
+        if (dist.has(next)) continue;
+        dist.set(next, currentDist + 1);
+        queue.push(next);
+      }
+    }
+    matrix[source] = {};
+    for (const target of graph.keys()) matrix[source][target] = dist.get(target) ?? 99;
+  }
+  return matrix;
+}
+
+const DISTANCE_MATRIX = buildDistanceMatrix(GRAPH);
+
+const distance = (a: number, b: number) => DISTANCE_MATRIX[a]?.[b] ?? 99;
 
 function attackPlanPhase(game: GameState): AttackPlanPhase {
   if (["planting", "planted", "half", "defusing"].includes(game.spike.status)) return "postplant";
@@ -1343,19 +1549,19 @@ function attackCoreWaypoints(game: GameState): number[] {
     || phase === "postplant"
     || attackSiteSituation(game, targetSite).alliesOnSite.length > 0
     || (game.cycle >= 2 && attackEntryIsOpen(game, targetSite))
-  ) return targetSite === "A" ? [9, 10] : [14, 15];
+  ) return SITE_REGIONS[targetSite].slice(0, 2);
   switch (game.attackPlan.kind) {
-    case "direct-a": return game.attackPlan.adapted && targetSite === "B" ? [5, 17] : [2, 12];
-    case "direct-b": return game.attackPlan.adapted && targetSite === "A" ? [5, 12] : [4, 17];
-    case "mid-a": return game.cycle <= 2 ? [5, 6] : targetSite === "A" ? [6, 8] : [6, 13];
-    case "mid-b": return game.cycle <= 2 ? [5, 6] : targetSite === "B" ? [6, 13] : [6, 8];
-    case "fake-a-b": return game.cycle < game.attackPlan.commitCycle - 2 ? [2, 12] : targetSite === "B" ? [5, 17] : [2, 12];
-    case "fake-b-a": return game.cycle < game.attackPlan.commitCycle - 2 ? [4, 17] : targetSite === "A" ? [5, 12] : [4, 17];
+    case "direct-a": return game.attackPlan.adapted && targetSite === "B" ? CROSS_APPROACH_ROUTES.B : APPROACH_ROUTES.A;
+    case "direct-b": return game.attackPlan.adapted && targetSite === "A" ? CROSS_APPROACH_ROUTES.A : APPROACH_ROUTES.B;
+    case "mid-a": return game.cycle <= 2 ? MID_CONTROL_WAYPOINTS : MID_TO_SITE_ROUTES[targetSite];
+    case "mid-b": return game.cycle <= 2 ? MID_CONTROL_WAYPOINTS : MID_TO_SITE_ROUTES[targetSite];
+    case "fake-a-b": return game.cycle < game.attackPlan.commitCycle - 2 ? APPROACH_ROUTES.A : targetSite === "B" ? CROSS_APPROACH_ROUTES.B : APPROACH_ROUTES.A;
+    case "fake-b-a": return game.cycle < game.attackPlan.commitCycle - 2 ? APPROACH_ROUTES.B : targetSite === "A" ? CROSS_APPROACH_ROUTES.A : APPROACH_ROUTES.B;
     case "split-read": {
       if (game.cycle <= 2) {
-        return [2, 4, 5];
+        return SPLIT_SPREAD_WAYPOINTS;
       }
-      return targetSite === "A" ? [2, 12, 8] : [4, 17, 13];
+      return SPLIT_APPROACH_ROUTES[targetSite];
     }
   }
   return [5];
@@ -1363,8 +1569,8 @@ function attackCoreWaypoints(game: GameState): number[] {
 
 function attackMidWaypoints(game: GameState) {
   const phase = attackPlanPhase(game);
-  if (game.cycle <= 2 || (phase === "pressure" && (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a"))) return [5, 6];
-  return game.attackPlan.targetSite === "A" ? [6, 8] : [6, 13];
+  if (game.cycle <= 2 || (phase === "pressure" && (game.attackPlan.kind === "fake-a-b" || game.attackPlan.kind === "fake-b-a"))) return MID_CONTROL_WAYPOINTS;
+  return MID_TO_SITE_ROUTES[game.attackPlan.targetSite];
 }
 
 function nextRouteWaypoint(current: number, route: number[]) {
@@ -1377,25 +1583,22 @@ function attackLurkerWaypoints(game: GameState, agent: Agent) {
   const plan = game.attackPlan;
   if (attackPlanPhase(game) === "postplant") {
     if (game.spike.region !== null) return [game.spike.region];
-    return plan.targetSite === "A" ? [9, 10] : [14, 15];
+    return SITE_REGIONS[plan.targetSite].slice(0, 2);
   }
   if (plan.lurkerMode === "deep-flank") {
-    const route = plan.lurkerProbeSite === "A"
-      ? [2, 12, 11, 10, 7, 13, 14]
-      : [4, 17, 14, 13, 7, 10, 9];
-    return [nextRouteWaypoint(agent.region, route)];
+    return [nextRouteWaypoint(agent.region, LURKER_DEEP_FLANK_ROUTES[plan.lurkerProbeSite])];
   }
   if (plan.lurkerMode === "rotate-call" || plan.lurkerMode === "regroup") {
-    return plan.targetSite === "A" ? [9, 10] : [14, 15];
+    return SITE_REGIONS[plan.targetSite].slice(0, 2);
   }
-  return plan.lurkerProbeSite === "A" ? [2, 12] : [4, 17];
+  return APPROACH_ROUTES[plan.lurkerProbeSite];
 }
 
 function postplantRetakeRoutes(game: GameState, spikeRegion: number) {
   const knownStarts = aiEnemyIntel(game, "attack")
     .filter((enemy) => enemy.agent.alive && enemy.confidence >= 0.45)
     .map((enemy) => enemy.region);
-  const starts = [...new Set(knownStarts.length ? knownStarts : [7])];
+  const starts = [...new Set(knownStarts.length ? knownStarts : [DEFENSE_SPAWN_REGION])];
   return starts
     .map((origin) => shortestPath(origin, spikeRegion))
     .filter((route) => route.length >= 2);
@@ -1421,7 +1624,9 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
   const spikeRegion = game.spike.region;
   const site = siteForRegion(spikeRegion) ?? game.attackPlan.targetSite;
   const waitRange = WEAPONS[agent.weapon].type === "sniper" ? 2 : 1;
-  const backRoute = site === "A" ? [12, 8, 2, 5] : [17, 13, 4, 5];
+  const backRoute = POSTPLANT_BACK_ROUTES[site];
+  // Score each candidate once (decorate-sort-undecorate) instead of recomputing
+  // every metric on every comparator call during the O(n log n) sort.
   const candidates = REGIONS
     .map((region) => region.id)
     .filter((region) => region !== spikeRegion)
@@ -1429,22 +1634,18 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
       const range = distance(region, spikeRegion);
       return range >= 1 && range <= waitRange && !isWaitPathSmokeBlocked(game, region, spikeRegion);
     })
-    .sort((a, b) => {
-      const onSiteA = SITE_REGIONS[site].includes(a) ? 1 : 0;
-      const onSiteB = SITE_REGIONS[site].includes(b) ? 1 : 0;
-      const backA = Math.min(...backRoute.map((region) => distance(a, region)));
-      const backB = Math.min(...backRoute.map((region) => distance(b, region)));
-      const dangerA = knownThreatScoreAtRegion(game, "attack", a);
-      const dangerB = knownThreatScoreAtRegion(game, "attack", b);
-      const exposedA = postplantBodyExposure(game, a, spikeRegion);
-      const exposedB = postplantBodyExposure(game, b, spikeRegion);
-      const laneA = Math.max(0, ...(GRAPH.get(a) ?? []).map((region) => postplantLaneWaitScore(game, a, region, spikeRegion)));
-      const laneB = Math.max(0, ...(GRAPH.get(b) ?? []).map((region) => postplantLaneWaitScore(game, b, region, spikeRegion)));
-      const occupiedA = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === a).length;
-      const occupiedB = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === b).length;
-      return onSiteA * 38 + backA * 9 + dangerA + exposedA * 82 + occupiedA * 12 + aiRecentMovementPenalty(game, agent, a) - laneA
-        - (onSiteB * 38 + backB * 9 + dangerB + exposedB * 82 + occupiedB * 12 + aiRecentMovementPenalty(game, agent, b) - laneB);
-    });
+    .map((region) => {
+      const onSite = SITE_REGIONS[site].includes(region) ? 1 : 0;
+      const back = Math.min(...backRoute.map((target) => distance(region, target)));
+      const danger = knownThreatScoreAtRegion(game, "attack", region);
+      const exposed = postplantBodyExposure(game, region, spikeRegion);
+      const lane = Math.max(0, ...(GRAPH.get(region) ?? []).map((next) => postplantLaneWaitScore(game, region, next, spikeRegion)));
+      const occupied = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === region).length;
+      const score = onSite * 38 + back * 9 + danger + exposed * 82 + occupied * 12 + aiRecentMovementPenalty(game, agent, region) - lane;
+      return { region, score };
+    })
+    .sort((a, b) => a.score - b.score)
+    .map((entry) => entry.region);
   if (!candidates.length) return [spikeRegion];
   const currentHoldDirections = agent.waitDirs.length
     ? agent.waitDirs
@@ -1855,6 +2056,13 @@ function appliedMoveSize(game: GameState, defender: Agent, defenderMoveBonus: nu
   return Math.max(1, finalStats(game, defender).move + defenderMoveBonus);
 }
 
+// Phantom carries no standing move bonus; instead it gets +2 move specifically
+// on the opening round of an engagement (holding or pushing alike), so it never
+// loses value by holding an angle but rewards surviving the first exchange.
+function phantomOpeningMoveBonus(defender: Agent, isFirstRound: boolean) {
+  return defender.weapon === "phantom" && isFirstRound ? 2 : 0;
+}
+
 function appliedDamageProfile(attacker: Agent, defender: Agent, range: number, waiting: boolean, vulnerable = defender.status.vulnerable) {
   const weapon = WEAPONS[attacker.weapon];
   const rangeBonus = weapon.type === "shotgun" && range === 0 ? SHOTGUN_CLOSE_DAMAGE_BONUS : 0;
@@ -2066,7 +2274,9 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   }
   if (game.spike.carrierId === defender.id && game.spike.status === "carried") {
     game.spike = { ...game.spike, status: "dropped", carrierId: null, region: defender.region, actorId: null };
-    game.spikeKnownByDefense = true;
+    // Defense only learns the drop location immediately if they actually witnessed it;
+    // otherwise they must scout the region themselves (see rememberObservedDroppedSpike).
+    game.spikeKnownByDefense = observedRegions(game, "defense").has(defender.region);
     addLog(game, `스파이크가 ${REGIONS.find((region) => region.id === defender.region)?.name}에 떨어졌습니다.`);
     addAnalyticsEvent(game, "attack", "objective", `${defender.region}번 스파이크 드롭 · 회수 작전 전환`);
     addAnalyticsEvent(game, "defense", "objective", `${defender.region}번 스파이크 확보 · 회수 차단 전환`);
@@ -2479,11 +2689,12 @@ function showMovementFx(game: GameState, agent: Agent, path: number[]) {
 function finishMovement(game: GameState, agent: Agent, origin: number, stopped = false) {
   const movementKind = game.pendingMovement?.kind;
   game.pendingMovement = null;
-  agent.status.moveBonus = 0;
+  // Only strip the positive movement boost this move consumed (updraft/gear +1);
+  // negative penalties picked up mid-move (tripwire -1) must survive until turn end.
+  agent.status.moveBonus = Math.min(0, agent.status.moveBonus);
   agent.status.moveRangeBonus = 0;
   agent.status.ignoreGround = false;
   agent.status.highGear = false;
-  agent.status.evadeReady = false;
   if (agent.alive && movementKind !== "forced") recordAiMovementHistory(game, agent, origin);
   if (agent.alive) addLog(game, stopped
     ? `${agent.name}의 이동이 ${regionName(agent.region)}에서 중단되었습니다.`
@@ -3049,7 +3260,8 @@ function aiKnownWaitEntryAssessment(game: GameState, agent: Agent, region: numbe
     const enemy = { ...knownEnemy.agent, region: knownEnemy.region, waitDirs: [...knownEnemy.waitDirs], weapon: knownEnemy.weapon };
     const range = distance(enemy.region, region);
     const waiting = range > 0 || enemy.waitDirs.length > 0;
-    const incoming = calculateShotOdds(game, enemy, enteringAgent, range, waiting, 0, 0);
+    // Entering a fresh region always starts a new encounter, i.e. round 1.
+    const incoming = calculateShotOdds(game, enemy, enteringAgent, range, waiting, 0, phantomOpeningMoveBonus(enteringAgent, true));
     const response = calculateShotOdds(game, enteringAgent, enemy, range, false, 0, 0);
     survivalChance *= Math.max(0, 100 - incoming.killChance) / 100;
     bestBreakChance = Math.max(bestBreakChance, response.killChance + response.expectedDamage / Math.max(1, enemy.hp + enemy.armor) * 35);
@@ -3243,6 +3455,11 @@ function rememberObservedDroppedWeapons(game: GameState, side: Side) {
   game.droppedWeapons.forEach((item) => {
     if (observed.has(item.region) && !item.knownBy.includes(side)) item.knownBy.push(side);
   });
+}
+
+function rememberObservedDroppedSpike(game: GameState) {
+  if (game.spikeKnownByDefense || game.spike.status !== "dropped" || game.spike.region === null) return;
+  if (observedRegions(game, "defense").has(game.spike.region)) game.spikeKnownByDefense = true;
 }
 
 function weaponTacticalValue(weaponId: WeaponId) {
@@ -3488,8 +3705,8 @@ function aiRecoveryAssaultScore(game: GameState, agent: Agent, objectiveRegion: 
     aiRecoveryUnitReadiness(game, { ...b.agent, weapon: b.weapon }) - aiRecoveryUnitReadiness(game, { ...a.agent, weapon: a.weapon }))[0];
   const knownStrongestBlocker = { ...strongestBlocker.agent, weapon: strongestBlocker.weapon };
   const engagementRange = Math.max(0, Math.min(2, distance(strongestBlocker.region, objectiveRegion)));
-  const attackOdds = calculateShotOdds(game, agent, knownStrongestBlocker, engagementRange, false, 0, 0);
-  const holdOdds = calculateShotOdds(game, knownStrongestBlocker, agent, engagementRange, true, 0, 0);
+  const attackOdds = calculateShotOdds(game, agent, knownStrongestBlocker, engagementRange, false, 0, phantomOpeningMoveBonus(knownStrongestBlocker, true));
+  const holdOdds = calculateShotOdds(game, knownStrongestBlocker, agent, engagementRange, true, 0, phantomOpeningMoveBonus(agent, true));
   const friendlyPower = nearbyAllies.reduce((total, ally) => total + aiRecoveryUnitReadiness(game, ally), 0);
   const defenderPower = knownDefenders.reduce((total, defender) => total + aiRecoveryUnitReadiness(game, defender), 0);
   const tradePressure = Math.max(0, nearbyAllies.length - 1) * 5;
@@ -3696,11 +3913,9 @@ function aiObjectiveRegion(game: GameState, side: Side, from: number, intel: AiE
     return [...SITE_REGIONS[threatSite]].sort((a, b) => distance(from, a) - distance(from, b))[0];
   }
   if (intel.length) return [...intel].sort((a, b) => distance(from, a.region) - distance(from, b.region))[0].region;
-  const objectives = [9, 14];
+  const objectives = [SITE_REGIONS.A[0], SITE_REGIONS.B[0]];
   return [...objectives].sort((a, b) => distance(from, a) - distance(from, b))[0];
 }
-
-const AI_WAIT_CHOKE_REGIONS = new Set([2, 4, 5, 6, 8, 9, 12, 13, 14, 17]);
 
 function aiLastMovementOrigin(game: GameState, agent: Agent) {
   ensureAiTacticalState(game);
@@ -3758,7 +3973,7 @@ function aiStrategicWaitScore(game: GameState, agent: Agent, region: number, int
       if (route[1] === region) score += 62;
     }
     if (!intel.length) {
-      const defaultAttackRoute = shortestPath(1, agent.region);
+      const defaultAttackRoute = shortestPath(ATTACK_SPAWN_REGION, agent.region);
       if (defaultAttackRoute.length >= 2 && defaultAttackRoute.at(-2) === region) score += 52;
     }
   }
@@ -3912,14 +4127,11 @@ function defenseThreatStrength(game: GameState, site: "A" | "B") {
 }
 
 function defenseLaneAnchors(lane: TacticalLane) {
-  if (lane === "A") return [10, 9, 11, 12, 8];
-  if (lane === "B") return [13, 14, 15, 16, 17];
-  return [7, 6, 8, 13];
+  return DEFENSE_LANE_ANCHORS[lane];
 }
 
 function defenseFlankWaypoint(game: GameState, agent: Agent, threat: "A" | "B") {
-  const route = threat === "A" ? [13, 17, 5, 2, 12] : [10, 12, 2, 5, 17];
-  return nextRouteWaypoint(agent.region, route);
+  return nextRouteWaypoint(agent.region, DEFENSE_FLANK_ROUTES[threat]);
 }
 
 function defenseRetakeIsActive(game: GameState) {
@@ -4076,10 +4288,10 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
     const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
     if (!spikeActive && laneIndex === laneAgents.length - 1) return defenseLaneAnchors(lane);
     if (defenseShouldFlank(game, agent, threat)) return [defenseFlankWaypoint(game, agent, threat)];
-    return threat === "A" ? [8, 10, 9] : [13, 14, 15];
+    return DEFENSE_FUNNEL_WAYPOINTS[threat];
   }
   if (lane === threat) return defenseLaneAnchors(lane);
-  if (lane === "MID") return threat === "A" ? [8, 10, 9] : [13, 14, 15];
+  if (lane === "MID") return DEFENSE_FUNNEL_WAYPOINTS[threat];
   if (defenseShouldFlank(game, agent, threat)) return [defenseFlankWaypoint(game, agent, threat)];
 
   const strongSiteHitElsewhere = game.defensePlan.strongSite === lane && game.defensePlan.strongSite !== threat;
@@ -4087,7 +4299,7 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
     const laneAgents = defenseLaneAgents(game, lane);
     const laneIndex = laneAgents.findIndex((item) => item.id === agent.id);
     const rotationCount = Math.max(1, Math.floor(laneAgents.length / 2));
-    if (laneIndex < rotationCount) return threat === "A" ? [8, 10] : [13, 14];
+    if (laneIndex < rotationCount) return DEFENSE_ROTATION_WAYPOINTS[threat];
   }
   return defenseLaneAnchors(lane);
 }
@@ -4383,8 +4595,8 @@ function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) 
     const waitPenaltyA = waitA.waitingEnemies.length ? (waitA.acceptable ? 28 - waitA.score * .2 : 160 - waitA.survivalChance) : 0;
     const waitPenaltyB = waitB.waitingEnemies.length ? (waitB.acceptable ? 28 - waitB.score * .2 : 160 - waitB.survivalChance) : 0;
     const guardingDrop = agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null;
-    const territoryA = guardingDrop ? 8 - distance(a, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, 1);
-    const territoryB = guardingDrop ? 8 - distance(b, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, 1);
+    const territoryA = guardingDrop ? 8 - distance(a, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, ATTACK_SPAWN_REGION);
+    const territoryB = guardingDrop ? 8 - distance(b, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, ATTACK_SPAWN_REGION);
     return safetyB * 3 + territoryB - waitPenaltyB - (safetyA * 3 + territoryA - waitPenaltyA);
   })[0];
 }
@@ -4425,11 +4637,11 @@ function aiCombatTradeFollowup(game: GameState, scene: CombatScene, actor: Agent
       && canUseCard(card, ally)
       && cardTargets(game, ally, card).some((region) => distance(region, opponent.region) <= 1));
     if (!canFollow) return best;
-    const odds = calculateShotOdds(game, ally, opponent, range, false, 1, 0);
+    const odds = calculateShotOdds(game, ally, opponent, range, false, 1, phantomOpeningMoveBonus(opponent, true));
     const allyDurability = Math.max(1, ally.hp + ally.armor);
     const holderWaiting = opponent.waitDirs.includes(ally.region) && !isWaitPathSmokeBlocked(game, opponent.region, ally.region);
     const sniperTradeTargetPenalty = WEAPONS[opponent.weapon].type === "sniper";
-    const returnFire = calculateShotOdds(game, opponent, ally, range, holderWaiting, 0, 0, holderWaiting && !sniperTradeTargetPenalty);
+    const returnFire = calculateShotOdds(game, opponent, ally, range, holderWaiting, 0, phantomOpeningMoveBonus(ally, true), holderWaiting && !sniperTradeTargetPenalty);
     const weaponCondition = Math.max(-8, Math.min(12, (WEAPONS[ally.weapon].price - WEAPONS[actor.weapon].price) / 2));
     const tradePriorityValue = 16;
     const sniperTradeCounterValue = sniperTradeTargetPenalty ? (opponent.weapon === "operator" ? 28 : 18) : 0;
@@ -4543,7 +4755,7 @@ function aiCombatOdds(game: GameState, scene: CombatScene, attacker: Agent, defe
     scene.range,
     combatShotIsWaiting(scene, attacker.id),
     attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus,
-    defenderIsMover ? scene.moverMoveBonus : 0,
+    (defenderIsMover ? scene.moverMoveBonus : 0) + phantomOpeningMoveBonus(defender, scene.round === 1),
     combatShotGetsWaitAim(scene, attacker.id),
   );
 }
@@ -4585,7 +4797,7 @@ function addCombatDuelState(states: Map<string, CombatDuelState>, state: CombatD
   else states.set(key, state);
 }
 
-function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: Agent, defender: Agent, firstShot: boolean, defenderVulnerable: boolean) {
+function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: Agent, defender: Agent, firstShot: boolean, defenderVulnerable: boolean, isFirstRound: boolean) {
   const attackerIsMover = attacker.id === scene.mover.id;
   const defenderIsMover = defender.id === scene.mover.id;
   return calculateShotOutcomeProbabilities(
@@ -4595,7 +4807,7 @@ function combatDuelShotOutcomes(game: GameState, scene: CombatScene, attacker: A
     scene.range,
     combatShotIsWaiting(scene, attacker.id),
     firstShot ? attackerIsMover ? scene.moverAimBonus : scene.holderAimBonus : 0,
-    defenderIsMover ? scene.moverMoveBonus : 0,
+    (defenderIsMover ? scene.moverMoveBonus : 0) + phantomOpeningMoveBonus(defender, isFirstRound),
     !firstShot,
     defenderVulnerable,
     combatShotGetsWaitAim(scene, attacker.id, firstShot),
@@ -4619,11 +4831,15 @@ function aiCombatDuelOdds(game: GameState, scene: CombatScene, actor: Agent, opp
   });
 
   for (let exchange = 0; exchange < 64 && states.size; exchange += 1) {
+    // Two sequential shots (attacker then defender) make up one combat round;
+    // simultaneous exchanges advance a full round each time.
+    const roundOffset = scene.simultaneous ? exchange : Math.floor(exchange / 2);
+    const isFirstRound = scene.round + roundOffset === 1;
     const next = new Map<string, CombatDuelState>();
     for (const state of states.values()) {
       if (scene.simultaneous) {
-        const actorOutcomes = combatDuelShotOutcomes(game, scene, actor, opponent, state.actorFirstShot, state.opponentVulnerable);
-        const opponentOutcomes = combatDuelShotOutcomes(game, scene, opponent, actor, state.opponentFirstShot, state.actorVulnerable);
+        const actorOutcomes = combatDuelShotOutcomes(game, scene, actor, opponent, state.actorFirstShot, state.opponentVulnerable, isFirstRound);
+        const opponentOutcomes = combatDuelShotOutcomes(game, scene, opponent, actor, state.opponentFirstShot, state.actorVulnerable, isFirstRound);
         for (const actorOutcome of actorOutcomes) {
           for (const opponentOutcome of opponentOutcomes) {
             const probability = state.probability * actorOutcome.probability * opponentOutcome.probability;
@@ -4651,7 +4867,7 @@ function aiCombatDuelOdds(game: GameState, scene: CombatScene, actor: Agent, opp
       const defender = state.actorTurn ? opponent : actor;
       const firstShot = state.actorTurn ? state.actorFirstShot : state.opponentFirstShot;
       const defenderVulnerable = state.actorTurn ? state.opponentVulnerable : state.actorVulnerable;
-      for (const outcome of combatDuelShotOutcomes(game, scene, attacker, defender, firstShot, defenderVulnerable)) {
+      for (const outcome of combatDuelShotOutcomes(game, scene, attacker, defender, firstShot, defenderVulnerable, isFirstRound)) {
         const probability = state.probability * outcome.probability;
         const actorDurability = state.actorDurability - (state.actorTurn ? 0 : outcome.damage);
         const opponentDurability = state.opponentDurability - (state.actorTurn ? outcome.damage : 0);
@@ -4778,8 +4994,8 @@ function aiShotgunApproachRegion(game: GameState, scene: CombatScene, actor: Age
   const currentReturnFire = aiCombatOdds(game, scene, opponent, actor);
   const retreatAimDelta = actor.status.aimPenalty > 0 ? 0 : -1;
   const retreatMoveDelta = Math.min(-1, actor.status.moveBonus) - actor.status.moveBonus;
-  const closeOdds = calculateShotOdds(game, actor, opponent, 0, false, retreatAimDelta, 0);
-  const closeReturnFire = calculateShotOdds(game, opponent, actor, 0, opponent.waitDirs.length > 0, 0, retreatMoveDelta);
+  const closeOdds = calculateShotOdds(game, actor, opponent, 0, false, retreatAimDelta, phantomOpeningMoveBonus(opponent, scene.round === 1));
+  const closeReturnFire = calculateShotOdds(game, opponent, actor, 0, opponent.waitDirs.length > 0, 0, retreatMoveDelta + phantomOpeningMoveBonus(actor, scene.round === 1));
   const actorDurability = Math.max(1, actor.hp + actor.armor);
   const opponentDurability = Math.max(1, opponent.hp + opponent.armor);
   const currentValue = currentOdds.killChance * 1.4
@@ -4964,7 +5180,7 @@ function aiWatchDirection(game: GameState, agent: Agent, intel: AiEnemyIntel[], 
     const enemyDistanceA = intel.length ? Math.min(...intel.map((item) => distance(a, item.region))) : distance(a, objective);
     const enemyDistanceB = intel.length ? Math.min(...intel.map((item) => distance(b, item.region))) : distance(b, objective);
     const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
-    const likelySource = agent.team === "defense" || (agent.team === "attack" && kind === "trip" && !spikeActive) ? 1 : 7;
+    const likelySource = agent.team === "defense" || (agent.team === "attack" && kind === "trip" && !spikeActive) ? ATTACK_SPAWN_REGION : DEFENSE_SPAWN_REGION;
     const probabilityA = distance(a, likelySource);
     const probabilityB = distance(b, likelySource);
     const siteA = tacticalTarget && siteForRegion(a) === tacticalTarget ? -2 : 0;
@@ -5955,19 +6171,19 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
 
 function autoDeployDefense(game: GameState) {
   const positions = [
-    ...Array(game.defensePlan.distribution.A).fill(10),
-    ...Array(game.defensePlan.distribution.MID).fill(7),
-    ...Array(game.defensePlan.distribution.B).fill(13),
+    ...Array(game.defensePlan.distribution.A).fill(DEFENSE_DEPLOYMENT_BY_LANE.A),
+    ...Array(game.defensePlan.distribution.MID).fill(DEFENSE_DEPLOYMENT_BY_LANE.MID),
+    ...Array(game.defensePlan.distribution.B).fill(DEFENSE_DEPLOYMENT_BY_LANE.B),
   ];
   game.teams.defense.agents.forEach((agent, index) => {
-    agent.region = positions[index] ?? 7;
+    agent.region = positions[index] ?? DEFENSE_SPAWN_REGION;
   });
 }
 
 function autoSetAttackOpeningWaits(game: GameState) {
   const assigned = new Map<number, number>();
   game.teams.attack.agents.forEach((agent) => {
-    const preferred = WEAPONS[agent.weapon].type === "sniper" ? [12, 17, 6, 2, 4, 5] : [2, 4, 5];
+    const preferred = WEAPONS[agent.weapon].type === "sniper" ? SNIPER_OPENING_WAIT_PREFERENCE : RIFLE_OPENING_WAIT_PREFERENCE;
     const legal = waitTargetsFor(agent);
     const target = preferred
       .filter((region) => legal.includes(region))
@@ -6055,7 +6271,7 @@ interface DeploymentScreenProps {
 
 function DeploymentScreen({ game, selectedId, onSelect, onPlace, onBack, onStart }: DeploymentScreenProps) {
   const defenders = game.teams.defense.agents;
-  const allowed = [7, 10, 13];
+  const allowed = DEFENSE_DEPLOYMENT_REGIONS;
   return (
     <main className="setup-screen deployment-screen">
       <header className="setup-topbar"><button onClick={onBack}>← 수비 구매</button><div><span>STEP 03</span><strong>수비팀 사전 배치</strong></div><span className="deck-locked">15장 덱 잠금 완료</span></header>
@@ -6301,7 +6517,6 @@ export default function Home() {
   const [setupAgentId, setSetupAgentId] = useState<string | null>(null);
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [showHelp, setShowHelp] = useState(false);
-  const [showShop, setShowShop] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem("protocol-grid-sound-enabled") !== "false");
   const [soundVolume, setSoundVolume] = useState(() => {
     if (typeof window === "undefined") return 0.5;
@@ -6348,19 +6563,19 @@ export default function Home() {
   const mapWaitCones = useMemo(() => waitConeViews(game, visibilityContext), [game, visibilityContext]);
   const viewerLog = useMemo(() => {
     const canSeeSpike = spikeVisibleTo(game, viewerSide, spectatorMode);
-    const hiddenAgentNames = aiSide ? game.teams[aiSide].agents.map((agent) => agent.name) : [];
+    // Only hide a name if it belongs exclusively to the AI's roster — a name shared
+    // with the human's own team must never be filtered out of their own combat log.
+    const hiddenAgentNames = aiSide
+      ? game.teams[aiSide].agents
+        .map((agent) => agent.name)
+        .filter((name) => !game.teams[otherSide(aiSide)].agents.some((ally) => ally.name === name))
+      : [];
     return game.log.filter((entry) => {
       if (!canSeeSpike && /(스파이크|설치 중|설치 완료|반 해체|최종 해체)/.test(entry)) return false;
       if (spectatorMode || !aiSide) return true;
       return !hiddenAgentNames.some((name) => entry.includes(name)) && !entry.includes(`${SIDE_LABEL[aiSide]} AI`);
     });
   }, [game, aiSide, spectatorMode, viewerSide]);
-
-  useEffect(() => {
-    if (!isAiControlledTurn) return;
-    const timer = window.setTimeout(() => setShowShop(false), 0);
-    return () => window.clearTimeout(timer);
-  }, [isAiControlledTurn]);
 
   useEffect(() => {
     const unlock = () => unlockTacticalAudio();
@@ -6754,7 +6969,6 @@ export default function Home() {
     setSpectatorStep(0);
     setDeploymentAgentId(null);
     setSetupAgentId(null);
-    setShowShop(false);
     setShowHelp(false);
     setStage("title");
   };
@@ -6773,7 +6987,6 @@ export default function Home() {
     setHumanSide(nextHumanSide);
     setSetupAgentId(nextSetupTeam.agents[0]?.id ?? null);
     setDeploymentAgentId(nextAiSide === "defense" ? null : futureDefenseTeam.agents[0]?.id ?? null);
-    setShowShop(false);
     setStage(spectatorMode ? "play" : nextAiSide === "defense" ? "buy_attack" : "buy_defense");
   };
 
@@ -7313,32 +7526,6 @@ export default function Home() {
     });
   };
 
-  const buyWeapon = (weapon: Weapon) => {
-    if (!selectedAgent || activeTeam.buyLocked || weapon.unlock > game.matchRound || activeTeam.funds < weapon.price) return;
-    mutate((draft) => {
-      const team = draft.teams[draft.turnSide];
-      const agent = getAgent(draft, selectedAgent.id);
-      if (!agent || team.funds < weapon.price || team.buyLocked) return;
-      agent.weapon = weapon.id;
-      team.funds -= weapon.price;
-      addLog(draft, `${agent.name} 구매: ${weapon.name} · 팀 자금 ${team.funds}원.`);
-    });
-  };
-
-  const buyArmor = (type: "light" | "regen" | "heavy", price: number, value: number) => {
-    if (!selectedAgent || activeTeam.buyLocked || activeTeam.funds < price) return;
-    mutate((draft) => {
-      const team = draft.teams[draft.turnSide];
-      const agent = getAgent(draft, selectedAgent.id);
-      if (!agent || team.funds < price || team.buyLocked) return;
-      agent.armorType = type;
-      agent.armor = value;
-      agent.armorDamaged = false;
-      team.funds -= price;
-      addLog(draft, `${agent.name} 방어구 구매 · 팀 자금 ${team.funds}원.`);
-    });
-  };
-
   const cancelTargeting = () => mutate((draft) => { draft.targeting = null; const card = draft.teams[draft.turnSide].hand.find((item) => item.id === draft.selectedCardId); if (!card?.used) draft.selectedCardId = null; });
   const skipWait = () => mutate((draft) => { const agent = getAgent(draft, draft.pendingWait); if (agent) clearWait(agent); draft.pendingWait = null; });
   const engageOptionalContact = (enemyId: string) => mutate((draft) => acceptPendingContact(draft, enemyId));
@@ -7370,7 +7557,7 @@ export default function Home() {
     }
     scene.evaded = false;
     const shooterIsMover = shooter.id === scene.mover.id;
-    const targetMoveBonus = target.id === scene.mover.id ? scene.moverMoveBonus : 0;
+    const targetMoveBonus = (target.id === scene.mover.id ? scene.moverMoveBonus : 0) + phantomOpeningMoveBonus(target, scene.round === 1);
     const waitingShot = combatShotIsWaiting(scene, shooter.id);
     const shot = makeShot(draft, shooter, target, scene.range, waitingShot, shooterIsMover ? scene.moverAimBonus : scene.holderAimBonus, targetMoveBonus, combatShotGetsWaitAim(scene, shooter.id));
     if (shooterIsMover) scene.moverShotsFired += 1;
@@ -7396,7 +7583,7 @@ export default function Home() {
     }
     const targetBefore = { hp: target.hp, armor: target.armor };
     const aimRoll = roll(5);
-    const moveSize = Math.max(1, finalStats(draft, target).move + scene.moverMoveBonus);
+    const moveSize = Math.max(1, finalStats(draft, target).move + scene.moverMoveBonus + phantomOpeningMoveBonus(target, scene.round === 1));
     const moveRoll = roll(moveSize);
     const hit = aimRoll - moveRoll > 0;
     const vulnerableBonus = target.status.vulnerable ? 1 : 0;
@@ -7511,17 +7698,19 @@ export default function Home() {
     let holderShot: ShotResult | null = null;
     const moverRetreatMoveBonus = moverChoice.type === "retreat" ? 2 : 0;
     const holderRetreatMoveBonus = holderChoice.type === "retreat" ? 2 : 0;
+    const holderPhantomBonus = phantomOpeningMoveBonus(holder, scene.round === 1);
+    const moverPhantomBonus = phantomOpeningMoveBonus(mover, scene.round === 1);
     if (moverChoice.type === "attack" && scene.canMoverAttack) {
       if (holder.status.evadeReady) { holder.status.evadeReady = false; scene.evaded = true; lines.push(`${holder.name} 회피`); }
       else {
-        moverShot = makeShot(draft, mover, holder, scene.range, combatShotIsWaiting(scene, mover.id), scene.moverAimBonus, holderRetreatMoveBonus, combatShotGetsWaitAim(scene, mover.id));
+        moverShot = makeShot(draft, mover, holder, scene.range, combatShotIsWaiting(scene, mover.id), scene.moverAimBonus, holderRetreatMoveBonus + holderPhantomBonus, combatShotGetsWaitAim(scene, mover.id));
         scene.moverShotsFired += 1;
       }
     }
     if (holderChoice.type === "attack") {
       if (mover.status.evadeReady) { mover.status.evadeReady = false; scene.evaded = true; lines.push(`${mover.name} 회피`); }
       else {
-        holderShot = makeShot(draft, holder, mover, scene.range, combatShotIsWaiting(scene, holder.id), scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus, combatShotGetsWaitAim(scene, holder.id));
+        holderShot = makeShot(draft, holder, mover, scene.range, combatShotIsWaiting(scene, holder.id), scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus + moverPhantomBonus, combatShotGetsWaitAim(scene, holder.id));
         scene.holderShotsFired += 1;
       }
     }
@@ -7780,6 +7969,7 @@ export default function Home() {
       refreshAttackOperatorResponse(draft);
     } else updateDefensePlanReadout(draft);
     rememberObservedDroppedWeapons(draft, side);
+    if (side === "defense") rememberObservedDroppedSpike(draft);
     const pendingShock = draft.aftershocks
       .filter((effect) => effect.owner !== side && draft.teamTurns[side] >= effect.readyOnTurn)
       .flatMap((effect) => effect.targetIds.map((agentId) => ({ effect, agent: getAgent(draft, agentId) })))
@@ -8167,7 +8357,7 @@ export default function Home() {
       combatScene.range,
       combatShotIsWaiting(combatScene, combatActor.id),
       combatActorIsMover ? combatScene.moverAimBonus : combatScene.holderAimBonus,
-      combatOpponent.id === combatScene.mover.id ? combatScene.moverMoveBonus : 0,
+      (combatOpponent.id === combatScene.mover.id ? combatScene.moverMoveBonus : 0) + phantomOpeningMoveBonus(combatOpponent, combatScene.round === 1),
       combatShotGetsWaitAim(combatScene, combatActor.id),
     )
     : null;
@@ -8288,9 +8478,6 @@ export default function Home() {
               {game.teams[otherSide(viewerSide)].agents.map((agent) => { const revealed = observed.has(agent.region) || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); return <i key={agent.id} className={`${agent.alive ? "" : "down"} ${revealed ? "detected" : ""}`} title={`${agent.name}${revealed ? " · 위치 공개" : ""}`} />; })}
             </div>
           </div>
-          <button className="shop-trigger" disabled={isAiControlledTurn || viewerTeam.buyLocked || !!game.winner} onClick={() => setShowShop(true)}>
-            <span>장비 구매</span><small>{isAiControlledTurn ? "상대 작전 중" : viewerTeam.buyLocked ? "행동 시작 후 잠김" : "무기 · 방어구"}</small>
-          </button>
           <div className="deck-status"><span>덱 {viewerTeam.deck.length}</span><span>버림 {viewerTeam.discard.length}</span><span>손패 5</span></div>
         </aside>
 
@@ -8609,14 +8796,7 @@ export default function Home() {
         {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>{combatRetreatLocked ? "첫 공격을 완료해야 이탈할 수 있습니다" : "이번 교전 차례를 선택하세요"}</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>이번 사격 · 기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>{combatScene.retreatLockedIds.includes(combatActor.id) ? "대기 구역 확보 시도 중" : combatScene.range === 0 ? "거리 0 첫 교전 사이클" : "거리 1 선택 교전의 첫 공격 전"}</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
-      {showShop && !isAiControlledTurn && <div className="modal-backdrop" onMouseDown={() => setShowShop(false)}><div className="shop-modal" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-head"><div><span className="eyebrow">TEAM ARMORY</span><h2>{selectedAgent?.name} 장비 구매</h2></div><div><strong>¤ {activeTeam.funds}</strong><button onClick={() => setShowShop(false)}>닫기</button></div></div>
-        <p className="shop-note">매치 1라운드: 클래식과 셰리프만 해금 · 구매 자금은 팀 공동입니다. 기존 장비 환불은 없습니다.</p>
-        <div className="weapon-grid">{Object.values(WEAPONS).map((weapon) => <button key={weapon.id} className={selectedAgent?.weapon === weapon.id ? "equipped" : ""} disabled={weapon.unlock > game.matchRound || weapon.price > activeTeam.funds || activeTeam.buyLocked} onClick={() => buyWeapon(weapon)} title={weaponRuleSummary(weapon)}><WeaponSilhouette weapon={weapon.id} /><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "RFL"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{weapon.price ? `${weapon.price}원` : "기본"}</b></button>)}</div>
-        <h3>방어구</h3><div className="armor-grid"><button onClick={() => buyArmor("light", 2, 1)} disabled={activeTeam.funds < 2}><strong>소형 방어구</strong><small>방어 1 · 2원</small></button><button onClick={() => buyArmor("regen", 4, 1)} disabled={activeTeam.funds < 4}><strong>회복 방어구</strong><small>팀 턴 종료 회복 · 4원</small></button><button onClick={() => buyArmor("heavy", 6, 2)} disabled={activeTeam.funds < 6}><strong>대형 방어구</strong><small>방어 2 · 6원</small></button></div>
-      </div></div>}
-
-      {showHelp && <div className="modal-backdrop" onMouseDown={() => setShowHelp(false)}><div className="rules-modal" onMouseDown={(event) => event.stopPropagation()}>
+      {showHelp &&<div className="modal-backdrop" onMouseDown={() => setShowHelp(false)}><div className="rules-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">FIELD MANUAL // V0.1</span><h2>핵심 규칙</h2></div><button onClick={() => setShowHelp(false)}>닫기</button></div>
         <div className="rules-grid">
           <article><b>01</b><h3>턴</h3><p>수비 구매 → 수비 배치 → 공격 구매 → 공격 본진 대기 설정 후 수비가 먼저 행동합니다. 공격 요원은 1번에 고정된 채 초반 진입로를 대기합니다.</p></article>
