@@ -844,7 +844,7 @@ const skill = (id: string, name: string, price: string, target: SkillTarget, des
 const AGENTS: Record<string, AgentTemplate> = {
   "제트": { name: "제트", role: "duelist", skills: [skill("tailwind", "순풍", "2원 · 1회", "self", "다음 최초 교전의 총격 전에 인접 구역으로 이동합니다."), skill("updraft", "상승 기류", "1원 · 2회", "self", "다음 이동 거리와 무빙이 1 증가합니다.")] },
   "레이즈": { name: "레이즈", role: "duelist", skills: [skill("paint", "페인트탄", "2원 · 1회", "adjacent", `인접 구역의 적 모두에게 피해 ${SKILL_DAMAGE.paint}, 설치물을 파괴합니다.`), skill("blast", "폭발 팩", "1원 · 2회", "adjacent", "인접 구역으로 강제 이동하며 대기를 해제합니다.")] },
-  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", `구역에 다음 턴까지 피해 ${SKILL_DAMAGE.hot}의 불길을 만듭니다.`)] },
+  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", `구역에 상대 턴이 끝날 때까지 불길을 만듭니다. 적은 닿는 순간과 그 구역에서 자신의 턴이 끝날 때 각각 피해 ${SKILL_DAMAGE.hot}, 피닉스 본인은 같은 방식으로 체력 ${SKILL_DAMAGE.hot}을 회복합니다.`)] },
   "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "구역 적의 우선도 숫자를 1 높입니다.")] },
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "2원 · 1회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
@@ -2536,6 +2536,11 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
   let stopped = false;
   const fire = game.fires.find((zone) => zone.owner === enemy && zone.region === to);
   if (fire) applyDamage(game, getAgent(game, fire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 진입");
+  const ownFire = game.fires.find((zone) => zone.owner === agent.team && zone.region === to);
+  if (ownFire && agent.name === "피닉스" && agent.hp < AGENT_MAX_HP) {
+    agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
+    addLog(game, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
+  }
 
   const trip = game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === from && item.to === to)
     ?? game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === to && item.to === from);
@@ -5544,13 +5549,20 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
 
       if (definition.id === "hot") {
         const enemyRegion = currentAndAdjacent
-          .map((region) => ({ region, count: intel.filter((item) => item.region === region).length }))
+          .map((region) => ({ region, count: exactIntel.filter((item) => item.region === region).length }))
           .sort((a, b) => b.count - a.count)[0];
         const canHoldForHealing = agent.hp < AGENT_MAX_HP && !aiRetreatReentryIsUrgent(game, agent);
         const target = canHoldForHealing ? agent.region : enemyRegion?.count ? enemyRegion.region : null;
         if (target === null || game.fires.some((fire) => fire.owner === side && fire.region === target)) continue;
         if (!begin()) return true;
         game.fires.push({ id: `ai-hot-${game.turnSerial}-${target}`, owner: side, ownerAgentId: agent.id, region: target, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
+        game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target).forEach((enemy) => {
+          applyDamage(game, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉");
+        });
+        if (target === agent.region && agent.hp < AGENT_MAX_HP) {
+          agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
+          addLog(game, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
+        }
         finish(target);
         return true;
       }
@@ -7220,6 +7232,11 @@ export default function Home() {
           break;
         case "hot":
           draft.fires.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-start" });
+          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉"));
+          if (region === agent.region && agent.hp < AGENT_MAX_HP) {
+            agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
+            addLog(draft, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
+          }
           break;
         case "relay":
           enemies.forEach((enemy) => {
@@ -7491,6 +7508,11 @@ export default function Home() {
         if (standingInOwnFire) {
           agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
           addLog(draft, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
+        }
+        const enemyFire = agent.alive ? draft.fires.find((fire) => fire.owner !== endingSide && fire.region === agent.region) : undefined;
+        if (enemyFire) {
+          applyDamage(draft, getAgent(draft, enemyFire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 지속 피해");
+          addLog(draft, `${agent.name}가 불길 속에서 턴을 마쳐 피해를 입었습니다.`);
         }
         agent.status.aimPenalty = 0;
         agent.status.priorityPenalty = 0;
