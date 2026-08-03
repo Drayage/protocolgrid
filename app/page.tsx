@@ -235,6 +235,9 @@ interface TimedStatusEffect {
   consumeOnAttack?: boolean;
   consumeOnDefend?: boolean;
   consumeOnCombatEnd?: boolean;
+  // Survives through the owner's opponent's next turn instead of being wiped
+  // at the end of the owner's own turn (used by curveball/relay bolt).
+  expiresEnemyTurn?: number;
 }
 
 interface EnemyMemory {
@@ -860,14 +863,14 @@ const skill = (id: string, name: string, price: string, target: SkillTarget, des
 const AGENTS: Record<string, AgentTemplate> = {
   "제트": { name: "제트", role: "duelist", skills: [skill("tailwind", "순풍", "2원 · 1회", "self", "다음 최초 교전의 총격 전에 인접 구역으로 이동합니다."), skill("updraft", "상승 기류", "1원 · 2회", "self", "다음 이동 거리와 무빙이 1 증가합니다.")] },
   "레이즈": { name: "레이즈", role: "duelist", skills: [skill("paint", "페인트탄", "2원 · 1회", "adjacent", `인접 구역의 적 모두에게 피해 ${SKILL_DAMAGE.paint}, 설치물을 파괴합니다.`), skill("blast", "폭발 팩", "1원 · 2회", "adjacent", "인접 구역으로 강제 이동하며 대기를 해제합니다.")] },
-  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", `구역에 상대 턴이 끝날 때까지 불길을 만듭니다. 적은 닿는 순간과 그 구역에서 자신의 턴이 끝날 때 각각 피해 ${SKILL_DAMAGE.hot}, 피닉스 본인은 같은 방식으로 체력 ${SKILL_DAMAGE.hot}을 회복합니다.`)] },
-  "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "구역 적의 우선도 숫자를 1 높입니다.")] },
+  "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "상대 턴이 끝날 때까지 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", `구역에 상대 턴이 끝날 때까지 불길을 만듭니다. 적은 닿는 순간과 그 구역에서 자신의 턴이 끝날 때 각각 피해 ${SKILL_DAMAGE.hot}, 피닉스 본인은 같은 방식으로 체력 ${SKILL_DAMAGE.hot}을 회복합니다.`)] },
+  "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "상대 턴이 끝날 때까지 구역 적의 우선도 숫자를 1 높입니다.")] },
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "2원 · 1회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
   "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 이내 구역을 지정합니다. 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.shock}(탐지 상태면 ${SKILL_DAMAGE.shock + 1}), 설치물을 파괴합니다.`)] },
-  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "range2", `거리 2 이내 구역을 지정해 채널링합니다. 준비 중에는 무빙 -1, 우선도 +2, 이동하면 취소됩니다. 목표는 상대에게 보이지 않으며, 내 다음 턴이 시작할 때 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.aftershock}를 입힙니다.`)] },
-  "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "adjacent", "인접 구역을 하나 고르고, 그 구역에서 다시 인접 구역 하나를 골라 현재-1차-2차를 잇는 연결 2개에 연막을 겁니다. 내 다음 턴이 끝날 때까지 유지됩니다."), skill("stim", "전투 자극제", "2원 · 1회", "adjacent", "인접 구역에 자극제 신호기를 설치합니다(내 다음 턴이 끝날 때까지 유지). 신호기에 닿은 아군은 각자 첫 교전이 끝날 때까지 에임 +1, 무빙 +1을 받습니다.")] },
-  "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "사거리 제한 없이 구역 하나를 완전히 은신시킵니다(내 다음 턴이 끝날 때까지). 안팎 모두 서로 보이지 않지만 이동은 가능하며, 안에 있는 적 구역으로 들어가면 거리 0 교전이 벌어집니다. 이때 안에 있던 쪽은 우선도 페널티를, 탐지되지 않은 상대를 쏘는 쪽은 에임 -2를 받습니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
+  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "2원 · 1회", "range2", `거리 2 이내 구역을 지정해 채널링합니다. 준비 중에는 무빙 -1, 우선도 +2, 이동하면 취소됩니다. 목표는 상대에게 보이지 않으며, 내 다음 턴이 시작할 때 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.aftershock}를 입힙니다.`)] },
+  "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "adjacent", "인접 구역을 하나 고르고, 그 구역에서 다시 인접 구역 하나를 골라 현재-1차-2차를 잇는 연결 2개에 연막을 겁니다. 사용 후 상대 턴이 세 번째로 끝날 때까지 유지됩니다."), skill("stim", "전투 자극제", "2원 · 1회", "adjacent", "인접 구역에 자극제 신호기를 설치합니다(내 다음 턴이 끝날 때까지 유지). 신호기에 닿은 아군은 각자 첫 교전이 끝날 때까지 에임 +1, 무빙 +1을 받습니다.")] },
+  "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "사거리 제한 없이 구역 하나를 완전히 은신시킵니다(사용 후 상대 턴이 세 번째로 끝날 때까지 유지). 안팎 모두 서로 보이지 않지만 이동은 가능하며, 안에 있는 적 구역으로 들어가면 거리 0 교전이 벌어집니다. 이때 안에 있던 쪽은 우선도가 유리해지고, 탐지되지 않은 상대를 쏘는 쪽은 에임 -2를 받습니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
 };
 
 const AGENT_ART_KEY: Record<string, string> = {
@@ -5636,7 +5639,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.teams[otherSide(side)].agents
           .filter((enemy) => enemy.alive && (enemy.region === target.region || enemy.waitDirs.includes(target.region)))
-          .forEach((enemy) => game.statusEffects.push({ id: `ai-curve-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
+          .forEach((enemy) => game.statusEffects.push({ id: `ai-curve-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 }));
         finish(target.region);
         return true;
       }
@@ -5668,7 +5671,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!target || !target.targets.length) continue;
         if (!begin()) return true;
         target.targets.forEach(({ agent: enemy }) => {
-          if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) game.statusEffects.push({ id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "concussed", priorityPenalty: 1 });
+          if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) game.statusEffects.push({ id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "concussed", priorityPenalty: 1, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 });
         });
         finish(target.region);
         return true;
@@ -7357,7 +7360,7 @@ export default function Home() {
         }
         case "curve": {
           const curveTargets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && (enemy.region === region || enemy.waitDirs.includes(region)));
-          curveTargets.forEach((enemy) => draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
+          curveTargets.forEach((enemy) => draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 }));
           addLog(draft, `커브볼이 ${regionName(region)} 내부와 해당 구역을 대기 중인 적 ${curveTargets.length}명에게 적용됐습니다.`);
           break;
         }
@@ -7378,7 +7381,7 @@ export default function Home() {
         }
         case "relay":
           enemies.forEach((enemy) => {
-            if (!draft.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "concussed", priorityPenalty: 1 });
+            if (!draft.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "concussed", priorityPenalty: 1, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 });
           });
           break;
         case "trip":
@@ -7664,7 +7667,9 @@ export default function Home() {
           agent.detectedExpiresTeamTurn = null;
         }
       });
-      draft.statusEffects = draft.statusEffects.filter((effect) => effect.owner !== endingSide || effect.kind === "exposed");
+      draft.statusEffects = draft.statusEffects.filter((effect) => effect.owner !== endingSide || effect.kind === "exposed" || effect.expiresEnemyTurn !== undefined);
+      draft.statusEffects = draft.statusEffects.filter((effect) =>
+        !(effect.expiresEnemyTurn !== undefined && otherSide(effect.owner) === endingSide && draft.teamTurns[endingSide] >= effect.expiresEnemyTurn));
       draft.smokes = draft.smokes.filter((smoke) => !(otherSide(smoke.owner) === endingSide && draft.teamTurns[endingSide] >= smoke.expiresEnemyTurn));
       drawFive(endingTeam, draft.cycle * 31 + (endingSide === "attack" ? 7 : 3));
       draft.trade = [];
