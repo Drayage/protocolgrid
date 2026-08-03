@@ -38,7 +38,7 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /plantsThisRound \* 5/);
   assert.match(page, /defusesThisRound \* 5/);
   assert.match(page, /expiresOn: "owner-start"/);
-  assert.match(page, /expiresOn: "owner-end"/);
+  assert.match(page, /expiresOn: "enemy-end"/);
   assert.match(page, /candidateDeployableIds/);
   assert.match(page, /AiController/);
   assert.match(page, /combat-turn-banner/);
@@ -240,8 +240,9 @@ test("Phoenix holds healing fire while Omen teleports only into a covered empty 
   assert.match(page, /function aiShadowStepDestination/);
   assert.match(page, /const exposedEnemies = exactIntel\.filter/);
   assert.match(page, /const activeHolds = exactIntel\.filter/);
-  assert.match(page, /if \(occupied \|\| exposedEnemies\.length \|\| activeHolds\.length\) return null/);
-  assert.match(page, /progress \* 6 \+ smokeCover \* 5 \+ support \* 2/);
+  assert.match(page, /if \(occupied \|\| activeHolds\.length\) return null/);
+  assert.match(page, /if \(!aiKnownWaitEntryAssessment\(game, agent, region, false\)\.acceptable\) return null/);
+  assert.match(page, /progress \* 6 \+ smokeCover \* 5 \+ \(ownAmbushCover \? 16 : 0\) \+ flankBlockers\.length \* 12 \+ support \* 2/);
   assert.match(page, /const destination = aiShadowStepDestination\(game, agent, objective, intel\)/);
   assert.doesNotMatch(page, /const enemyA = exactIntel\.some\(\(item\) => item\.region === a\) \? -4 : 0/);
 });
@@ -260,7 +261,7 @@ test("AI compares real combat odds and lets an isolated shotgun close distance t
   assert.match(page, /const combatLossChance = duelOdds\.actorFirstDeath \+ duelOdds\.mutualDeath \* \.5/);
   assert.match(page, /function aiShotgunApproachRegion/);
   assert.match(page, /WEAPONS\[actor\.weapon\]\.type !== "shotgun" \|\| scene\.range !== 1/);
-  assert.match(page, /nearbyExactEnemies\.length !== 1/);
+  assert.match(page, /if \(otherThreats\.length\) return null/);
   assert.match(page, /const retreatAimDelta = actor\.status\.aimPenalty > 0 \? 0 : -1/);
   assert.match(page, /const retreatMoveDelta = Math\.min\(-1, actor\.status\.moveBonus\) - actor\.status\.moveBonus/);
   assert.match(page, /const closeSurvival = Math\.max\(0, 100 - closeReturnFire\.killChance\)/);
@@ -874,7 +875,7 @@ test("four health, two armor, weapons, and utility share the six-durability bala
   assert.match(page, /paint: 2,[\s\S]*hot: 1,[\s\S]*shock: 1,[\s\S]*aftershock: 4,[\s\S]*turret: 2/);
   assert.match(page, /hp: AGENT_MAX_HP/);
   assert.match(page, /agent\.hp = AGENT_MAX_HP/);
-  assert.match(page, /Math\.min\(AGENT_MAX_HP, agent\.hp \+ 1\)/);
+  assert.match(page, /function applyHeal\(game: GameState, agent: Agent, amount: number, label: string\)/);
 });
 
 test("death selection, objective intel, and dropped weapons obey the active viewer", async () => {
@@ -899,7 +900,7 @@ test("combat odds, aftershock damage, condition badges, and weapon silhouettes s
   assert.match(page, /for \(let aimRoll = 1; aimRoll <= aim; aimRoll \+= 1\)/);
   assert.match(page, /combatAttackPreview\.hitChance/);
   assert.match(page, /combatAttackPreview\.expectedDamage/);
-  assert.match(page, /applyDamage\(draft, caster, enemy, SKILL_DAMAGE\.aftershock, "여진 폭발"\)/);
+  assert.match(page, /applyDamage\(draft, caster, enemy, SKILL_DAMAGE\.aftershock, "여진 폭발", true\)/);
   assert.match(page, /function AgentStatusBadges/);
   assert.match(page, /effect\.kind === "blind"/);
   assert.match(page, /effect\.kind === "concussed"/);
@@ -922,7 +923,7 @@ test("revised utility rules resolve tailwind before gunfire and use current sigh
   assert.match(page, /function reconArrowWatcher/);
   assert.match(page, /enemy\.alive && enemy\.waitDirs\.includes\(targetRegion\)/);
   assert.match(page, /addTrade\(draft, \{ enemyId: waitingEnemy\.id, team: agent\.team, sourceId: agent\.id \}\);[\s\S]{0,100}rememberEnemy\(draft, agent\.team, waitingEnemy\)/);
-  assert.match(page, /case "shock":[\s\S]{0,120}enemies\.forEach\(\(enemy\) => applyDamage\(draft, agent, enemy, SKILL_DAMAGE\.shock \+ \(enemy\.detected \? 1 : 0\), "충격 화살"\)\)/);
+  assert.match(page, /case "shock":[\s\S]{0,120}enemies\.forEach\(\(enemy\) => applyDamage\(draft, agent, enemy, SKILL_DAMAGE\.shock \+ \(enemy\.detected \? 1 : 0\), "충격 화살", true\)\)/);
   assert.match(page, /draft\.deployables = draft\.deployables\.filter\(\(item\) => item\.region !== region \|\| item\.owner === agent\.team\);/);
 });
 

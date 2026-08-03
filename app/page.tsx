@@ -213,8 +213,11 @@ interface SmokeEffect {
   key: string;
   region?: number;
   owner: Side;
-  expiresOwnerTurn: number;
-  expiresOn: "owner-end";
+  // Smoke/dark outlast the caster's own turns: it survives three of the
+  // enemy's turns after casting, so expiry is checked against the enemy's
+  // turn count rather than the owner's.
+  expiresEnemyTurn: number;
+  expiresOn: "enemy-end";
   sourceAgentId: string;
   sourceSkill: "smoke" | "dark";
 }
@@ -320,6 +323,14 @@ interface MovementFx {
   agentName: string;
   team: Side;
   path: number[];
+}
+
+interface FloatingNumberFx {
+  id: string;
+  agentId: string;
+  region: number;
+  amount: number;
+  kind: "damage" | "heal";
 }
 
 interface KillHighlight {
@@ -573,6 +584,7 @@ interface GameState {
   lastSkillFx: SkillFx | null;
   lastMovementFx: MovementFx | null;
   postCombatMovementFxQueue: MovementFx[];
+  floatingNumbers: FloatingNumberFx[];
   turnKillCounts: Record<string, number>;
   lastKillFx: KillHighlight | null;
   roundKillHighlights: KillHighlight[];
@@ -1110,6 +1122,7 @@ function createInitialGame(
     lastSkillFx: null,
     lastMovementFx: null,
     postCombatMovementFxQueue: [],
+    floatingNumbers: [],
     turnKillCounts: {},
     lastKillFx: null,
     roundKillHighlights: [],
@@ -1260,6 +1273,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.lastSkillFx = null;
   game.lastMovementFx = null;
   game.postCombatMovementFxQueue = [];
+  game.floatingNumbers = [];
   game.turnKillCounts = {};
   game.lastKillFx = null;
   game.roundKillHighlights = [];
@@ -2242,7 +2256,22 @@ function applyStimBuff(game: GameState, agent: Agent) {
   game.statusEffects.push({ id: `stimmed-${game.turnSerial}-${agent.id}`, owner: agent.team, targetId: agent.id, kind: "stimmed", aimBonus: 1, moveBonus: 1, consumeOnCombatEnd: true });
 }
 
-function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, damage: number, label: string) {
+function pushFloatingNumber(game: GameState, agent: Agent, amount: number, kind: "damage" | "heal") {
+  game.floatingNumbers = [
+    ...game.floatingNumbers,
+    { id: `fx-${Date.now()}-${game.floatingNumbers.length}-${agent.id}`, agentId: agent.id, region: agent.region, amount, kind },
+  ];
+}
+
+function applyHeal(game: GameState, agent: Agent, amount: number, label: string) {
+  const healed = Math.min(AGENT_MAX_HP, agent.hp + amount) - agent.hp;
+  if (healed <= 0) return;
+  agent.hp += healed;
+  addLog(game, `${agent.name}가 ${label}에서 체력 ${healed}을 회복했습니다.`);
+  pushFloatingNumber(game, agent, healed, "heal");
+}
+
+function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, damage: number, label: string, showFx = false) {
   if (damage <= 0 || !defender.alive) return;
   if (defender.status.vulnerable) {
     damage += 1;
@@ -2255,6 +2284,7 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   defender.hp -= damage - armorDamage;
   if (attacker) game.analytics[attacker.team].damage += Math.min(durabilityBefore, damage);
   addLog(game, `${label} — ${defender.name} 피해 ${damage} (체력 ${Math.max(0, defender.hp)} / 방어 ${defender.armor})`);
+  if (showFx) pushFloatingNumber(game, defender, damage, "damage");
   if (defender.hp > 0) return;
   defender.hp = 0;
   defender.alive = false;
@@ -2559,12 +2589,9 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
   const enemy = otherSide(agent.team);
   let stopped = false;
   const fire = game.fires.find((zone) => zone.owner === enemy && zone.region === to);
-  if (fire) applyDamage(game, getAgent(game, fire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 진입");
+  if (fire) applyDamage(game, getAgent(game, fire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 진입", true);
   const ownFire = game.fires.find((zone) => zone.owner === agent.team && zone.region === to);
-  if (ownFire && agent.name === "피닉스" && agent.hp < AGENT_MAX_HP) {
-    agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
-    addLog(game, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
-  }
+  if (ownFire && agent.name === "피닉스") applyHeal(game, agent, 1, "불길");
   if (game.stims.some((zone) => zone.owner === agent.team && zone.region === to)) {
     applyStimBuff(game, agent);
     addLog(game, `${agent.name}가 자극제 신호기에 닿아 다음 교전까지 에임+1, 무빙+1을 받습니다.`);
@@ -2599,7 +2626,9 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
   }
 
   const turret = game.deployables.find((item) => item.kind === "turret" && item.owner === enemy && item.to === to);
-  if (turret) {
+  if (turret && isSmokeBlocked(game, turret.region, to)) {
+    addLog(game, `${agent.name}이 연막 뒤로 포탑의 감시망을 피했습니다.`);
+  } else if (turret) {
     if (agent.status.ignoreGround) {
       agent.status.ignoreGround = false;
       addLog(game, `${agent.name}이 상승 기류로 포탑의 공격을 무시했습니다.`);
@@ -2876,7 +2905,7 @@ function playCard(game: GameState, card: ActionCard, agent: Agent) {
 function applyActionStartFire(game: GameState, agent: Agent): boolean {
   const fire = game.fires.find((zone) => zone.owner !== agent.team && zone.region === agent.region);
   if (!fire) return true;
-  applyDamage(game, getAgent(game, fire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길에서 행동 시작");
+  applyDamage(game, getAgent(game, fire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길에서 행동 시작", true);
   checkWinner(game);
   return agent.alive;
 }
@@ -5122,9 +5151,15 @@ function chooseAiOptionalContact(game: GameState, contact: PendingContact) {
 
 function aiShotgunApproachRegion(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent, retreatOptions: number[]) {
   if (WEAPONS[actor.weapon].type !== "shotgun" || scene.range !== 1 || !retreatOptions.includes(opponent.region)) return null;
-  const nearbyExactEnemies = aiEnemyIntel(game, actor.team).filter((enemy) =>
-    enemy.exact && distance(enemy.region, opponent.region) <= 1);
-  if (nearbyExactEnemies.length !== 1 || nearbyExactEnemies[0].agent.id !== opponent.id) return null;
+  const otherThreats = aiEnemyIntel(game, actor.team).filter((enemy) => {
+    if (enemy.agent.id === opponent.id || enemy.confidence < 0.35) return false;
+    if (enemy.region === opponent.region) return true;
+    if (!enemy.waitDirs.includes(opponent.region)) return false;
+    const waitRange = WEAPONS[enemy.weapon].type === "sniper" ? 2 : 1;
+    const range = distance(enemy.region, opponent.region);
+    return range > 0 && range <= waitRange && !isWaitPathSmokeBlocked(game, enemy.region, opponent.region);
+  });
+  if (otherThreats.length) return null;
 
   const currentOdds = aiCombatOdds(game, scene, actor, opponent);
   const currentReturnFire = aiCombatOdds(game, scene, opponent, actor);
@@ -5287,6 +5322,10 @@ function aiProtectingAftershockChannel(game: GameState, agent: Agent) {
 }
 
 function aiShadowStepDestination(game: GameState, agent: Agent, objective: number, intel: AiEnemyIntel[]) {
+  // Shadow step is a repositioning tool, not a pounce: it never lands on top of an
+  // enemy or walks into a watched angle, but it's allowed to land adjacent to a known
+  // enemy from an angle they're not covering (a flank) or inside the caster's own
+  // dark cover to set up an ambush.
   const exactIntel = intel.filter((item) => item.exact);
   const currentObjectiveDistance = distance(agent.region, objective);
   const candidates = aiSkillRegions(agent, "range2")
@@ -5297,18 +5336,25 @@ function aiShadowStepDestination(game: GameState, agent: Agent, objective: numbe
       const activeHolds = exactIntel.filter((enemy) =>
         enemy.waitDirs.includes(region) && !isWaitPathSmokeBlocked(game, enemy.region, region));
       const occupied = exposedEnemies.some((enemy) => enemy.region === region);
-      if (occupied || exposedEnemies.length || activeHolds.length) return null;
+      if (occupied || activeHolds.length) return null;
+      if (!aiKnownWaitEntryAssessment(game, agent, region, false).acceptable) return null;
       const progress = currentObjectiveDistance - distance(region, objective);
       const smokeCover = exactIntel.filter((enemy) => isWaitPathSmokeBlocked(game, enemy.region, region)).length;
+      const ownAmbushCover = game.smokes.some((smoke) =>
+        smoke.owner === agent.team && smoke.sourceSkill === "dark" && smoke.region === region);
+      const flankBlockers = exposedEnemies.filter((enemy) =>
+        enemy.region !== region
+        && distance(enemy.region, objective) < currentObjectiveDistance
+        && distance(region, objective) < distance(enemy.region, objective));
       const support = game.teams[agent.team].agents.filter((ally) =>
         ally.alive && ally.id !== agent.id && distance(ally.region, region) <= 1).length;
       const exits = GRAPH.get(region)?.length ?? 0;
       const danger = knownThreatScoreAtRegion(game, agent.team, region);
-      const score = progress * 6 + smokeCover * 5 + support * 2 + exits - danger * 3;
-      return { region, progress, smokeCover, support, score };
+      const score = progress * 6 + smokeCover * 5 + (ownAmbushCover ? 16 : 0) + flankBlockers.length * 12 + support * 2 + exits - danger * 3;
+      return { region, progress, smokeCover, ownAmbushCover, flankBlockers: flankBlockers.length, support, score };
     })
     .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate)
-    .filter((candidate) => candidate.progress > 0 || candidate.smokeCover > 0 || candidate.support > 0)
+    .filter((candidate) => candidate.progress > 0 || candidate.smokeCover > 0 || candidate.support > 0 || candidate.ownAmbushCover || candidate.flankBlockers > 0)
     .sort((a, b) => b.score - a.score);
   return candidates[0]?.score > 0 ? candidates[0].region : null;
 }
@@ -5549,7 +5595,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
           clearWait(enemy);
-          applyDamage(game, agent, enemy, SKILL_DAMAGE.paint, "페인트탄");
+          applyDamage(game, agent, enemy, SKILL_DAMAGE.paint, "페인트탄", true);
         });
         game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side);
         finish(target.region);
@@ -5605,12 +5651,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.fires.push({ id: `ai-hot-${game.turnSerial}-${target}`, owner: side, ownerAgentId: agent.id, region: target, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target).forEach((enemy) => {
-          applyDamage(game, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉");
+          applyDamage(game, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉", true);
         });
-        if (target === agent.region && agent.hp < AGENT_MAX_HP) {
-          agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
-          addLog(game, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
-        }
+        if (target === agent.region) applyHeal(game, agent, 1, "불길");
         finish(target);
         return true;
       }
@@ -5732,7 +5775,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!target?.score) continue;
         if (!begin()) return true;
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
-          applyDamage(game, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살");
+          applyDamage(game, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살", true);
         });
         game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side);
         finish(target.region);
@@ -5758,15 +5801,16 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           if (!path) continue;
           if (!begin()) return true;
           const [origin, first, second] = path;
-          game.smokes.push({ key: edgeKey(origin, first), owner: side, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
-          game.smokes.push({ key: edgeKey(first, second), owner: side, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
+          const smokeExpiresEnemyTurn = game.teamTurns[otherSide(side)] + 3;
+          game.smokes.push({ key: edgeKey(origin, first), owner: side, expiresEnemyTurn: smokeExpiresEnemyTurn, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
+          game.smokes.push({ key: edgeKey(first, second), owner: side, expiresEnemyTurn: smokeExpiresEnemyTurn, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
           finish(second);
           return true;
         }
         const target = aiDarkRegion(game, agent, intel);
         if (target === null) continue;
         if (!begin()) return true;
-        game.smokes.push({ key: `region-${target}`, region: target, owner: side, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "dark" });
+        game.smokes.push({ key: `region-${target}`, region: target, owner: side, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 3, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "dark" });
         finish(target);
         return true;
       }
@@ -6851,6 +6895,18 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [activeKillFxId]);
 
+  const floatingNumberIds = useMemo(() => game.floatingNumbers.map((item) => item.id).join(","), [game.floatingNumbers]);
+  useEffect(() => {
+    if (!game.floatingNumbers.length) return;
+    const idsToClear = new Set(game.floatingNumbers.map((item) => item.id));
+    const timer = window.setTimeout(() => {
+      setGame((current) => current.floatingNumbers.some((item) => idsToClear.has(item.id))
+        ? { ...current, floatingNumbers: current.floatingNumbers.filter((item) => !idsToClear.has(item.id)) }
+        : current);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [floatingNumberIds]);
+
   const activePostCombatMovementFx = game.postCombatMovementFxQueue?.[0] ?? null;
   useEffect(() => {
     if (!activePostCombatMovementFx) return;
@@ -7274,7 +7330,7 @@ export default function Home() {
       const deployableId = () => `${targeting.skillId}-${Date.now()}-${region}`;
       switch (targeting.skillId) {
         case "paint":
-          enemies.forEach((enemy) => { clearWait(enemy); applyDamage(draft, agent, enemy, SKILL_DAMAGE.paint, "페인트탄"); });
+          enemies.forEach((enemy) => { clearWait(enemy); applyDamage(draft, agent, enemy, SKILL_DAMAGE.paint, "페인트탄", true); });
           draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team);
           break;
         case "blast": {
@@ -7307,11 +7363,8 @@ export default function Home() {
           break;
         case "hot":
           draft.fires.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-start" });
-          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉"));
-          if (region === agent.region && agent.hp < AGENT_MAX_HP) {
-            agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
-            addLog(draft, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
-          }
+          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉", true));
+          if (region === agent.region) applyHeal(draft, agent, 1, "불길");
           break;
         case "stim": {
           draft.stims.push({ id: deployableId(), owner: agent.team, region, expiresOwnerTurn: draft.teamTurns[agent.team] + 2, expiresOn: "owner-start" });
@@ -7345,7 +7398,7 @@ export default function Home() {
           break;
         }
         case "shock":
-          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살"));
+          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살", true));
           draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team);
           break;
         case "aftershock":
@@ -7353,12 +7406,13 @@ export default function Home() {
           break;
         case "smoke": {
           const first = targeting.selected![0];
-          draft.smokes.push({ key: edgeKey(skillOrigin, first), owner: agent.team, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
-          draft.smokes.push({ key: edgeKey(first, region), owner: agent.team, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
+          const smokeExpiresEnemyTurn = draft.teamTurns[otherSide(agent.team)] + 3;
+          draft.smokes.push({ key: edgeKey(skillOrigin, first), owner: agent.team, expiresEnemyTurn: smokeExpiresEnemyTurn, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
+          draft.smokes.push({ key: edgeKey(first, region), owner: agent.team, expiresEnemyTurn: smokeExpiresEnemyTurn, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
           break;
         }
         case "dark":
-          draft.smokes.push({ key: `region-${region}`, region, owner: agent.team, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "dark" });
+          draft.smokes.push({ key: `region-${region}`, region, owner: agent.team, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 3, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "dark" });
           addLog(draft, `어둠의 장막이 ${regionName(region)}을 완전히 은신시켰습니다.`);
           break;
         case "shadow": {
@@ -7586,13 +7640,10 @@ export default function Home() {
       for (const agent of endingTeam.agents) {
         if (agent.alive && agent.armorType === "regen") agent.armor = 1;
         const standingInOwnFire = agent.alive && agent.name === "피닉스" && draft.fires.some((fire) => fire.owner === endingSide && fire.region === agent.region);
-        if (standingInOwnFire) {
-          agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
-          addLog(draft, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
-        }
+        if (standingInOwnFire) applyHeal(draft, agent, 1, "불길");
         const enemyFire = agent.alive ? draft.fires.find((fire) => fire.owner !== endingSide && fire.region === agent.region) : undefined;
         if (enemyFire) {
-          applyDamage(draft, getAgent(draft, enemyFire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 지속 피해");
+          applyDamage(draft, getAgent(draft, enemyFire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 지속 피해", true);
           addLog(draft, `${agent.name}가 불길 속에서 턴을 마쳐 피해를 입었습니다.`);
         }
         agent.status.aimPenalty = 0;
@@ -7611,7 +7662,7 @@ export default function Home() {
         }
       });
       draft.statusEffects = draft.statusEffects.filter((effect) => effect.owner !== endingSide || effect.kind === "exposed");
-      draft.smokes = draft.smokes.filter((smoke) => !(smoke.owner === endingSide && draft.teamTurns[endingSide] >= smoke.expiresOwnerTurn));
+      draft.smokes = draft.smokes.filter((smoke) => !(otherSide(smoke.owner) === endingSide && draft.teamTurns[endingSide] >= smoke.expiresEnemyTurn));
       drawFive(endingTeam, draft.cycle * 31 + (endingSide === "attack" ? 7 : 3));
       draft.trade = [];
       draft.revealedEnemyIds = [];
@@ -7660,7 +7711,7 @@ export default function Home() {
       draft.aftershocks.filter((channel) => channel.owner === newSide && draft.teamTurns[newSide] >= channel.readyOnTurn).forEach((channel) => {
         const caster = getAgent(draft, channel.ownerAgentId);
         draft.teams[otherSide(newSide)].agents.filter((enemy) => enemy.alive && enemy.region === channel.region).forEach((enemy) => {
-          applyDamage(draft, caster, enemy, SKILL_DAMAGE.aftershock, "여진 폭발");
+          applyDamage(draft, caster, enemy, SKILL_DAMAGE.aftershock, "여진 폭발", true);
         });
         addLog(draft, `${caster?.name ?? "요원"}의 여진이 ${regionName(channel.region)}에서 터졌습니다.`);
       });
@@ -8737,6 +8788,8 @@ export default function Home() {
                  || carriedSpikeHere
                  || droppedSpikeHere);
                const knownWeapons = game.droppedWeapons.filter((item) => item.region === region.id && observedNow);
+               const floatingHere = game.floatingNumbers.filter((item) => item.region === region.id
+                 && (observedNow || allies.some((ally) => ally.id === item.agentId)));
                const arrivingAgentId = movementFx?.path.at(-1) === region.id && movementVisible ? movementFx.agentId : null;
               return (
                 <button
@@ -8755,6 +8808,9 @@ export default function Home() {
                     {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); const arriving = arrivingAgentId === agent.id; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""} ${arriving ? "movement-arriving" : ""}`} style={arriving ? movementArrivalStyle : undefined} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <AgentStatusBadges game={game} agent={agent} compact />}{lastKnown && <small>잔상</small>}</i>; })}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}
+                  {floatingHere.length > 0 && <span className="floating-number-stack">
+                    {floatingHere.map((item) => <i key={item.id} className={`floating-number ${item.kind}`}>{item.kind === "heal" ? "+" : "-"}{item.amount}</i>)}
+                  </span>}
                   {(devices.length > 0 || fire || stim || hasSpike || knownWeapons.length > 0) && <span className="effect-stack">
                     {devices.map((item) => <i key={item.id} title={item.kind}>{item.kind === "trip" ? "⌁" : item.kind === "camera" ? "◉" : item.kind === "turret" ? "⌖" : "!"}</i>)}
                     {fire && <i className="fire">▲</i>}{stim && <i className="stim">+</i>}{knownWeapons.map((item) => <i key={item.id} className="weapon-drop" title={`드롭 총기 · ${WEAPONS[item.weapon].name}`}><WeaponSilhouette weapon={item.weapon} compact /></i>)}{hasSpike && <i className="spike" title={game.spike.status === "carried" ? `스파이크 운반 · ${spikeCarrier?.name ?? "미확인"}` : "스파이크 위치"}>◆</i>}
