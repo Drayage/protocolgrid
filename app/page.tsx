@@ -3295,6 +3295,13 @@ function aiMovementDestinationAcceptable(game: GameState, agent: Agent, target: 
   const lastChanceEntry = agent.team === "defense"
     ? defenseRetakeForceEntry(game, agent)
     : attackForcedPlantMode(game) && game.cycle >= PRE_PLANT_CYCLE_LIMIT;
+  // Once there is no time left to wait for a better opening, refusing entry
+  // doesn't avoid the fight — it just trades any chance to win for a
+  // guaranteed loss to the clock. Drop the survival floor to "not zero".
+  const noMoreSlack = agent.team === "defense"
+    && defenseRetakeIsActive(game)
+    && game.spike.region !== null
+    && game.spike.explosion <= defenseRetakeSiteDistance(game, agent) + defenseRetakeCombatBuffer(game, agent);
   return path.slice(1).every((region, index) => {
     const assessment = aiKnownWaitEntryAssessment(game, agent, region);
     if (!assessment.waitingEnemies.length) return true;
@@ -3315,7 +3322,7 @@ function aiMovementDestinationAcceptable(game: GameState, agent: Agent, target: 
     const preparedBreach = assessment.disrupted || assessment.tradeAvailable;
     return ((urgentObjective || committedBreach || (agent.team === "attack" && attackOperatorBreachActive(game))) && preparedBreach
       || lastChanceEntry)
-      && assessment.survivalChance >= (lastChanceEntry ? 18 : 25);
+      && assessment.survivalChance >= (noMoreSlack ? 1 : lastChanceEntry ? 18 : 25);
   });
 }
 
