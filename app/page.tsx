@@ -845,9 +845,9 @@ const AGENTS: Record<string, AgentTemplate> = {
   "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "이번 팀 턴 동안 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", `구역에 다음 턴까지 피해 ${SKILL_DAMAGE.hot}의 불길을 만듭니다.`)] },
   "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "구역 적의 우선도 숫자를 1 높입니다.")] },
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
-  "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "1원 · 2회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
+  "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "2원 · 1회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
   "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 구역의 보이는 적을 선택합니다. 보이지 않으면 무작위 적 또는 설치물에 피해 ${SKILL_DAMAGE.shock}를 줍니다.`)] },
-  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "adjacent", "인접 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "adjacent", `인접 구역의 적에게 피해 ${SKILL_DAMAGE.aftershock}, 진행 행동을 취소합니다.`)] },
+  "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "adjacent", `인접 구역의 적에게 피해 ${SKILL_DAMAGE.aftershock}, 진행 행동을 취소합니다.`)] },
   "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "목표 방향의 첫 연결을 다음 턴까지 차단합니다."), skill("stim", "전투 자극제", "2원 · 1회", "self", "현재 구역 아군의 에임과 우선도를 강화합니다.")] },
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
 };
@@ -4749,10 +4749,10 @@ function aiAllyCanDisruptCombatHold(game: GameState, scene: CombatScene, actor: 
     return AGENTS[ally.name].skills.some((skillDefinition) => {
       if ((ally.skills[skillDefinition.id] ?? 0) <= 0) return false;
       const enemyRange = distance(ally.region, opponent.region);
-      if (["paint", "relay", "flash", "aftershock"].includes(skillDefinition.id)) return enemyRange <= 1;
+      if (["paint", "relay", "aftershock"].includes(skillDefinition.id)) return enemyRange <= 1;
       if (skillDefinition.id === "blast") return opponent.detected && enemyRange <= 1;
       if (skillDefinition.id === "curve") return distance(ally.region, actor.region) <= 1 && opponent.waitDirs.includes(actor.region);
-      if (["recon", "shock"].includes(skillDefinition.id)) return enemyRange <= 2;
+      if (["recon", "shock", "flash"].includes(skillDefinition.id)) return enemyRange <= 2;
       if (skillDefinition.id === "smoke") return Math.min(enemyRange, distance(ally.region, actor.region)) <= 2;
       if (skillDefinition.id === "dark") return true;
       if (skillDefinition.id === "stim") return ally.region === actor.region;
@@ -5464,9 +5464,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         const entryRegion = aiEntryUtilityRegion(game, agent, currentAndAdjacent);
         const target = [...currentAndAdjacent].map((region) => ({
           region,
-          score: intel.filter((item) => item.region === region).length * 4
+          score: exactIntel.filter((item) => item.region === region).length * 4
             + enemyDeployables.filter((item) => item.region === region).length * 2
-            + intel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 8
+            + exactIntel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 8
             + (entryRegion === region ? 3 : 0),
         })).sort((a, b) => b.score - a.score)[0];
         if (!target?.score) continue;
@@ -5532,29 +5532,41 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         return true;
       }
 
-      if (definition.id === "relay" || definition.id === "flash" || definition.id === "aftershock") {
-        const entryRegion = definition.id === "flash" ? aiEntryUtilityRegion(game, agent, aiSkillRegions(agent, "adjacent")) : null;
+      if (definition.id === "relay" || definition.id === "aftershock") {
         const candidates = aiSkillRegions(agent, "adjacent").map((region) => ({
           region,
           targets: exactIntel.filter((item) => item.region === region),
-          entryScore: entryRegion === region ? 1 : 0,
+          entryScore: 0,
           recoveryScore: exactIntel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 4,
         })).sort((a, b) => b.targets.length * 5 + b.entryScore + b.recoveryScore - (a.targets.length * 5 + a.entryScore + a.recoveryScore));
         const target = candidates[0];
-        if (!target || (!target.targets.length && !target.entryScore)) continue;
+        if (!target || !target.targets.length) continue;
         if (!begin()) return true;
         if (definition.id === "relay") {
           target.targets.forEach(({ agent: enemy }) => {
             if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) game.statusEffects.push({ id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "concussed", priorityPenalty: 1 });
           });
-        } else if (definition.id === "flash") {
-          game.teams[otherSide(side)].agents
-            .filter((enemy) => enemy.alive && enemy.region === target.region)
-            .forEach((enemy) => game.statusEffects.push({ id: `ai-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
         } else {
           game.aftershocks.push({ id: `ai-aftershock-${game.turnSerial}-${target.region}`, owner: side, ownerAgentId: agent.id, region: target.region, targetIds: target.targets.map((item) => item.agent.id), readyOnTurn: game.teamTurns[otherSide(side)] + 1 });
           target.targets.forEach(({ agent: enemy }) => cancelProgress(game, enemy));
         }
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "flash") {
+        const entryRegion = aiEntryUtilityRegion(game, agent, aiSkillRegions(agent, "range2"));
+        const candidates = aiSkillRegions(agent, "range2").map((region) => ({
+          region,
+          targets: exactIntel.filter((item) => item.region === region),
+          entryScore: entryRegion === region ? 1 : 0,
+        })).sort((a, b) => b.targets.length * 5 + b.entryScore - (a.targets.length * 5 + a.entryScore));
+        const target = candidates[0];
+        if (!target || (!target.targets.length && !target.entryScore)) continue;
+        if (!begin()) return true;
+        game.teams[otherSide(side)].agents
+          .filter((enemy) => enemy.alive && enemy.region === target.region)
+          .forEach((enemy) => game.statusEffects.push({ id: `ai-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
         finish(target.region);
         return true;
       }

@@ -410,7 +410,7 @@ test("mid-round AI replans, plants secured sites, and uses utility for entry and
   assert.match(page, /const reservedPlantCarrierId =/);
   assert.match(page, /function aiEntryUtilityRegion/);
   assert.match(page, /entryRegion = aiEntryUtilityRegion\(game, agent, currentAndAdjacent\)/);
-  assert.match(page, /definition\.id === "flash" \? aiEntryUtilityRegion/);
+  assert.match(page, /entryRegion = aiEntryUtilityRegion\(game, agent, aiSkillRegions\(agent, "range2"\)\)/);
   assert.match(page, /edgeMatches\(edge, DEFENDER_BACK_EDGES\[targetSite\]\)/);
   assert.match(page, /edgeMatches\(edge, ATTACK_ENTRY_EDGES\[targetSite\]\)/);
   assert.match(page, /mainBodyDistance > 2 && !knownHold/);
