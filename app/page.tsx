@@ -3298,10 +3298,13 @@ function aiMovementDestinationAcceptable(game: GameState, agent: Agent, target: 
   // Once there is no time left to wait for a better opening, refusing entry
   // doesn't avoid the fight — it just trades any chance to win for a
   // guaranteed loss to the clock. Drop the survival floor to "not zero".
+  // Attack has no separate late-but-not-final stage here: lastChanceEntry
+  // already only fires on the last cycle before the round is lost to time.
   const noMoreSlack = agent.team === "defense"
-    && defenseRetakeIsActive(game)
-    && game.spike.region !== null
-    && game.spike.explosion <= defenseRetakeSiteDistance(game, agent) + defenseRetakeCombatBuffer(game, agent);
+    ? defenseRetakeIsActive(game)
+      && game.spike.region !== null
+      && game.spike.explosion <= defenseRetakeSiteDistance(game, agent) + defenseRetakeCombatBuffer(game, agent)
+    : lastChanceEntry;
   return path.slice(1).every((region, index) => {
     const assessment = aiKnownWaitEntryAssessment(game, agent, region);
     if (!assessment.waitingEnemies.length) return true;
@@ -4573,6 +4576,23 @@ function adaptAttackPlan(game: GameState) {
   }
 }
 
+// Forced-plant movement only looks one step ahead, so a watched entry can
+// starve it of any good adjacent candidate. When there's a known blocker on
+// the way in and a flank route that still fits before the round times out,
+// steer the pick toward that route's next step instead.
+function attackForcedEntryDetourBonus(game: GameState, agent: Agent, region: number): number {
+  if (agent.team !== "attack" || !attackForcedPlantMode(game)) return 0;
+  const waypoints = attackPlanWaypoints(game, agent);
+  const objectiveRegion = [...waypoints].sort((a, b) => distance(agent.region, a) - distance(agent.region, b))[0];
+  if (objectiveRegion === undefined) return 0;
+  const blockers = aiRecoveryBlockers(game, "attack", objectiveRegion);
+  if (!blockers.length) return 0;
+  const deadline = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
+  const flankRoute = aiRecoveryFlankRoute(game, agent, objectiveRegion, blockers);
+  if (flankRoute.length < 2 || aiRecoveryFlankTurns(objectiveRegion, flankRoute) > deadline) return 0;
+  return flankRoute[1] === region ? -45 : 0;
+}
+
 function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
   if (game.spike.status === "dropped" && game.spike.region !== null) {
     if (aiRecoveryBlockers(game, agent.team, game.spike.region).length) {
@@ -4621,8 +4641,10 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
     const breachSupportB = breachB ? Math.max(0, 2 - occupiedB) * 12 : 0;
     const repeatA = aiRecentMovementPenalty(game, agent, a);
     const repeatB = aiRecentMovementPenalty(game, agent, b);
-    return routeA * 4 + occupiedA * 2 + dangerA + operatorA + carrierSupportA + breachSupportA + repeatA
-      - (routeB * 4 + occupiedB * 2 + dangerB + operatorB + carrierSupportB + breachSupportB + repeatB);
+    const detourA = attackForcedEntryDetourBonus(game, agent, a);
+    const detourB = attackForcedEntryDetourBonus(game, agent, b);
+    return routeA * 4 + occupiedA * 2 + dangerA + operatorA + carrierSupportA + breachSupportA + repeatA + detourA
+      - (routeB * 4 + occupiedB * 2 + dangerB + operatorB + carrierSupportB + breachSupportB + repeatB + detourB);
   })[0] ?? null;
   if (destination === null) return null;
   if (phase !== "execute" && phase !== "postplant" && routeDistance(destination) > routeDistance(agent.region)) return null;
