@@ -242,6 +242,12 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .effect-stack i { display: grid; place-items: center; width: 14px; height: 14px; border: 1px solid #7e9da3; background: #091519; color: #b8d3d5; font: 9px monospace; font-style: normal; }
 .effect-stack i.fire { color: #ff7f44; border-color: #ff7f44; }.effect-stack i.stim { color: var(--cyan); }.effect-stack i.weapon-drop { color: var(--amber); border-color: rgba(243,183,91,.72); }.effect-stack i.spike { color: var(--red); border-color: var(--red); }
 
+@keyframes floatingNumberRise { 0% { opacity: 0; transform: translate(-50%, 0) scale(.8); } 15% { opacity: 1; transform: translate(-50%, -6px) scale(1.05); } 100% { opacity: 0; transform: translate(-50%, -30px) scale(1); } }
+.floating-number-stack { position: absolute; left: 50%; top: -6px; display: flex; flex-direction: column; align-items: center; gap: 1px; pointer-events: none; z-index: 5; }
+.floating-number { font: 700 12px/1 monospace; font-style: normal; text-shadow: 0 1px 3px rgba(0,0,0,.85); animation: floatingNumberRise 1.4s ease-out forwards; }
+.floating-number.damage { color: var(--red); }
+.floating-number.heal { color: #6dfa8f; }
+
 .objective-hud { position: absolute; left: 14px; top: 13px; z-index: 20; display: flex; align-items: center; gap: 9px; padding: 8px 10px; background: rgba(5,13,16,.84); border: 1px solid var(--line); box-shadow: 0 12px 28px rgba(0,0,0,.35); }
 .spike-icon { display: grid; place-items: center; width: 28px; height: 28px; background: rgba(255,82,103,.1); color: var(--red); border: 1px solid rgba(255,82,103,.38); }
 .objective-hud > div { display: flex; flex-direction: column; }.objective-hud small { color: var(--muted); font-size: 7px; letter-spacing: .14em; }.objective-hud strong { font-size: 10px; margin-top: 2px; }.objective-hud > b { color: var(--red); font-size: 17px; margin-left: 4px; }
