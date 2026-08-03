@@ -211,6 +211,7 @@ interface ZoneEffect {
 
 interface SmokeEffect {
   key: string;
+  region?: number;
   owner: Side;
   expiresOwnerTurn: number;
   expiresOn: "owner-end";
@@ -854,7 +855,7 @@ const AGENTS: Record<string, AgentTemplate> = {
   "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 이내 구역을 지정합니다. 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.shock}(탐지 상태면 ${SKILL_DAMAGE.shock + 1}), 설치물을 파괴합니다.`)] },
   "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "range2", `거리 2 이내 구역을 지정해 채널링합니다. 준비 중에는 무빙 -1, 우선도 +2, 이동하면 취소됩니다. 목표는 상대에게 보이지 않으며, 내 다음 턴이 시작할 때 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.aftershock}를 입힙니다.`)] },
   "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "adjacent", "인접 구역을 하나 고르고, 그 구역에서 다시 인접 구역 하나를 골라 현재-1차-2차를 잇는 연결 2개에 연막을 겁니다. 내 다음 턴이 끝날 때까지 유지됩니다."), skill("stim", "전투 자극제", "2원 · 1회", "adjacent", "인접 구역에 자극제 신호기를 설치합니다(내 다음 턴이 끝날 때까지 유지). 신호기에 닿은 아군은 각자 첫 교전이 끝날 때까지 에임 +1, 무빙 +1을 받습니다.")] },
-  "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
+  "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "사거리 제한 없이 구역 하나를 완전히 은신시킵니다(내 다음 턴이 끝날 때까지). 안팎 모두 서로 보이지 않지만 이동은 가능하며, 안에 있는 적 구역으로 들어가면 거리 0 교전이 벌어집니다. 이때 안에 있던 쪽은 우선도 페널티를, 탐지되지 않은 상대를 쏘는 쪽은 에임 -2를 받습니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
 };
 
 const AGENT_ART_KEY: Record<string, string> = {
@@ -1849,7 +1850,7 @@ function attackPlanRushDestination(game: GameState, origin: number) {
 }
 
 function isSmokeBlocked(game: GameState, a: number, b: number) {
-  return game.smokes.some((smoke) => smoke.key === edgeKey(a, b));
+  return game.smokes.some((smoke) => smoke.key === edgeKey(a, b) || smoke.region === a || smoke.region === b);
 }
 
 function canUseCard(card: ActionCard, agent: Agent) {
@@ -2377,6 +2378,17 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     addLog(game, `${enemy.name}이 ${mover.name}의 트레이드 표식을 소비합니다. 에임 +1 / 우선도 2단계 향상.`);
   }
 
+  // Walking into a dark-zoned region an enemy already occupies is a blind
+  // ambush: the occupant (holder) didn't see the entry coming, so they take
+  // a priority penalty; and since neither side necessarily has the other
+  // detected, shooting a non-detected opponent through the dark carries an
+  // aim penalty for whichever side that applies to.
+  const isDarkAmbush = range === 0 && game.smokes.some((smoke) => smoke.sourceSkill === "dark" && smoke.region === mover.region);
+  const moverDarkAimPenalty = isDarkAmbush && !enemy.detected ? -2 : 0;
+  const holderDarkAimPenalty = isDarkAmbush && !mover.detected ? -2 : 0;
+  const holderDarkPriorityPenalty = isDarkAmbush ? 1 : 0;
+  if (isDarkAmbush) addLog(game, `${mover.name}이 어둠의 장막 안으로 진입해 ${enemy.name}과 기습 교전합니다. ${enemy.name} 우선도 -1.`);
+
   const moverStats = finalStats(game, mover);
   const enemyStats = finalStats(game, enemy);
   const surprisePriority = offAngle ? 1 : 0;
@@ -2385,7 +2397,7 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
   const moverSniperNonWaitPenalty = WEAPONS[mover.weapon].type === "sniper" ? 1 : 0;
   const holderSniperNonWaitPenalty = WEAPONS[enemy.weapon].type === "sniper" && !waiting ? 1 : 0;
   const moverPrio = Math.max(1, moverPriority + moverSniperNonWaitPenalty + (moverTradeTargetPenalty ? 1 : 0) + moverStats.priorityPenalty - moverStats.priorityBoost - moverTradePriority - surprisePriority);
-  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + holderSniperNonWaitPenalty + (holderTradeTargetPenalty ? 1 : 0) + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority);
+  const enemyPrio = Math.max(1, (waiting ? 1 : 3) + holderSniperNonWaitPenalty + (holderTradeTargetPenalty ? 1 : 0) + enemyStats.priorityPenalty - enemyStats.priorityBoost - holderTradePriority + holderDarkPriorityPenalty);
   const simultaneous = moverPrio === enemyPrio;
   const firstActorId = moverPrio <= enemyPrio ? mover.id : enemy.id;
   const secondActorId = firstActorId === mover.id ? enemy.id : mover.id;
@@ -2413,8 +2425,8 @@ function resolveEngagement(game: GameState, mover: Agent, enemy: Agent, moverPri
     resolved: false,
     choices: {},
     canMoverAttack: canAttack,
-    moverAimBonus: moverTradeAim,
-    holderAimBonus: holderTradeAim,
+    moverAimBonus: moverTradeAim + moverDarkAimPenalty,
+    holderAimBonus: holderTradeAim + holderDarkAimPenalty,
     moverTradePriorityBonus: moverTradePriority,
     holderTradePriorityBonus: holderTradePriority,
     moverTradeTargetPenalty,
@@ -5318,80 +5330,48 @@ function edgeMatches(edge: [number, number], candidates: [number, number][]) {
   return candidates.some(([a, b]) => edgeKey(a, b) === key);
 }
 
-function aiSmokeEdge(game: GameState, agent: Agent, skillId: "smoke" | "dark", intel: AiEnemyIntel[]): [number, number] | null {
+// dark blacks out an entire region rather than a connection, so a known
+// blocker's own region is the natural target: it hides them completely and
+// turns their position into an ambush the moment anyone walks in on them.
+function aiDarkRegion(game: GameState, agent: Agent, intel: AiEnemyIntel[]): number | null {
   const guardedRecovery = aiGuardedRecoveryObjectives(game, agent.team)[0];
   if (guardedRecovery) {
-    for (const blocker of guardedRecovery.blockers) {
-      const waitPath = shortestPath(blocker.region, guardedRecovery.region);
-      const recoveryEdge = waitPath.slice(0, -1)
-        .map((region, index) => [region, waitPath[index + 1]] as [number, number])
-        .find(([a, b]) =>
-          !isSmokeBlocked(game, a, b)
-          && (skillId === "dark" || distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2));
-      if (recoveryEdge) return recoveryEdge;
-    }
+    const blocker = guardedRecovery.blockers.find((item) => !game.smokes.some((smoke) => smoke.region === item.region));
+    if (blocker) return blocker.region;
   }
   if (agent.team === "attack" && attackOperatorBreachActive(game)) {
     const targetIds = new Set(game.attackPlan.operatorTargetIds);
-    const breachHolds = operatorSiteAssessment(game, game.attackPlan.targetSite).holds
-      .filter((hold) => targetIds.has(hold.enemy.agent.id));
-    for (const hold of breachHolds) {
-      for (const heldRegion of hold.heldRegions) {
-        const holdPath = shortestPath(hold.enemy.region, heldRegion);
-        const holdEdge = holdPath.slice(0, -1)
-          .map((region, index) => [region, holdPath[index + 1]] as [number, number])
-          .find(([a, b]) =>
-            !isSmokeBlocked(game, a, b)
-            && (skillId === "dark" || distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2));
-        if (holdEdge) return holdEdge;
-      }
-    }
+    const breachHold = operatorSiteAssessment(game, game.attackPlan.targetSite).holds
+      .find((hold) => targetIds.has(hold.enemy.agent.id) && !game.smokes.some((smoke) => smoke.region === hold.enemy.region));
+    if (breachHold) return breachHold.enemy.region;
   }
   const objective = aiObjectiveRegion(game, agent.team, agent.region, intel);
-  const ownPath = shortestPath(agent.region, objective);
-  const ownPathEdges = new Set(ownPath.slice(0, -1).map((region, index) => edgeKey(region, ownPath[index + 1])));
   const targetSite = agent.team === "attack"
     ? game.attackPlan.targetSite
     : defenseThreatSite(game) ?? game.defensePlan.strongSite ?? (distance(agent.region, 9) <= distance(agent.region, 14) ? "A" : "B");
   const attackersInside = agent.team === "defense" && aiEnemyIntel(game, "defense").some((enemy) =>
     enemy.exact && SITE_REGIONS[targetSite].includes(enemy.region),
   );
-  const candidates = EDGES
-    .filter(([a, b]) => !isSmokeBlocked(game, a, b) && (skillId === "dark" || distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2))
-    .map(([a, b]) => {
-      const edge: [number, number] = [a, b];
-      let score = Math.max(0, 5 - Math.min(distance(a, objective), distance(b, objective)));
+  const candidates = REGIONS
+    .filter((region) => !game.smokes.some((smoke) => smoke.region === region.id) && region.id !== agent.region)
+    .map((region) => {
+      let score = Math.max(0, 5 - distance(region.id, objective));
+      const onSite = SITE_REGIONS[targetSite].includes(region.id);
       if (agent.team === "attack") {
-        if (edgeMatches(edge, DEFENDER_BACK_EDGES[targetSite])) score += 28;
-        if (edgeMatches(edge, ATTACK_ENTRY_EDGES[targetSite])) score -= 16;
-      } else if (attackersInside || ["planting", "planted", "half", "defusing"].includes(game.spike.status)) {
-        if (edgeMatches(edge, DEFENDER_BACK_EDGES[targetSite])) score += 24;
-        if (edgeMatches(edge, ATTACK_ENTRY_EDGES[targetSite])) score += 6;
-      } else {
-        if (edgeMatches(edge, ATTACK_ENTRY_EDGES[targetSite])) score += 28;
-        if (edgeMatches(edge, DEFENDER_BACK_EDGES[targetSite])) score += 4;
+        if (onSite) score += 20;
+      } else if ((attackersInside || ["planting", "planted", "half", "defusing"].includes(game.spike.status)) && onSite) {
+        score += 20;
       }
       for (const enemy of intel) {
-        if (enemy.region === a || enemy.region === b) score += 10;
-        const enemyPath = shortestPath(enemy.region, objective);
-        const enemyEdges = enemyPath.slice(0, -1).map((region, index) => edgeKey(region, enemyPath[index + 1]));
-        if (enemyEdges.includes(edgeKey(a, b))) score += 6;
-        if (enemy.confidence >= 0.5 && (enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region)) || WEAPONS[enemy.weapon].type === "sniper")) {
-          const holdPaths = SITE_REGIONS[targetSite].flatMap((region) => {
-            const path = shortestPath(enemy.region, region);
-            return path.slice(0, -1).map((pathRegion, index) => edgeKey(pathRegion, path[index + 1]));
-          });
-          if (holdPaths.includes(edgeKey(a, b))) score += 14;
-        }
+        if (enemy.region === region.id) score += 14;
+        if (enemy.confidence >= 0.5 && enemy.waitDirs.includes(region.id)) score += 10;
       }
-      if (ownPathEdges.has(edgeKey(a, b))) score -= agent.team === "attack" ? 18 : 3;
-      return { a, b, score };
+      return { region: region.id, score };
     })
     .sort((a, b) => b.score - a.score);
   const best = candidates[0];
   if (!best || (!intel.length && best.score <= 0)) return null;
-  if (skillId === "smoke" && distance(agent.region, best.a) > distance(agent.region, best.b)) return [best.b, best.a];
-  return [best.a, best.b];
+  return best.region;
 }
 
 // smoke now always walls off two connected legs starting at the caster's own
@@ -5768,11 +5748,11 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           finish(second);
           return true;
         }
-        const edge = aiSmokeEdge(game, agent, definition.id, intel);
-        if (!edge) continue;
+        const target = aiDarkRegion(game, agent, intel);
+        if (target === null) continue;
         if (!begin()) return true;
-        game.smokes.push({ key: edgeKey(edge[0], edge[1]), owner: side, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: definition.id });
-        finish(edge[1]);
+        game.smokes.push({ key: `region-${target}`, region: target, owner: side, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "dark" });
+        finish(target);
         return true;
       }
 
@@ -6997,7 +6977,7 @@ export default function Home() {
         const target = getAgent(game, game.targeting.targetAgentId);
         return new Set(target ? GRAPH.get(target.region) ?? [] : []);
       }
-      if ((definition.id === "smoke" || definition.id === "dark") && game.targeting.selected?.length) {
+      if (definition.id === "smoke" && game.targeting.selected?.length) {
         return new Set(GRAPH.get(game.targeting.selected[0]) ?? []);
       }
       if (definition.id === "blast") return new Set([agent.region, ...(GRAPH.get(agent.region) ?? [])]);
@@ -7256,10 +7236,10 @@ export default function Home() {
       const definition = AGENTS[agent.name].skills.find((item) => item.id === targeting.skillId);
       if (!definition) return;
       const skillOrigin = agent.region;
-      const isSmokeSecondPoint = (targeting.skillId === "smoke" || targeting.skillId === "dark") && !!targeting.selected?.length;
+      const isSmokeSecondPoint = targeting.skillId === "smoke" && !!targeting.selected?.length;
       const isBlastDestination = targeting.skillId === "blast" && !!targeting.targetAgentId;
       const isValid = isSmokeSecondPoint
-        ? (GRAPH.get(targeting.selected![0]) ?? []).includes(region) && !(targeting.skillId === "smoke" && region === agent.region)
+        ? (GRAPH.get(targeting.selected![0]) ?? []).includes(region) && region !== agent.region
         : isBlastDestination
           ? (GRAPH.get(getAgent(draft, targeting.targetAgentId)?.region ?? -1) ?? []).includes(region)
           : targeting.skillId === "blast" || ["paint", "hot", "relay"].includes(targeting.skillId)
@@ -7269,7 +7249,7 @@ export default function Home() {
         || (definition.target === "range2" && distance(agent.region, region) <= 2);
       if (!isValid) return;
 
-      if ((targeting.skillId === "smoke" || targeting.skillId === "dark") && !targeting.selected?.length) {
+      if (targeting.skillId === "smoke" && !targeting.selected?.length) {
         targeting.selected = [region];
         addLog(draft, `${definition.name}: 연막을 놓을 연결의 반대편 구역을 선택하세요.`);
         return;
@@ -7362,11 +7342,10 @@ export default function Home() {
           draft.smokes.push({ key: edgeKey(first, region), owner: agent.team, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
           break;
         }
-        case "dark": {
-          const first = targeting.selected![0];
-          draft.smokes.push({ key: edgeKey(first, region), owner: agent.team, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "dark" });
+        case "dark":
+          draft.smokes.push({ key: `region-${region}`, region, owner: agent.team, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-end", sourceAgentId: agent.id, sourceSkill: "dark" });
+          addLog(draft, `어둠의 장막이 ${regionName(region)}을 완전히 은신시켰습니다.`);
           break;
-        }
         case "shadow": {
           const from = agent.region;
           clearWait(agent);
@@ -8734,6 +8713,7 @@ export default function Home() {
               const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const fire = game.fires.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const stim = game.stims.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
+              const darkZone = game.smokes.some((item) => item.sourceSkill === "dark" && item.region === region.id && (item.owner === viewerSide || observedNow));
                const installedSpike = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
                const carriedSpikeHere = game.spike.status === "carried" && spikeCarrier?.region === region.id;
                const droppedSpikeHere = game.spike.status === "dropped" && game.spike.region === region.id;
@@ -8745,10 +8725,10 @@ export default function Home() {
               return (
                 <button
                   key={region.id}
-                  className={`region-node ${isValid ? "valid" : ""} ${region.site ? "site-node" : ""} ${!remembered ? "unknown" : ""}`}
+                  className={`region-node ${isValid ? "valid" : ""} ${region.site ? "site-node" : ""} ${!remembered ? "unknown" : ""} ${darkZone ? "dark-zone" : ""}`}
                   style={{ left: `${region.x}%`, top: `${region.y}%` }}
                   onClick={() => handleRegionClick(region.id)}
-                  aria-label={`${region.id}번 ${region.name}${isValid ? ", 선택 가능" : ""}`}
+                  aria-label={`${region.id}번 ${region.name}${isValid ? ", 선택 가능" : ""}${darkZone ? ", 어둠의 장막" : ""}`}
                 >
                   <span className="node-core">{region.id}</span>
                   <span className="node-label">{region.site && <b>{region.site}</b>}{region.name}</span>

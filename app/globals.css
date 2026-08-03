@@ -211,6 +211,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 @keyframes validPulse { 50% { box-shadow: 0 0 0 9px rgba(95,246,213,0), 0 0 23px rgba(95,246,213,.52); } }
 .node-label { position: absolute; left: 50%; top: 38px; z-index: 1; transform: translateX(-50%); width: max-content; max-width: 96px; padding: 3px 5px; color: #8ea3a8; background: rgba(3,9,11,.78); font-size: 8px; line-height: 1.25; border: 1px solid rgba(255,255,255,.04); pointer-events: none; }
 .node-label b { color: var(--amber); margin-right: 4px; }
+.region-node.dark-zone::before { content: ""; position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(circle, rgba(120,86,224,.34) 0%, rgba(120,86,224,.12) 62%, rgba(120,86,224,0) 100%); border: 1px dashed rgba(167,138,255,.5); pointer-events: none; z-index: 0; }
 
 .unit-stack { position: absolute; z-index: 9; display: flex; gap: 2px; pointer-events: none; }
 .ally-stack { bottom: 24px; left: 19px; }.enemy-stack { top: 24px; right: 19px; flex-direction: row-reverse; }
