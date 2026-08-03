@@ -6797,6 +6797,7 @@ export default function Home() {
   const [deploymentAgentId, setDeploymentAgentId] = useState<string | null>(null);
   const [setupAgentId, setSetupAgentId] = useState<string | null>(null);
   const [game, setGame] = useState<GameState>(() => createInitialGame());
+  const [pendingStayConfirm, setPendingStayConfirm] = useState<{ agentId: string; agentName: string; region: number; cardId: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem("protocol-grid-sound-enabled") !== "false");
   const [soundVolume, setSoundVolume] = useState(() => {
@@ -7601,6 +7602,10 @@ export default function Home() {
       });
       return;
     }
+    if (selectedCard.kind === "basic" && region === selectedAgent.region) {
+      setPendingStayConfirm({ agentId: selectedAgent.id, agentName: selectedAgent.name, region, cardId: selectedCard.id });
+      return;
+    }
     mutate((draft) => {
       const agent = getAgent(draft, selectedAgent.id);
       const card = draft.teams[draft.turnSide].hand.find((item) => item.id === selectedCard.id);
@@ -7610,6 +7615,21 @@ export default function Home() {
       moveAgent(draft, agent, region, card.kind);
       if (card.kind === "basic" && agent.alive) draft.pendingWait = agent.id;
     });
+  };
+
+  const confirmStayInPlace = () => {
+    if (!pendingStayConfirm) return;
+    const { agentId, region, cardId } = pendingStayConfirm;
+    mutate((draft) => {
+      const agent = getAgent(draft, agentId);
+      const card = draft.teams[draft.turnSide].hand.find((item) => item.id === cardId);
+      if (!agent || !card || !canUseCard(card, agent)) return;
+      playCard(draft, card, agent);
+      if (!applyActionStartFire(draft, agent)) return;
+      moveAgent(draft, agent, region, card.kind);
+      if (card.kind === "basic" && agent.alive) draft.pendingWait = agent.id;
+    });
+    setPendingStayConfirm(null);
   };
 
   const quickAction = (type: "plant" | "half" | "final" | "pickup" | "drop" | "spike" | "spike-transfer", pickupId?: string) => {
@@ -9104,6 +9124,15 @@ export default function Home() {
         <div className="combat-result" ref={combatResultRef}><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : combatScene.waitClaim ? "점유한 적이 모두 제거되거나 후퇴하면 선택한 구역에 대기가 완성됩니다. 대기 시도자는 후퇴할 수 없습니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
         {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>{combatRetreatLocked ? "첫 공격을 완료해야 이탈할 수 있습니다" : "이번 교전 차례를 선택하세요"}</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>이번 사격 · 기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>{combatScene.retreatLockedIds.includes(combatActor.id) ? "대기 구역 확보 시도 중" : combatScene.range === 0 ? "거리 0 첫 교전 사이클" : "거리 1 선택 교전의 첫 공격 전"}</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
+
+      {pendingStayConfirm && <div className="modal-backdrop" onMouseDown={() => setPendingStayConfirm(null)}><div className="confirm-modal" onMouseDown={(event) => event.stopPropagation()}>
+        <h3>제자리 유지 확인</h3>
+        <p><strong>{pendingStayConfirm.agentName}</strong>이 이동하지 않고 {regionName(pendingStayConfirm.region)}에서 카드를 사용합니다. 계속할까요?</p>
+        <div className="confirm-modal-actions">
+          <button className="secondary" onClick={() => setPendingStayConfirm(null)}>취소</button>
+          <button onClick={confirmStayInPlace}>제자리 유지 확인</button>
+        </div>
+      </div></div>}
 
       {showHelp &&<div className="modal-backdrop" onMouseDown={() => setShowHelp(false)}><div className="rules-modal" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-head"><div><span className="eyebrow">FIELD MANUAL // V0.1</span><h2>핵심 규칙</h2></div><button onClick={() => setShowHelp(false)}>닫기</button></div>
