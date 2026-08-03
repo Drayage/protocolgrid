@@ -222,12 +222,15 @@ interface TimedStatusEffect {
   id: string;
   owner: Side;
   targetId: string;
-  kind?: "blind" | "concussed" | "exposed";
+  kind?: "blind" | "concussed" | "exposed" | "stimmed";
   aimPenalty?: number;
   priorityPenalty?: number;
   movePenalty?: number;
+  aimBonus?: number;
+  moveBonus?: number;
   consumeOnAttack?: boolean;
   consumeOnDefend?: boolean;
+  consumeOnCombatEnd?: boolean;
 }
 
 interface EnemyMemory {
@@ -850,7 +853,7 @@ const AGENTS: Record<string, AgentTemplate> = {
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "2원 · 1회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
   "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 이내 구역을 지정합니다. 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.shock}(탐지 상태면 ${SKILL_DAMAGE.shock + 1}), 설치물을 파괴합니다.`)] },
   "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "range2", `거리 2 이내 구역을 지정해 채널링합니다. 준비 중에는 무빙 -1, 우선도 +2, 이동하면 취소됩니다. 목표는 상대에게 보이지 않으며, 내 다음 턴이 시작할 때 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.aftershock}를 입힙니다.`)] },
-  "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "목표 방향의 첫 연결을 다음 턴까지 차단합니다."), skill("stim", "전투 자극제", "2원 · 1회", "self", "현재 구역 아군의 에임과 우선도를 강화합니다.")] },
+  "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "목표 방향의 첫 연결을 다음 턴까지 차단합니다."), skill("stim", "전투 자극제", "2원 · 1회", "adjacent", "인접 구역에 자극제 신호기를 설치합니다(내 다음 턴이 끝날 때까지 유지). 신호기에 닿은 아군은 각자 첫 교전이 끝날 때까지 에임 +1, 무빙 +1을 받습니다.")] },
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
 };
 
@@ -2021,16 +2024,17 @@ function roll(max: number) {
 function finalStats(game: GameState, agent: Agent, ignoreConsumedAttackEffects = false) {
   const base = ROLE_STATS[agent.role];
   const weapon = WEAPONS[agent.weapon];
-  const stimmed = game.stims.some((zone) => zone.owner === agent.team && zone.region === agent.region);
   const aftershockCharging = game.aftershocks.some((channel) => channel.ownerAgentId === agent.id);
   const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id && (!ignoreConsumedAttackEffects || !effect.consumeOnAttack));
   const timedAimPenalty = timed.reduce((sum, effect) => sum + (effect.aimPenalty ?? 0), 0);
   const timedPriorityPenalty = timed.reduce((sum, effect) => sum + (effect.priorityPenalty ?? 0), 0);
   const timedMovePenalty = timed.reduce((sum, effect) => sum + (effect.movePenalty ?? 0), 0);
+  const timedAimBonus = timed.reduce((sum, effect) => sum + (effect.aimBonus ?? 0), 0);
+  const timedMoveBonus = timed.reduce((sum, effect) => sum + (effect.moveBonus ?? 0), 0);
   return {
-    aim: Math.max(1, base.aim + weapon.aim - agent.status.aimPenalty - timedAimPenalty + (stimmed ? 1 : 0)),
-    move: Math.max(1, base.move + weapon.move + agent.status.moveBonus - timedMovePenalty - (aftershockCharging ? 1 : 0)),
-    priorityBoost: stimmed ? 1 : 0,
+    aim: Math.max(1, base.aim + weapon.aim - agent.status.aimPenalty - timedAimPenalty + timedAimBonus),
+    move: Math.max(1, base.move + weapon.move + agent.status.moveBonus + timedMoveBonus - timedMovePenalty - (aftershockCharging ? 1 : 0)),
+    priorityBoost: 0,
     priorityPenalty: agent.status.priorityPenalty + timedPriorityPenalty + (aftershockCharging ? 2 : 0),
   };
 }
@@ -2227,6 +2231,14 @@ function applyDetection(game: GameState, agent: Agent) {
 
 function isChanneling(game: GameState, agent: Agent) {
   return game.spike.actorId === agent.id && (game.spike.status === "planting" || game.spike.status === "defusing");
+}
+
+// Refreshes (non-stacking) the personal +1 aim / +1 move buff an ally picks
+// up by touching a stim beacon; it stays on them until their first combat
+// scene fully resolves, not just until they leave the beacon's region.
+function applyStimBuff(game: GameState, agent: Agent) {
+  game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === "stimmed"));
+  game.statusEffects.push({ id: `stimmed-${game.turnSerial}-${agent.id}`, owner: agent.team, targetId: agent.id, kind: "stimmed", aimBonus: 1, moveBonus: 1, consumeOnCombatEnd: true });
 }
 
 function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, damage: number, label: string) {
@@ -2540,6 +2552,10 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
   if (ownFire && agent.name === "피닉스" && agent.hp < AGENT_MAX_HP) {
     agent.hp = Math.min(AGENT_MAX_HP, agent.hp + 1);
     addLog(game, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
+  }
+  if (game.stims.some((zone) => zone.owner === agent.team && zone.region === to)) {
+    applyStimBuff(game, agent);
+    addLog(game, `${agent.name}가 자극제 신호기에 닿아 다음 교전까지 에임+1, 무빙+1을 받습니다.`);
   }
 
   const trip = game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === from && item.to === to)
@@ -5708,11 +5724,22 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "stim") {
-        const alliesHere = game.teams[side].agents.filter((ally) => ally.alive && ally.region === agent.region).length;
-        if (game.stims.some((stim) => stim.owner === side && stim.region === agent.region) || (alliesHere < 2 && !intel.some((item) => distance(agent.region, item.region) <= 1))) continue;
+        const objective = aiObjectiveRegion(game, side, agent.region, intel);
+        const target = aiSkillRegions(agent, "adjacent")
+          .filter((region) => !game.stims.some((stim) => stim.owner === side && stim.region === region))
+          .map((region) => ({
+            region,
+            alliesHere: game.teams[side].agents.filter((ally) => ally.alive && ally.region === region).length,
+            nearEnemy: intel.some((item) => distance(region, item.region) <= 1),
+            progress: distance(agent.region, objective) - distance(region, objective),
+          }))
+          .filter((candidate) => candidate.alliesHere >= 2 || candidate.nearEnemy)
+          .sort((a, b) => (b.alliesHere * 3 + (b.nearEnemy ? 2 : 0) + b.progress) - (a.alliesHere * 3 + (a.nearEnemy ? 2 : 0) + a.progress))[0];
+        if (!target) continue;
         if (!begin()) return true;
-        game.stims.push({ id: `ai-stim-${game.turnSerial}-${agent.region}`, owner: side, region: agent.region, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
-        finish();
+        game.stims.push({ id: `ai-stim-${game.turnSerial}-${target.region}`, owner: side, region: target.region, expiresOwnerTurn: game.teamTurns[side] + 2, expiresOn: "owner-start" });
+        game.teams[side].agents.filter((ally) => ally.alive && ally.region === target.region).forEach((ally) => applyStimBuff(game, ally));
+        finish(target.region);
         return true;
       }
 
@@ -7238,6 +7265,13 @@ export default function Home() {
             addLog(draft, `${agent.name}가 불길에서 체력 1을 회복했습니다.`);
           }
           break;
+        case "stim": {
+          draft.stims.push({ id: deployableId(), owner: agent.team, region, expiresOwnerTurn: draft.teamTurns[agent.team] + 2, expiresOn: "owner-start" });
+          const alliesHere = draft.teams[agent.team].agents.filter((ally) => ally.alive && ally.region === region);
+          alliesHere.forEach((ally) => applyStimBuff(draft, ally));
+          addLog(draft, `자극제 신호기가 ${regionName(region)}에 설치됐습니다.`);
+          break;
+        }
         case "relay":
           enemies.forEach((enemy) => {
             if (!draft.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "concussed", priorityPenalty: 1 });
@@ -7324,7 +7358,6 @@ export default function Home() {
       if (definition.id === "gear") agent.status.highGear = true;
       if (definition.id === "camera") draft.deployables.push({ id: `camera-${Date.now()}`, kind: "camera", owner: agent.team, ownerAgentId: agent.id, region: agent.region });
       if (definition.id === "alarm") draft.deployables.push({ id: `alarm-${Date.now()}`, kind: "alarm", owner: agent.team, ownerAgentId: agent.id, region: agent.region });
-      if (definition.id === "stim") draft.stims.push({ id: `stim-${Date.now()}`, owner: agent.team, region: agent.region, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-start" });
       showSkillFx(draft, agent, definition.id, definition.name, agent.region, agent.region);
       agent.extraActions -= 1;
       agent.skills[definition.id] -= 1;
@@ -8018,6 +8051,8 @@ export default function Home() {
     }
     if (scene.phase !== "outro") return;
     draft.combatQueue.shift();
+    draft.statusEffects = draft.statusEffects.filter((effect) =>
+      !(effect.consumeOnCombatEnd && (effect.targetId === scene.mover.id || effect.targetId === scene.holder.id)));
     if (scene.postMovementFx?.length) {
       draft.postCombatMovementFxQueue.push(...scene.postMovementFx);
       draft.lastMovementFx = draft.postCombatMovementFxQueue[0];
