@@ -2599,7 +2599,9 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
   }
 
   const turret = game.deployables.find((item) => item.kind === "turret" && item.owner === enemy && item.to === to);
-  if (turret) {
+  if (turret && isSmokeBlocked(game, turret.region, to)) {
+    addLog(game, `${agent.name}이 연막 뒤로 포탑의 감시망을 피했습니다.`);
+  } else if (turret) {
     if (agent.status.ignoreGround) {
       agent.status.ignoreGround = false;
       addLog(game, `${agent.name}이 상승 기류로 포탑의 공격을 무시했습니다.`);
@@ -5122,9 +5124,15 @@ function chooseAiOptionalContact(game: GameState, contact: PendingContact) {
 
 function aiShotgunApproachRegion(game: GameState, scene: CombatScene, actor: Agent, opponent: Agent, retreatOptions: number[]) {
   if (WEAPONS[actor.weapon].type !== "shotgun" || scene.range !== 1 || !retreatOptions.includes(opponent.region)) return null;
-  const nearbyExactEnemies = aiEnemyIntel(game, actor.team).filter((enemy) =>
-    enemy.exact && distance(enemy.region, opponent.region) <= 1);
-  if (nearbyExactEnemies.length !== 1 || nearbyExactEnemies[0].agent.id !== opponent.id) return null;
+  const otherThreats = aiEnemyIntel(game, actor.team).filter((enemy) => {
+    if (enemy.agent.id === opponent.id || enemy.confidence < 0.35) return false;
+    if (enemy.region === opponent.region) return true;
+    if (!enemy.waitDirs.includes(opponent.region)) return false;
+    const waitRange = WEAPONS[enemy.weapon].type === "sniper" ? 2 : 1;
+    const range = distance(enemy.region, opponent.region);
+    return range > 0 && range <= waitRange && !isWaitPathSmokeBlocked(game, enemy.region, opponent.region);
+  });
+  if (otherThreats.length) return null;
 
   const currentOdds = aiCombatOdds(game, scene, actor, opponent);
   const currentReturnFire = aiCombatOdds(game, scene, opponent, actor);

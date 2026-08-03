@@ -260,7 +260,7 @@ test("AI compares real combat odds and lets an isolated shotgun close distance t
   assert.match(page, /const combatLossChance = duelOdds\.actorFirstDeath \+ duelOdds\.mutualDeath \* \.5/);
   assert.match(page, /function aiShotgunApproachRegion/);
   assert.match(page, /WEAPONS\[actor\.weapon\]\.type !== "shotgun" \|\| scene\.range !== 1/);
-  assert.match(page, /nearbyExactEnemies\.length !== 1/);
+  assert.match(page, /if \(otherThreats\.length\) return null/);
   assert.match(page, /const retreatAimDelta = actor\.status\.aimPenalty > 0 \? 0 : -1/);
   assert.match(page, /const retreatMoveDelta = Math\.min\(-1, actor\.status\.moveBonus\) - actor\.status\.moveBonus/);
   assert.match(page, /const closeSurvival = Math\.max\(0, 100 - closeReturnFire\.killChance\)/);
