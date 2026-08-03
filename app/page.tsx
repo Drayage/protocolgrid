@@ -336,6 +336,14 @@ interface FloatingNumberFx {
   kind: "damage" | "heal";
 }
 
+interface AftershockAlert {
+  id: string;
+  region: number;
+  casterSide: Side;
+  victimNames: string[];
+  damage: number;
+}
+
 interface KillHighlight {
   id: string;
   killerId: string;
@@ -588,6 +596,7 @@ interface GameState {
   lastMovementFx: MovementFx | null;
   postCombatMovementFxQueue: MovementFx[];
   floatingNumbers: FloatingNumberFx[];
+  lastAftershockFx: AftershockAlert | null;
   turnKillCounts: Record<string, number>;
   lastKillFx: KillHighlight | null;
   roundKillHighlights: KillHighlight[];
@@ -848,6 +857,7 @@ function weaponRuleSummary(weapon: Weapon) {
   const rules: string[] = [];
   if (weapon.aim) rules.push(`상시 에임 +${weapon.aim}`);
   if (weapon.move) rules.push(`상시 무빙 +${weapon.move}`);
+  if (weapon.id === "phantom") rules.push("상시 무빙 보너스 없음 · 교전 1라운드(대기·진입 모두)에서만 무빙 +2");
   if (weapon.type === "normal") rules.push("사거리 1", "거리 0 에임 +1");
   if (weapon.type === "shotgun") rules.push("사거리 1", "거리 1 에임 -2", `거리 0 에임 +2 · 피해 +${SHOTGUN_CLOSE_DAMAGE_BONUS}`);
   if (weapon.type === "sniper") rules.push("대기 구역 거리 2 지정", "대기 사격 에임 +1", "비대기 교전 우선도 +1(한 단계 느림)", "비대기 공격 몸통·헤드 피해 -1", "트레이드 상대 페널티: 교전 동안 우선도 +1·첫 사격 대기 에임 +1 미적용", "거리 0 에임 -2");
@@ -1126,6 +1136,7 @@ function createInitialGame(
     lastMovementFx: null,
     postCombatMovementFxQueue: [],
     floatingNumbers: [],
+    lastAftershockFx: null,
     turnKillCounts: {},
     lastKillFx: null,
     roundKillHighlights: [],
@@ -1277,6 +1288,7 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.lastMovementFx = null;
   game.postCombatMovementFxQueue = [];
   game.floatingNumbers = [];
+  game.lastAftershockFx = null;
   game.turnKillCounts = {};
   game.lastKillFx = null;
   game.roundKillHighlights = [];
@@ -2947,7 +2959,7 @@ function observedRegions(game: GameState, observer: Side): Set<number> {
 }
 
 function spikeVisibleTo(game: GameState, viewerSide: Side, omniscient = false) {
-  if (omniscient || viewerSide === "attack") return true;
+  if (omniscient) return true;
   const observed = observedRegions(game, viewerSide);
   const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
   const region = carrier?.region ?? game.spike.region;
@@ -5692,6 +5704,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!target?.score) continue;
         if (!begin()) return true;
         game.aftershocks.push({ id: `ai-aftershock-${game.turnSerial}-${target.region}`, owner: side, ownerAgentId: agent.id, region: target.region, readyOnTurn: game.teamTurns[side] + 1 });
+        addLog(game, `${SIDE_LABEL[side]}이 어딘가에 여진을 준비했습니다. 다음 턴 시작을 조심하세요.`);
         finish(target.region);
         return true;
       }
@@ -6126,6 +6139,15 @@ function KillStreakOverlay({ highlight }: { highlight: KillHighlight }) {
   </aside>;
 }
 
+function AftershockAlertOverlay({ alert }: { alert: AftershockAlert }) {
+  return <aside key={alert.id} className={`aftershock-alert-fx team-${alert.casterSide}`} role="status" aria-live="assertive">
+    <div className="aftershock-alert-burst" />
+    <strong>⚠ 여진 폭발</strong>
+    <span>{alert.victimNames.join(", ")} 피해 {alert.damage}</span>
+    <small>{regionName(alert.region)}</small>
+  </aside>;
+}
+
 const ACCOLADE_ICON: Record<RoundAccolade["kind"], string> = {
   ace: "V",
   clutch: "1",
@@ -6511,7 +6533,7 @@ function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onBu
         <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const difference = buyPhaseWeaponDifference(agent, weapon.id); const bulkTargets = team.agents.filter((item) => item.weapon !== weapon.id); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + buyPhaseWeaponDifference(item, weapon.id), 0); return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || difference > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)} title={weaponRuleSummary(weapon)}><WeaponSilhouette weapon={weapon.id} /><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : difference < 0 ? `이번 구매 환불 ${-difference}원` : difference ? `${difference}원` : weapon.id === (agent.buyBaselineWeapon ?? agent.weapon) ? "보존 총기로 복귀" : "무료 교체"}</b></button><button className="bulk-buy" disabled={locked || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `이번 구매 환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div>
         <div className="purchase-lower">
           <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors">{([{"type":"none","name":"방어구 없음","detail":"장비값 환불","price":0,"value":0},{"type":"light","name":"소형 방어구","detail":"방어 1","price":2,"value":1},{"type":"regen","name":"회복 방어구","detail":"턴 종료 회복","price":4,"value":1},{"type":"heavy","name":"대형 방어구","detail":"방어 2","price":6,"value":2}] as const).map((armor) => { const difference = armor.price - ARMOR_PRICE[agent.armorType]; const bulkTargets = team.agents.filter((item) => item.armorType !== armor.type); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + armor.price - ARMOR_PRICE[item.armorType], 0); return <div key={armor.type} className="purchase-armor-option"><button className="purchase-primary" disabled={difference > team.funds || agent.armorType === armor.type} onClick={() => onArmor(armor.type, armor.price, armor.value)}><strong>{armor.name}</strong><span>{armor.detail}</span><b>{difference < 0 ? `환불 ${-difference}원` : difference ? `${difference}원` : "무료 교체"}</b></button><button className="bulk-buy" disabled={bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkArmor(armor.type, armor.price, armor.value)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div></div>
-          <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small></div><b>{price}원</b></button>; })}</div></div>
+          <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)} title={item.description}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small><small className="skill-rule-copy">{item.description}</small></div><b>{price}원</b></button>; })}</div></div>
         </div>
       </section>
       <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i className={agentArtClass(item.name)} aria-label={`${item.name} 초상`} /><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "본진 대기 설정"}</span><strong>구매 확정</strong></button></aside>
@@ -6900,6 +6922,15 @@ export default function Home() {
     }, 2200);
     return () => window.clearTimeout(timer);
   }, [activeKillFxId]);
+
+  const activeAftershockFxId = game.lastAftershockFx?.id ?? null;
+  useEffect(() => {
+    if (!activeAftershockFxId) return;
+    const timer = window.setTimeout(() => {
+      setGame((current) => current.lastAftershockFx?.id === activeAftershockFxId ? { ...current, lastAftershockFx: null } : current);
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [activeAftershockFxId]);
 
   const floatingNumberIds = useMemo(() => game.floatingNumbers.map((item) => item.id).join(","), [game.floatingNumbers]);
   useEffect(() => {
@@ -7409,6 +7440,7 @@ export default function Home() {
           break;
         case "aftershock":
           draft.aftershocks.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, readyOnTurn: draft.teamTurns[agent.team] + 1 });
+          addLog(draft, `${SIDE_LABEL[agent.team]}이 어딘가에 여진을 준비했습니다. 다음 턴 시작을 조심하세요.`);
           break;
         case "smoke": {
           const first = targeting.selected![0];
@@ -7529,11 +7561,13 @@ export default function Home() {
           return;
         }
         if (!(GRAPH.get(state.origin) ?? []).includes(region)) return;
+        if (draft.actionsUsed >= 3) return;
         const movers = draft.teams[draft.turnSide].agents.filter((agent) => agent.alive && agent.region === state.origin);
         draft.groupMovement = { agentIds: movers.map((agent) => agent.id), nextIndex: 0, target: region, special: state.special! };
         if (state.special === "rush") draft.teams.attack.rushUsed = true;
         else draft.teams.defense.cover = false;
-        addLog(draft, `${state.special === "rush" ? "러쉬" : "커버"}: ${movers.length}명 순차 단체 이동.`);
+        draft.actionsUsed += 1;
+        addLog(draft, `${state.special === "rush" ? "러쉬" : "커버"}: ${movers.length}명 순차 단체 이동 · 행동 1회 소모.`);
         draft.targeting = null;
         continueGroupMovement(draft);
       });
@@ -7578,7 +7612,7 @@ export default function Home() {
     });
   };
 
-  const quickAction = (type: "plant" | "half" | "final" | "pickup" | "drop" | "spike") => {
+  const quickAction = (type: "plant" | "half" | "final" | "pickup" | "drop" | "spike" | "spike-transfer", pickupId?: string) => {
     if (!selectedAgent || selectedAgent.extraActions < 1 || game.pendingContact) return;
     mutate((draft) => {
       const agent = getAgent(draft, selectedAgent.id);
@@ -7609,7 +7643,9 @@ export default function Home() {
         addLog(draft, `${agent.name} 최종 해체 시작. 다음 수비 턴 시작까지 버티세요.`);
       }
       if (type === "pickup") {
-        const dropped = draft.droppedWeapons.find((item) => item.region === agent.region);
+        const dropped = pickupId
+          ? draft.droppedWeapons.find((item) => item.id === pickupId && item.region === agent.region)
+          : draft.droppedWeapons.find((item) => item.region === agent.region);
         if (!dropped) return;
         if (agent.weapon !== "classic") draft.droppedWeapons.push({ id: `swap-${Date.now()}`, region: agent.region, weapon: agent.weapon, knownBy: [agent.team] });
         agent.weapon = dropped.weapon;
@@ -7633,6 +7669,14 @@ export default function Home() {
         draft.spikeKnownByDefense = false;
         agent.extraActions -= 1;
         addLog(draft, `${agent.name}이 스파이크를 회수했습니다.`);
+      }
+      if (type === "spike-transfer") {
+        if (agent.team !== "attack" || draft.spike.status !== "carried" || draft.spike.carrierId === agent.id) return;
+        const carrier = getAgent(draft, draft.spike.carrierId);
+        if (!carrier?.alive || carrier.region !== agent.region) return;
+        draft.spike.carrierId = agent.id;
+        agent.extraActions -= 1;
+        addLog(draft, `${agent.name}이 ${carrier.name}에게서 스파이크를 넘겨받았습니다.`);
       }
     });
   };
@@ -7718,10 +7762,21 @@ export default function Home() {
 
       draft.aftershocks.filter((channel) => channel.owner === newSide && draft.teamTurns[newSide] >= channel.readyOnTurn).forEach((channel) => {
         const caster = getAgent(draft, channel.ownerAgentId);
-        draft.teams[otherSide(newSide)].agents.filter((enemy) => enemy.alive && enemy.region === channel.region).forEach((enemy) => {
+        const victims = draft.teams[otherSide(newSide)].agents.filter((enemy) => enemy.alive && enemy.region === channel.region);
+        const victimNames = victims.map((enemy) => enemy.name);
+        victims.forEach((enemy) => {
           applyDamage(draft, caster, enemy, SKILL_DAMAGE.aftershock, "여진 폭발", true);
         });
-        addLog(draft, `${caster?.name ?? "요원"}의 여진이 ${regionName(channel.region)}에서 터졌습니다.`);
+        addLog(draft, `${SIDE_LABEL[newSide]}의 여진이 ${regionName(channel.region)}에서 터졌습니다${victimNames.length ? ` · ${victimNames.join(", ")} 피해` : ""}.`);
+        if (victimNames.length) {
+          draft.lastAftershockFx = {
+            id: `aftershock-${draft.turnSerial}-${channel.id}`,
+            region: channel.region,
+            casterSide: newSide,
+            victimNames,
+            damage: SKILL_DAMAGE.aftershock,
+          };
+        }
       });
       draft.aftershocks = draft.aftershocks.filter((channel) => !(channel.owner === newSide && draft.teamTurns[newSide] >= channel.readyOnTurn));
 
@@ -8326,7 +8381,7 @@ export default function Home() {
       addLog(draft, `${committedAiAgent.name}의 카드 전 추가행동은 사용할 수 있는 즉시 행동이 없어 소멸하고, 확정한 카드 행동을 계속합니다.`);
     }
     if (!resolvingCommittedAiCard && tryPrepareAiPreCardAction(draft, side)) return;
-    if (!resolvingCommittedAiCard && draft.turnSide === "attack" && draft.spike.status !== "dropped" && draft.cycle <= 2 && !draft.teams.attack.rushUsed) {
+    if (!resolvingCommittedAiCard && draft.turnSide === "attack" && draft.spike.status !== "dropped" && draft.cycle <= 2 && !draft.teams.attack.rushUsed && draft.actionsUsed < 3) {
       const groups = new Map<number, Agent[]>();
       draft.teams.attack.agents
         .filter((agent) => agent.alive && !isChanneling(draft, agent))
@@ -8340,6 +8395,7 @@ export default function Home() {
           || (draft.teams.attack.lossStreak > 0 ? Number(a.weapon === "classic") - Number(b.weapon === "classic") : 0));
         draft.teams.attack.rushUsed = true;
         draft.groupMovement = { agentIds: rushAgents.map((agent) => agent.id), nextIndex: 0, target: destination, special: "rush" };
+        draft.actionsUsed += 1;
         if (spectatorMode) addLog(draft, `공격팀 AI가 ${draft.attackPlan.label} 작전의 초반 러쉬로 ${regionName(destination)}에 전개합니다.`);
         continueGroupMovement(draft);
         return;
@@ -8563,15 +8619,18 @@ export default function Home() {
       : `AI가 사용할 수 있는 행동카드가 없어 턴을 정리합니다.`);
   });
   const selectedRegion = selectedAgent ? REGIONS.find((region) => region.id === selectedAgent.region) : null;
-  const droppedHere = selectedAgent ? game.droppedWeapons.find((item) => item.region === selectedAgent.region) : null;
+  const droppedWeaponsHere = selectedAgent ? game.droppedWeapons.filter((item) => item.region === selectedAgent.region) : [];
   const spikeCarrier = getAgent(game, game.spike.carrierId);
   const spikeVisible = spikeVisibleTo(game, viewerSide, spectatorMode);
   const spikeCarrierKnown = spikeVisible && !!spikeCarrier;
-  const spikeHudLabel = !spikeVisible ? "정보 없음" : game.spike.status === "carried"
-    ? `운반 중${spikeCarrierKnown ? ` · ${spikeCarrier!.name}` : ""}`
-    : game.spike.status === "dropped"
-      ? `회수 필요${game.spike.region !== null ? ` · ${game.spike.region}번` : ""}`
-      : game.spike.status === "planting" ? "설치 진행" : game.spike.status === "planted" ? "설치됨" : game.spike.status === "half" ? "반 해체" : game.spike.status === "defusing" ? "최종 해체" : game.spike.status === "defused" ? "해체 완료" : "폭발";
+  const spikeInstalled = ["planted", "half", "defusing", "defused", "exploded"].includes(game.spike.status);
+  const spikeHudLabel = !spikeVisible
+    ? (spikeInstalled ? "설치됨" : "설치 전")
+    : game.spike.status === "carried"
+      ? `운반 중${spikeCarrierKnown ? ` · ${spikeCarrier!.name}` : ""}`
+      : game.spike.status === "dropped"
+        ? `회수 필요${game.spike.region !== null ? ` · ${game.spike.region}번` : ""}`
+        : game.spike.status === "planting" ? "설치 진행" : game.spike.status === "planted" ? "설치됨" : game.spike.status === "half" ? "반 해체" : game.spike.status === "defusing" ? "최종 해체" : game.spike.status === "defused" ? "해체 완료" : "폭발";
   const nearbyEnemyDeployables = selectedAgent ? game.deployables.filter((item) => item.owner !== selectedAgent.team && distance(selectedAgent.region, item.region) <= 1 && visible.has(item.region)) : [];
   const friendlyCamera = selectedAgent?.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === selectedAgent.team) : null;
   const cameraTargets = friendlyCamera ? game.teams[otherSide(selectedAgent!.team)].agents.filter((enemy) => enemy.alive && !enemy.detected && [friendlyCamera.region, ...(GRAPH.get(friendlyCamera.region) ?? [])].includes(enemy.region)) : [];
@@ -8651,6 +8710,7 @@ export default function Home() {
       <AiController game={game} sides={controlledAiSides} paused={spectatorMode && spectatorPaused} speed={spectatorMode ? spectatorSpeed : 1} stepSignal={spectatorStep} presentationLocked={combatApproachActive || combatIntroActive || currentCombatPhase === "outro"} onStep={runAiStep} onEndTurn={endTurn} onCombatAttack={combatAttack} onCombatRetreat={combatRetreat} onCombatAdvance={combatAdvance} onCombatContinue={advanceCombat} onTailwind={tailwindMove} />
       <CombatOutroController sceneId={currentCombatPhase === "outro" ? currentCombatId : null} onComplete={advanceCombat} />
       {game.lastKillFx && <KillStreakOverlay key={game.lastKillFx.id} highlight={game.lastKillFx} />}
+      {game.lastAftershockFx && <AftershockAlertOverlay key={game.lastAftershockFx.id} alert={game.lastAftershockFx} />}
       <header className="topbar">
         <div className="brand-block">
           <span className="brand-mark">V//T</span>
@@ -8713,7 +8773,13 @@ export default function Home() {
           <div className="enemy-summary">
             <span className="eyebrow">OPPOSITION</span>
             <div className="enemy-pips">
-              {game.teams[otherSide(viewerSide)].agents.map((agent) => { const revealed = observed.has(agent.region) || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); return <i key={agent.id} className={`${agent.alive ? "" : "down"} ${revealed ? "detected" : ""}`} title={`${agent.name}${revealed ? " · 위치 공개" : ""}`} />; })}
+              {game.teams[otherSide(viewerSide)].agents.map((agent) => {
+                const revealed = observed.has(agent.region) || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id));
+                return <span key={agent.id} className={`enemy-pip ${agent.alive ? "" : "down"} ${revealed ? "detected" : ""}`} title={`${agent.name} · ${agent.alive ? "생존" : "사망"}${revealed ? " · 위치 공개" : ""}`}>
+                  <i />
+                  <b>{agent.name}</b>
+                </span>;
+              })}
             </div>
           </div>
           <div className="deck-status"><span>덱 {viewerTeam.deck.length}</span><span>버림 {viewerTeam.discard.length}</span><span>손패 5</span></div>
@@ -8860,8 +8926,8 @@ export default function Home() {
                   </button>
                 );
               })}
-              {!isAiControlledTurn && viewerSide === "attack" && game.cycle <= 2 && !viewerTeam.rushUsed && <button className="special-card rush-card" onClick={() => startSpecial("rush")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact}><span>ROUND {game.cycle}</span><strong>러쉬</strong><p>한 구역 아군 전원을 인접 구역으로 이동</p></button>}
-              {!isAiControlledTurn && viewerSide === "defense" && viewerTeam.cover && <button className="special-card cover-card" onClick={() => startSpecial("cover")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact}><span>ONE USE</span><strong>커버</strong><p>보관 가능한 단체 재진입 카드</p></button>}
+              {!isAiControlledTurn && viewerSide === "attack" && game.cycle <= 2 && !viewerTeam.rushUsed && <button className="special-card rush-card" onClick={() => startSpecial("rush")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact || game.actionsUsed >= 3}><span>ROUND {game.cycle}</span><strong>러쉬</strong><p>한 구역 아군 전원을 인접 구역으로 이동 · 행동 1회 소모</p></button>}
+              {!isAiControlledTurn && viewerSide === "defense" && viewerTeam.cover && <button className="special-card cover-card" onClick={() => startSpecial("cover")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact || game.actionsUsed >= 3}><span>ONE USE</span><strong>커버</strong><p>보관 가능한 단체 재진입 카드 · 행동 1회 소모</p></button>}
             </div>
           </div>
         </section>
@@ -8893,9 +8959,10 @@ export default function Home() {
                 {canPlant && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("plant")}>◆ 스파이크 설치</button>}
                 {canHalf && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("half")}>◇ 반 해체</button>}
                 {canFinal && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("final")}>◇ 최종 해체</button>}
-                {droppedHere && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("pickup")}>{WEAPONS[droppedHere.weapon].name} 줍기</button>}
+                {droppedWeaponsHere.map((item) => <button key={item.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("pickup", item.id)}>{WEAPONS[item.weapon].name} 줍기</button>)}
                 {selectedAgent.weapon !== "classic" && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("drop")}>{WEAPONS[selectedAgent.weapon].name} 버리기</button>}
                 {selectedAgent.team === "attack" && game.spike.status === "dropped" && game.spike.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike")}>◆ 스파이크 회수</button>}
+                {selectedAgent.team === "attack" && game.spike.status === "carried" && game.spike.carrierId !== selectedAgent.id && spikeCarrier?.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike-transfer")}>◆ {spikeCarrier.name}에게서 스파이크 넘겨받기</button>}
                 {cameraTargets.map((enemy) => <button key={`cam-${enemy.id}`} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => cameraDetect(enemy.id)}>◉ 스파이캠 탐지 · {enemy.region}번</button>)}
                 {nearbyEnemyDeployables.map((device) => <button key={device.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => destroyDeployable(device.id)}>⌁ {device.kind} 파괴 · {device.region}번</button>)}
               </>}
@@ -9003,7 +9070,7 @@ export default function Home() {
           <div className="combat-context-grid">
             <div><span>진행</span><b>매치 R{game.matchRound} · 전술 {game.cycle}/{PRE_PLANT_CYCLE_LIMIT}</b></div>
             <div><span>현재 행동</span><b>{activeCombatAction}</b></div>
-            <div><span>스파이크</span><b>{spikeVisible ? `${SPIKE_STATUS_LABEL[game.spike.status]}${game.spike.region ? ` · ${game.spike.region}번` : ""}` : "시야 밖 · 정보 없음"}</b></div>
+            <div><span>스파이크</span><b>{spikeVisible ? `${SPIKE_STATUS_LABEL[game.spike.status]}${game.spike.region ? ` · ${game.spike.region}번` : ""}` : `시야 밖 · ${spikeInstalled ? "설치됨" : "설치 전"}`}</b></div>
             <div><span>교전 규칙</span><b>{combatScene.kind === "turret" ? "포탑 우선도 2 · 자동 1회 공격" : combatScene.waitClaim ? `일반 교전 · ${combatScene.mover.name} 후퇴 불가` : combatScene.offAngle ? `기습 · 공격 ${combatScene.mover.priority} / 대응 ${combatScene.holder.priority} · 대기 보너스 없음` : combatScene.simultaneous ? "동일 우선도 · 후퇴자는 무빙 +2" : `${Math.min(combatScene.mover.priority, combatScene.holder.priority)} 우선 행동`}</b></div>
           </div>
           <div className="combat-intel-grid">

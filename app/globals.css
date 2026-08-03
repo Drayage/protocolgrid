@@ -177,10 +177,14 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .agent-vitals small { font: 8px var(--font-geist-mono), monospace; color: var(--muted); }
 
 .enemy-summary { margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--line); }
-.enemy-pips { display: flex; gap: 7px; margin-top: 9px; }
-.enemy-pips i { width: 16px; height: 16px; border: 1px solid rgba(255,82,103,.55); background: rgba(255,82,103,.08); transform: rotate(45deg); }
-.enemy-pips i.down { opacity: .18; background: #354047; border-color: #354047; }
-.enemy-pips i.detected { background: var(--red); box-shadow: 0 0 12px rgba(255,82,103,.7); }
+.enemy-pips { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 9px; }
+.enemy-pip { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.enemy-pip i { width: 16px; height: 16px; border: 1px solid rgba(255,82,103,.55); background: rgba(255,82,103,.08); transform: rotate(45deg); }
+.enemy-pip.down i { opacity: .18; background: #354047; border-color: #354047; }
+.enemy-pip.detected i { background: var(--red); box-shadow: 0 0 12px rgba(255,82,103,.7); }
+.enemy-pip b { color: #8ba0a4; font-size: 6px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; }
+.enemy-pip.down b { color: #4c5c60; text-decoration: line-through; }
+.enemy-pip.detected b { color: var(--red); }
 
 .deck-status { display: flex; justify-content: space-between; margin-top: 9px; color: var(--muted); font-size: 8px; letter-spacing: .08em; }
 
@@ -347,6 +351,30 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 }
 .multikill-fx.team-attack, .round-highlight.team-attack { --kill-color: var(--red); }
 .multikill-fx.team-defense, .round-highlight.team-defense { --kill-color: var(--blue); }
+.aftershock-alert-fx {
+  position: fixed;
+  z-index: 455;
+  top: 78px;
+  left: 50%;
+  width: 260px;
+  display: grid;
+  place-items: center;
+  gap: 3px;
+  padding: 12px 16px;
+  color: #fff;
+  text-align: center;
+  pointer-events: none;
+  transform: translateX(-50%);
+  background: rgba(9,16,20,.88);
+  border: 1px solid var(--amber);
+  box-shadow: 0 0 40px rgba(243,183,91,.28), 0 18px 32px rgba(0,0,0,.6);
+  filter: drop-shadow(0 18px 32px rgba(0,0,0,.7));
+  animation: multikillReveal 2.6s cubic-bezier(.18,.85,.24,1) both;
+}
+.aftershock-alert-fx > strong { font-size: 16px; font-weight: 900; letter-spacing: .04em; color: var(--amber); text-shadow: 0 0 14px rgba(243,183,91,.6); }
+.aftershock-alert-fx > span { font-size: 11px; font-weight: 700; color: #f5ffff; }
+.aftershock-alert-fx > small { font-size: 8px; color: #9fb0b3; }
+.aftershock-alert-burst { position: absolute; inset: 0; border: 1px solid rgba(243,183,91,.3); animation: killBurstSpin 2.6s ease-out both; }
 .multikill-burst { position: absolute; top: 7px; width: 150px; height: 150px; border: 1px solid color-mix(in srgb, var(--kill-color), transparent 34%); transform: rotate(45deg); animation: killBurstSpin 2.2s ease-out both; }
 .multikill-burst::before, .multikill-burst::after { content: ""; position: absolute; inset: 13px; border: 1px solid color-mix(in srgb, var(--kill-color), transparent 50%); }
 .multikill-burst::after { inset: -17px 62px; background: linear-gradient(var(--kill-color), transparent 48%, var(--kill-color)); border: 0; opacity: .6; }
@@ -628,6 +656,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 
 .purchase-weapons .purchase-primary { min-height: 116px; }
 .purchase-weapons .weapon-rule-copy { color: #8aa1a5; line-height: 1.45; }
+.purchase-skills .skill-rule-copy { color: #8aa1a5; line-height: 1.4; white-space: normal; }
 .turret-avatar, .turret-portrait { background-color: #071216 !important; background-repeat: no-repeat !important; border-color: var(--amber) !important; box-shadow: 0 0 26px rgba(243,183,91,.28) !important; }
 .combat-fighter.turret-fighter { border-color: rgba(243,183,91,.38); background: linear-gradient(215deg, rgba(243,183,91,.1), rgba(255,255,255,.015)); }
 .combat-fighter.turret-fighter .combat-priority strong { color: var(--amber); }

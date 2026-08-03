@@ -888,7 +888,7 @@ test("death selection, objective intel, and dropped weapons obey the active view
   assert.match(page, /const observed = observedRegions\(game, viewerSide\)/);
   assert.match(page, /const knownWeapons = game\.droppedWeapons\.filter\(\(item\) => item\.region === region\.id && observedNow\)/);
   assert.match(page, /const hasSpike = spikeVisible &&/);
-  assert.match(page, /!spikeVisible \? "정보 없음"/);
+  assert.match(page, /!spikeVisible\s*\n\s*\? \(spikeInstalled \? "설치됨" : "설치 전"\)/);
 });
 
 test("combat odds, aftershock damage, condition badges, and weapon silhouettes stay wired", async () => {
