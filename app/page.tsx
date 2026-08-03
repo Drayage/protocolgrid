@@ -238,7 +238,7 @@ interface EnemyMemory {
 interface AiRecoveryOrder {
   side: Side;
   agentId: string;
-  objectiveKind: "spike" | "weapon";
+  objectiveKind: "spike" | "weapon" | "retake";
   objectiveId: string;
   objectiveRegion: number;
   mode: "breach" | "flank";
@@ -3593,7 +3593,7 @@ function aiRecoveryFlankDestination(game: GameState, agent: Agent, objectiveRegi
 }
 
 interface AiRecoveryObjective {
-  kind: "spike" | "weapon";
+  kind: "spike" | "weapon" | "retake";
   id: string;
   region: number;
 }
@@ -3605,6 +3605,12 @@ function aiRecoveryOrderIsValid(game: GameState, order: AiRecoveryOrder) {
     return order.side === "attack"
       && game.spike.status === "dropped"
       && game.spike.region === order.objectiveRegion;
+  }
+  if (order.objectiveKind === "retake") {
+    return order.side === "defense"
+      && defenseRetakeIsActive(game)
+      && game.spike.region === order.objectiveRegion
+      && defenseRetakePair(game)?.leader.id === order.agentId;
   }
   return game.droppedWeapons.some((item) =>
     item.id === order.objectiveId
@@ -3686,6 +3692,9 @@ function aiRecoveryObjectiveForAgent(game: GameState, agent: Agent): AiRecoveryO
   if (agent.team === "attack" && game.spike.status === "dropped" && game.spike.region !== null) {
     return { kind: "spike", id: "spike", region: game.spike.region };
   }
+  if (agent.team === "defense" && game.spike.region !== null && defenseRetakePair(game)?.leader.id === agent.id) {
+    return { kind: "retake", id: "retake", region: game.spike.region };
+  }
   const weapon = aiWeaponPickupObjective(game, agent);
   return weapon ? { kind: "weapon", id: weapon.id, region: weapon.region } : null;
 }
@@ -3761,14 +3770,32 @@ function setAiRecoveryOrderRoute(game: GameState, agent: Agent, order: AiRecover
   if (!order.route.length) order.route = [agent.region];
 }
 
+function aiRecoveryDeadlineTurns(game: GameState, agent: Agent, kind: AiRecoveryOrder["objectiveKind"]): number | null {
+  if (kind === "spike" && agent.team === "attack") return Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
+  if (kind === "retake") return Math.max(0, game.spike.explosion - defenseRetakeCombatBuffer(game, agent));
+  return null;
+}
+
+function aiRecoveryInteractionTurns(game: GameState, kind: AiRecoveryOrder["objectiveKind"]): number {
+  return kind === "retake" ? (game.spike.status === "planted" ? 2 : 1) : 0;
+}
+
+// A flank route only lands the agent next to the blocker it routes around, not
+// at the objective itself — the deadline check needs the full trip (flank +
+// remaining leg to the objective), not just the detour's own length.
+function aiRecoveryFlankTurns(objectiveRegion: number, route: number[]): number {
+  if (route.length < 2) return Infinity;
+  return (route.length - 1) + distance(route[route.length - 1], objectiveRegion);
+}
+
 function createAiRecoveryOrder(game: GameState, agent: Agent, objective: AiRecoveryObjective, blockers: AiEnemyIntel[]) {
   const assaultScore = aiRecoveryAssaultScore(game, agent, objective.region, blockers);
-  const directDistance = distance(agent.region, objective.region);
-  const attackTurnsRemaining = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
-  const deadlineForcesBreach = objective.kind === "spike"
-    && agent.team === "attack"
-    && attackTurnsRemaining <= directDistance + 1;
-  let mode: AiRecoveryOrder["mode"] = assaultScore >= 0 || deadlineForcesBreach ? "breach" : "flank";
+  const deadline = aiRecoveryDeadlineTurns(game, agent, objective.kind);
+  const interactionTurns = aiRecoveryInteractionTurns(game, objective.kind);
+  const flankRoute = assaultScore < 0 ? aiRecoveryFlankRoute(game, agent, objective.region, blockers) : [];
+  const flankTurns = aiRecoveryFlankTurns(objective.region, flankRoute);
+  const flankViable = flankRoute.length > 1 && (deadline === null || flankTurns + interactionTurns <= deadline);
+  const mode: AiRecoveryOrder["mode"] = assaultScore >= 0 || !flankViable ? "breach" : "flank";
   const order: AiRecoveryOrder = {
     side: agent.team,
     agentId: agent.id,
@@ -3785,10 +3812,6 @@ function createAiRecoveryOrder(game: GameState, agent: Agent, objective: AiRecov
     assaultScore,
   };
   setAiRecoveryOrderRoute(game, agent, order, mode, blockers);
-  if (mode === "flank" && order.route.length < 2 && deadlineForcesBreach) {
-    mode = "breach";
-    setAiRecoveryOrderRoute(game, agent, order, mode, blockers);
-  }
   game.aiRecoveryOrders = game.aiRecoveryOrders.filter((existing) => existing.agentId !== agent.id);
   game.aiRecoveryOrders.push(order);
   return order;
@@ -3814,10 +3837,24 @@ function refreshAiRecoveryOrder(game: GameState, agent: Agent, order: AiRecovery
   }
   if (game.teamTurns[agent.team] <= order.committedUntilTeamTurn) return;
   const nextScore = aiRecoveryAssaultScore(game, agent, order.objectiveRegion, blockers);
+  const deadline = aiRecoveryDeadlineTurns(game, agent, order.objectiveKind);
+  const interactionTurns = aiRecoveryInteractionTurns(game, order.objectiveKind);
   const shouldBreach = nextScore >= 6;
   const shouldFlank = nextScore <= -6;
-  if (order.mode === "breach" && shouldFlank) setAiRecoveryOrderRoute(game, agent, order, "flank", blockers);
-  else if (order.mode === "flank" && shouldBreach) setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
+  if (order.mode === "breach" && shouldFlank) {
+    const flankRoute = aiRecoveryFlankRoute(game, agent, order.objectiveRegion, blockers);
+    const flankTurns = aiRecoveryFlankTurns(order.objectiveRegion, flankRoute);
+    if (flankRoute.length > 1 && (deadline === null || flankTurns + interactionTurns <= deadline)) {
+      setAiRecoveryOrderRoute(game, agent, order, "flank", blockers);
+    }
+  } else if (order.mode === "flank" && shouldBreach) {
+    setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
+  } else if (order.mode === "flank" && deadline !== null) {
+    // The clock keeps ticking while flanking — if what's left of the route no
+    // longer fits before the deadline, abandon the detour and push directly.
+    const remainingTurns = order.route.length - 1 - order.progress;
+    if (remainingTurns + interactionTurns > deadline) setAiRecoveryOrderRoute(game, agent, order, "breach", blockers);
+  }
   order.assaultScore = nextScore;
 }
 
@@ -8310,8 +8347,9 @@ export default function Home() {
           const decisionLabel = order.mode === "breach"
             ? `전력 판정 ${order.assaultScore >= 0 ? "+" : ""}${Math.round(order.assaultScore)} · 정면 돌파`
             : `전력 판정 ${Math.round(order.assaultScore)} · 측면 우회`;
-          addLog(draft, `${SIDE_LABEL[side]} AI · ${agent.name} ${regionName(order.objectiveRegion)} 회수 작전 · ${decisionLabel}${continuing ? " 유지" : " 선택"}.`);
-          addAnalyticsEvent(draft, side, "objective", `${agent.name} 회수 ${order.mode === "breach" ? "돌파" : "우회"} 판단${continuing ? " 유지" : " 확정"}`);
+          const operationLabel = order.objectiveKind === "retake" ? "리테이크 작전" : "회수 작전";
+          addLog(draft, `${SIDE_LABEL[side]} AI · ${agent.name} ${regionName(order.objectiveRegion)} ${operationLabel} · ${decisionLabel}${continuing ? " 유지" : " 선택"}.`);
+          addAnalyticsEvent(draft, side, "objective", `${agent.name} ${order.objectiveKind === "retake" ? "리테이크" : "회수"} ${order.mode === "breach" ? "돌파" : "우회"} 판단${continuing ? " 유지" : " 확정"}`);
         }
         draft.selectedAgentId = agent.id;
         playCard(draft, card, agent);

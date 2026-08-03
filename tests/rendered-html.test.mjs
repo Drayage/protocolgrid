@@ -701,11 +701,13 @@ test("AI commits to a strength-based recovery breach or flank across multiple tu
   assert.match(page, /function aiRecoveryOrderDestination/);
   assert.match(page, /next !== end && \(next === objectiveRegion \|\| blockedRegions\.has\(next\)\)/);
   assert.match(page, /committedUntilTeamTurn: game\.teamTurns\[agent\.team\] \+ 2/);
-  assert.match(page, /assaultScore >= 0 \|\| deadlineForcesBreach \? "breach" : "flank"/);
+  assert.match(page, /function aiRecoveryDeadlineTurns/);
+  assert.match(page, /function aiRecoveryFlankTurns/);
+  assert.match(page, /assaultScore >= 0 \|\| !flankViable \? "breach" : "flank"/);
   assert.match(page, /refreshAiRecoveryOrder\(game, agent, order\)/);
   assert.match(page, /const recoveryBlockerIds = new Set/);
   assert.match(page, /recoveryDecision\.destination === null && tradeDestination === null\) continue/);
-  assert.match(page, /회수 작전 ·/);
+  assert.match(page, /"리테이크 작전" : "회수 작전"/);
   assert.match(page, /회수는 확인된 대기 사격 때문에 보류하고/);
 });
 
