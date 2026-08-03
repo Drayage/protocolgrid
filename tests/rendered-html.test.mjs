@@ -187,7 +187,8 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   assert.match(page, /function tryUseAiSkill\(game: GameState, side: Side\)/);
   assert.match(page, /if \(tryUseAiSkill\(draft, side\)\) return/);
   assert.match(page, /function aiEnemyIntel/);
-  assert.match(page, /function aiSmokeEdge/);
+  assert.match(page, /function aiDarkRegion/);
+  assert.match(page, /function aiSelfAnchoredSmokePath/);
   assert.match(page, /function aiSkillPriority/);
   assert.match(page, /const attackBreach =/);
   assert.match(page, /const attackPostplant =/);
@@ -686,7 +687,7 @@ test("urgent retakes keep zero-detour weapon upgrades without sacrificing defuse
 
 test("Omen keeps every active dark smoke until its normal expiry", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /sourceSkill: definition\.id/);
+  assert.match(page, /sourceSkill: "smoke"/);
   assert.match(page, /sourceSkill: "dark"/);
   assert.doesNotMatch(page, /smokes = (?:game|draft)\.smokes\.filter\(\(smoke\) => !\(smoke\.sourceAgentId === agent\.id && smoke\.sourceSkill === "dark"\)\)/);
 });
