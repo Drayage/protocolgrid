@@ -142,6 +142,7 @@ interface Agent {
   waitStamp: number;
   waitOrders: Record<number, number>;
   detected: boolean;
+  detectedExpiresTeamTurn: number | null;
   skills: Record<string, number>;
   status: AgentStatus;
 }
@@ -221,10 +222,12 @@ interface TimedStatusEffect {
   id: string;
   owner: Side;
   targetId: string;
-  kind?: "blind" | "concussed";
+  kind?: "blind" | "concussed" | "exposed";
   aimPenalty?: number;
   priorityPenalty?: number;
+  movePenalty?: number;
   consumeOnAttack?: boolean;
+  consumeOnDefend?: boolean;
 }
 
 interface EnemyMemory {
@@ -1007,6 +1010,7 @@ function createAgent(name: string, team: Side): Agent {
     waitStamp: 0,
     waitOrders: {},
     detected: false,
+    detectedExpiresTeamTurn: null,
     skills,
     status: { aimPenalty: 0, priorityPenalty: 0, moveBonus: 0, moveRangeBonus: 0, evadeReady: false, vulnerable: false, ignoreGround: false, highGear: false },
   };
@@ -1157,6 +1161,7 @@ function resetAgentForRound(agent: Agent, side: Side, economyReset: boolean) {
   agent.extraActions = 0;
   clearWait(agent);
   agent.detected = false;
+  agent.detectedExpiresTeamTurn = null;
   Object.keys(agent.skills).forEach((skillId) => { agent.skills[skillId] = 0; });
   agent.status = { aimPenalty: 0, priorityPenalty: 0, moveBonus: 0, moveRangeBonus: 0, evadeReady: false, vulnerable: false, ignoreGround: false, highGear: false };
 }
@@ -2021,9 +2026,10 @@ function finalStats(game: GameState, agent: Agent, ignoreConsumedAttackEffects =
   const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id && (!ignoreConsumedAttackEffects || !effect.consumeOnAttack));
   const timedAimPenalty = timed.reduce((sum, effect) => sum + (effect.aimPenalty ?? 0), 0);
   const timedPriorityPenalty = timed.reduce((sum, effect) => sum + (effect.priorityPenalty ?? 0), 0);
+  const timedMovePenalty = timed.reduce((sum, effect) => sum + (effect.movePenalty ?? 0), 0);
   return {
     aim: Math.max(1, base.aim + weapon.aim - agent.status.aimPenalty - timedAimPenalty + (stimmed ? 1 : 0)),
-    move: Math.max(1, base.move + weapon.move + agent.status.moveBonus - (aftershockCharging ? 1 : 0)),
+    move: Math.max(1, base.move + weapon.move + agent.status.moveBonus - timedMovePenalty - (aftershockCharging ? 1 : 0)),
     priorityBoost: stimmed ? 1 : 0,
     priorityPenalty: agent.status.priorityPenalty + timedPriorityPenalty + (aftershockCharging ? 2 : 0),
   };
@@ -2173,6 +2179,7 @@ function makeShot(game: GameState, attacker: Agent, defender: Agent, range: numb
   const head = value >= 5;
   const damage = value <= 0 ? 0 : head ? damageProfile.head : damageProfile.body;
   if (defender.status.vulnerable && damage > 0) defender.status.vulnerable = false;
+  game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === defender.id && effect.consumeOnDefend));
   game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === attacker.id && effect.consumeOnAttack));
   return {
     hit: value > 0,
@@ -2206,6 +2213,16 @@ function cancelProgress(game: GameState, agent: Agent) {
     game.aftershocks.splice(channelIndex, 1);
     addLog(game, `${agent.name}이 이동해 여진 준비가 취소됐습니다.`);
   }
+}
+
+// Marks an agent detected until their own next team-turn ends, and refreshes
+// (non-stacking) the move-1 debuff that lasts through their first combat
+// after being (re)detected.
+function applyDetection(game: GameState, agent: Agent) {
+  agent.detected = true;
+  agent.detectedExpiresTeamTurn = game.teamTurns[agent.team] + 1;
+  game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === "exposed"));
+  game.statusEffects.push({ id: `exposed-${game.turnSerial}-${agent.id}`, owner: otherSide(agent.team), targetId: agent.id, kind: "exposed", movePenalty: 1, consumeOnDefend: true });
 }
 
 function isChanneling(game: GameState, agent: Agent) {
@@ -2528,7 +2545,7 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
       addLog(game, `${agent.name}이 상승 기류로 함정 철선을 무시했습니다.`);
     } else {
       game.deployables = game.deployables.filter((item) => item.id !== trip.id);
-      agent.detected = true;
+      applyDetection(game, agent);
       agent.status.moveBonus -= 1;
       stopped = true;
       addLog(game, `${agent.name}이 함정 철선에 걸려 이동을 멈췄습니다. 탐지 / 무빙 -1.`);
@@ -2542,7 +2559,7 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
       addLog(game, `${agent.name}이 상승 기류로 알람봇을 무시했습니다.`);
     } else {
       game.deployables = game.deployables.filter((item) => item.id !== alarm.id);
-      agent.detected = true;
+      applyDetection(game, agent);
       agent.status.vulnerable = true;
       addLog(game, `${agent.name}이 알람봇에 탐지되어 다음 피해가 +1 됩니다.`);
     }
@@ -5422,7 +5439,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
     const cameraTarget = camera ? game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && !enemy.detected && [camera.region, ...(GRAPH.get(camera.region) ?? [])].includes(enemy.region)) : null;
     if (cameraTarget) {
       if (!applyActionStartFire(game, agent)) return true;
-      cameraTarget.detected = true;
+      applyDetection(game, cameraTarget);
       agent.extraActions = Math.max(0, agent.extraActions - 1);
       addAnalyticsEvent(game, side, "skill", `${agent.name} · 스파이캠 탐지`);
       addLog(game, `${side === "attack" ? "공격" : "수비"} AI · 스파이캠으로 ${cameraTarget.name} 탐지.`);
@@ -5633,7 +5650,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           addLog(game, `${waitingEnemy.name}이 AI 정찰 화살을 파괴했습니다. 총기 ${WEAPONS[waitingEnemy.weapon].name} 확인.`);
         } else {
           const scanned = new Set([target.region, ...(GRAPH.get(target.region) ?? [])]);
-          game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && scanned.has(enemy.region)).forEach((enemy) => { enemy.detected = true; });
+          game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && scanned.has(enemy.region)).forEach((enemy) => applyDetection(game, enemy));
         }
         finish(target.region);
         return true;
@@ -5943,6 +5960,7 @@ function AgentStatusBadges({ game, agent, compact = false }: { game: GameState; 
     timed.some((effect) => effect.kind === "blind" || (effect.aimPenalty ?? 0) >= 3) ? { key: "blind", icon: "✦", label: "실명 · 다음 공격 에임 감소" } : null,
     timed.some((effect) => effect.kind === "concussed" || (effect.priorityPenalty ?? 0) > 0) ? { key: "concussed", icon: "⌁", label: "충격 · 공격 우선도 지연" } : null,
     agent.detected ? { key: "detected", icon: "◎", label: "탐지됨" } : null,
+    timed.some((effect) => effect.kind === "exposed") ? { key: "exposed", icon: "M↓!", label: "탐지 노출 · 다음 교전 무빙 -1" } : null,
     agent.status.vulnerable ? { key: "vulnerable", icon: "!", label: "취약 · 다음 피해 +1" } : null,
     agent.status.aimPenalty > 0 ? { key: "aim-down", icon: "A↓", label: `에임 -${agent.status.aimPenalty}` } : null,
     agent.status.moveBonus < 0 ? { key: "move-down", icon: "M↓", label: `무빙 ${agent.status.moveBonus}` } : null,
@@ -7222,7 +7240,7 @@ export default function Home() {
             rememberEnemy(draft, agent.team, waitingEnemy);
             addLog(draft, `${waitingEnemy.name}이 정찰 화살을 파괴했습니다. 총기 ${WEAPONS[waitingEnemy.weapon].name} 확인 / 트레이드 표식.`);
           } else {
-            draft.teams[otherSide(agent.team)].agents.filter((enemy) => scanned.has(enemy.region)).forEach((enemy) => { enemy.detected = true; });
+            draft.teams[otherSide(agent.team)].agents.filter((enemy) => scanned.has(enemy.region)).forEach((enemy) => applyDetection(draft, enemy));
             addLog(draft, `정찰 성공: ${regionName(region)} 주변의 적이 탐지됐습니다.`);
           }
           break;
@@ -7322,7 +7340,7 @@ export default function Home() {
     const camera = draft.deployables.find((item) => item.kind === "camera" && item.owner === agent.team);
     if (!camera || !new Set([camera.region, ...(GRAPH.get(camera.region) ?? [])]).has(enemy.region)) return;
     if (!applyActionStartFire(draft, agent)) return;
-    enemy.detected = true;
+    applyDetection(draft, enemy);
     agent.extraActions -= 1;
     addLog(draft, `${agent.name}이 스파이캠으로 ${enemy.name}을 탐지했습니다.`);
   });
@@ -7483,8 +7501,13 @@ export default function Home() {
         agent.status.moveBonus = 0;
         agent.status.moveRangeBonus = 0;
       }
-      [...draft.teams.attack.agents, ...draft.teams.defense.agents].forEach((agent) => { agent.detected = false; });
-      draft.statusEffects = draft.statusEffects.filter((effect) => effect.owner !== endingSide);
+      endingTeam.agents.forEach((agent) => {
+        if (agent.detectedExpiresTeamTurn !== null && draft.teamTurns[endingSide] >= agent.detectedExpiresTeamTurn) {
+          agent.detected = false;
+          agent.detectedExpiresTeamTurn = null;
+        }
+      });
+      draft.statusEffects = draft.statusEffects.filter((effect) => effect.owner !== endingSide || effect.kind === "exposed");
       draft.smokes = draft.smokes.filter((smoke) => !(smoke.owner === endingSide && draft.teamTurns[endingSide] >= smoke.expiresOwnerTurn));
       drawFive(endingTeam, draft.cycle * 31 + (endingSide === "attack" ? 7 : 3));
       draft.trade = [];
