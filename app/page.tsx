@@ -593,9 +593,9 @@ const MAX_ARMOR = 2;
 const SHOTGUN_CLOSE_DAMAGE_BONUS = 2;
 const SKILL_DAMAGE = {
   paint: 2,
-  hot: 2,
-  shock: 2,
-  aftershock: 3,
+  hot: 1,
+  shock: 1,
+  aftershock: 4,
   turret: 2,
 } as const;
 const PROTOTYPE_CREDIT_RATE = 125;
@@ -846,7 +846,7 @@ const AGENTS: Record<string, AgentTemplate> = {
   "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "구역 적의 우선도 숫자를 1 높입니다.")] },
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "2원 · 1회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
-  "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 구역의 보이는 적을 선택합니다. 보이지 않으면 무작위 적 또는 설치물에 피해 ${SKILL_DAMAGE.shock}를 줍니다.`)] },
+  "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 이내 구역을 지정합니다. 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.shock}(탐지 상태면 ${SKILL_DAMAGE.shock + 1}), 설치물을 파괴합니다.`)] },
   "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "1원 · 2회", "adjacent", `인접 구역의 적에게 피해 ${SKILL_DAMAGE.aftershock}, 진행 행동을 취소합니다.`)] },
   "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "목표 방향의 첫 연결을 다음 턴까지 차단합니다."), skill("stim", "전투 자극제", "2원 · 1회", "self", "현재 구역 아군의 에임과 우선도를 강화합니다.")] },
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "선택 구역의 첫 연결에 전역 연막을 설치합니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
@@ -5627,19 +5627,19 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "shock") {
-        const targetIntel = intel
-          .filter((item) => distance(agent.region, item.region) <= 2)
-          .sort((a, b) =>
-            Number(recoveryBlockerIds.has(b.agent.id)) - Number(recoveryBlockerIds.has(a.agent.id))
-            || (a.agent.hp + a.agent.armor) - (b.agent.hp + b.agent.armor))[0];
-        const targetDevice = enemyDeployables.filter((item) => distance(agent.region, item.region) <= 2)[0];
-        if (!targetIntel && !targetDevice) continue;
-        const targetRegion = targetIntel?.region ?? targetDevice!.region;
+        const target = aiSkillRegions(agent, "range2").map((region) => ({
+          region,
+          score: exactIntel.filter((item) => item.region === region).length * 4
+            + enemyDeployables.filter((item) => item.region === region).length * 2
+            + exactIntel.filter((item) => item.region === region && recoveryBlockerIds.has(item.agent.id)).length * 8,
+        })).sort((a, b) => b.score - a.score)[0];
+        if (!target?.score) continue;
         if (!begin()) return true;
-        const actualTarget = targetIntel?.agent.region === targetRegion ? targetIntel.agent : game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && enemy.region === targetRegion);
-        if (actualTarget) applyDamage(game, agent, actualTarget, SKILL_DAMAGE.shock, "충격 화살");
-        else if (targetDevice) game.deployables = game.deployables.filter((item) => item.id !== targetDevice.id);
-        finish(targetRegion);
+        game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
+          applyDamage(game, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살");
+        });
+        game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side);
+        finish(target.region);
         return true;
       }
 
@@ -7215,21 +7215,10 @@ export default function Home() {
           }
           break;
         }
-        case "shock": {
-          const devices = draft.deployables.filter((item) => item.region === region && item.owner !== agent.team);
-          const observedByCaster = observedRegions(draft, agent.team);
-          const visibleEnemies = enemies.filter((enemy) => observedByCaster.has(enemy.region) || enemy.detected || draft.revealedEnemyIds.includes(enemy.id));
-          if (visibleEnemies.length + devices.length > 1) {
-            targeting.candidateAgentIds = visibleEnemies.map((target) => target.id);
-            targeting.candidateDeployableIds = devices.map((target) => target.id);
-            addLog(draft, `충격 화살의 목표를 선택하세요.`);
-            return;
-          }
-          const target = visibleEnemies[0] ?? (!devices.length && enemies.length ? enemies[Math.floor(Math.random() * enemies.length)] : null);
-          if (target) applyDamage(draft, agent, target, SKILL_DAMAGE.shock, "충격 화살");
-          else if (devices[0]) draft.deployables = draft.deployables.filter((item) => item.id !== devices[0].id);
+        case "shock":
+          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살"));
+          draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team);
           break;
-        }
         case "aftershock":
           draft.aftershocks.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, targetIds: enemies.map((enemy) => enemy.id), readyOnTurn: draft.teamTurns[otherSide(agent.team)] + 1 });
           enemies.forEach((enemy) => cancelProgress(draft, enemy));
@@ -7310,22 +7299,7 @@ export default function Home() {
         targeting.targetAgentId = target.id;
         targeting.candidateAgentIds = [];
         addLog(draft, `${target.name}이 이동할 인접 구역을 선택하세요.`);
-        return;
       }
-      if (targeting.skillId !== "shock") return;
-      const fxTargetRegion = kind === "agent" ? getAgent(draft, id)?.region : draft.deployables.find((item) => item.id === id)?.region;
-      if (kind === "agent") {
-        const target = getAgent(draft, id);
-        if (target?.alive) applyDamage(draft, caster, target, SKILL_DAMAGE.shock, "충격 화살");
-      } else {
-        draft.deployables = draft.deployables.filter((item) => item.id !== id);
-        addLog(draft, `충격 화살이 설치물을 파괴했습니다.`);
-      }
-      showSkillFx(draft, caster, "shock", "충격 화살", caster.region, fxTargetRegion ?? caster.region);
-      caster.extraActions = Math.max(0, caster.extraActions - 1);
-      caster.skills.shock = Math.max(0, (caster.skills.shock ?? 0) - 1);
-      draft.targeting = null;
-      checkWinner(draft);
     });
   };
 

@@ -870,7 +870,7 @@ test("four health, two armor, weapons, and utility share the six-durability bala
   assert.match(page, /phantom: \{[^}]*body: 4, head: 5/);
   assert.match(page, /vandal: \{[^}]*body: 4, head: 6/);
   assert.match(page, /operator: \{[^}]*body: 6, head: 8/);
-  assert.match(page, /paint: 2,[\s\S]*hot: 2,[\s\S]*shock: 2,[\s\S]*aftershock: 3,[\s\S]*turret: 2/);
+  assert.match(page, /paint: 2,[\s\S]*hot: 1,[\s\S]*shock: 1,[\s\S]*aftershock: 4,[\s\S]*turret: 2/);
   assert.match(page, /hp: AGENT_MAX_HP/);
   assert.match(page, /agent\.hp = AGENT_MAX_HP/);
   assert.match(page, /Math\.min\(AGENT_MAX_HP, agent\.hp \+ 1\)/);
@@ -921,9 +921,8 @@ test("revised utility rules resolve tailwind before gunfire and use current sigh
   assert.match(page, /function reconArrowWatcher/);
   assert.match(page, /enemy\.alive && enemy\.waitDirs\.includes\(targetRegion\)/);
   assert.match(page, /addTrade\(draft, \{ enemyId: waitingEnemy\.id, team: agent\.team, sourceId: agent\.id \}\);[\s\S]{0,100}rememberEnemy\(draft, agent\.team, waitingEnemy\)/);
-  assert.match(page, /const observedByCaster = observedRegions\(draft, agent\.team\)/);
-  assert.match(page, /observedByCaster\.has\(enemy\.region\) \|\| enemy\.detected/);
-  assert.match(page, /!devices\.length && enemies\.length/);
+  assert.match(page, /case "shock":[\s\S]{0,120}enemies\.forEach\(\(enemy\) => applyDamage\(draft, agent, enemy, SKILL_DAMAGE\.shock \+ \(enemy\.detected \? 1 : 0\), "충격 화살"\)\)/);
+  assert.match(page, /draft\.deployables = draft\.deployables\.filter\(\(item\) => item\.region !== region \|\| item\.owner === agent\.team\);/);
 });
 
 test("same-turn multikills animate and persist as a round highlight", async () => {
