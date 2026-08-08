@@ -188,7 +188,7 @@ test("AI spends extra actions on agent skills and records every autonomous use",
   assert.match(page, /if \(tryUseAiSkill\(draft, side\)\) return/);
   assert.match(page, /function aiEnemyIntel/);
   assert.match(page, /function aiDarkRegion/);
-  assert.match(page, /function aiSelfAnchoredSmokePath/);
+  assert.match(page, /function aiSmokeEdge/);
   assert.match(page, /function aiSkillPriority/);
   assert.match(page, /const attackBreach =/);
   assert.match(page, /const attackPostplant =/);
