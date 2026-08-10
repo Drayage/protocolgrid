@@ -27,7 +27,7 @@ type WeaponId =
   | "vandal"
   | "operator";
 
-type SkillTarget = "self" | "adjacent" | "range2" | "any";
+type SkillTarget = "self" | "adjacent" | "range2" | "any" | "ally";
 
 interface Region {
   id: number;
@@ -122,6 +122,7 @@ interface AgentStatus {
   vulnerable: boolean;
   ignoreGround: boolean;
   highGear: boolean;
+  highTideSlowed?: boolean;
 }
 
 interface Agent {
@@ -193,11 +194,39 @@ interface DroppedWeapon {
 
 interface Deployable {
   id: string;
-  kind: "trip" | "camera" | "turret" | "alarm";
+  kind: "trip" | "camera" | "turret" | "alarm" | "fakeout" | "gatecrash" | "poison-emitter" | "haunt" | "rendezvous" | "barrier-mesh";
   owner: Side;
   region: number;
   to?: number;
   ownerAgentId?: string;
+  armed?: boolean;
+  expiresEnemyTurn?: number;
+  disabledUntilTeamTurn?: number;
+  readyOwnerTurn?: number;
+  hp?: number;
+  maxHp?: number;
+  meshEntries?: Record<string, number>;
+}
+
+interface BarrierEffect {
+  id: string;
+  owner: Side;
+  ownerAgentId: string;
+  from: number;
+  to: number;
+  hp: number;
+  expiresEnemyTurn: number;
+}
+
+interface ToxicScreenEffect {
+  id: string;
+  owner: Side;
+  ownerAgentId: string;
+  regions: [number, number, number, number];
+  active: boolean;
+  readyOwnerTurn: number;
+  expiresEnemyTurn: number | null;
+  disabledUntilTeamTurn?: number;
 }
 
 interface ZoneEffect {
@@ -219,14 +248,14 @@ interface SmokeEffect {
   expiresEnemyTurn: number;
   expiresOn: "enemy-end";
   sourceAgentId: string;
-  sourceSkill: "smoke" | "dark";
+  sourceSkill: "smoke" | "dark" | "poison-cloud" | "toxic-screen" | "cove" | "high-tide";
 }
 
 interface TimedStatusEffect {
   id: string;
   owner: Side;
   targetId: string;
-  kind?: "blind" | "concussed" | "exposed" | "stimmed";
+  kind?: "blind" | "concussed" | "exposed" | "stimmed" | "hawk-blind" | "fakeout-blind" | "devour" | "suppressed" | "haunt-reveal" | "gravnet";
   aimPenalty?: number;
   priorityPenalty?: number;
   movePenalty?: number;
@@ -238,6 +267,31 @@ interface TimedStatusEffect {
   // Survives through the owner's opponent's next turn instead of being wiped
   // at the end of the owner's own turn (used by curveball/relay bolt).
   expiresEnemyTurn?: number;
+  remainingTicks?: number;
+}
+
+interface LeerZoneEffect {
+  id: string;
+  owner: Side;
+  ownerAgentId: string;
+  region: number;
+  expiresOwnerTurn: number;
+}
+
+interface GravNetEffect {
+  id: string;
+  owner: Side;
+  ownerAgentId: string;
+  region: number;
+  expiresEnemyTurn: number;
+}
+
+interface ReynaSoulWindow {
+  id: string;
+  agentId: string;
+  victimId: string;
+  region: number;
+  turnSerial: number;
 }
 
 interface EnemyMemory {
@@ -423,6 +477,7 @@ interface TargetingState {
   candidateAgentIds?: string[];
   candidateDeployableIds?: string[];
   targetAgentId?: string;
+  variant?: "devour" | "dismiss";
 }
 
 interface TradeState {
@@ -434,7 +489,7 @@ interface TradeState {
 interface CombatFighterView {
   id: string;
   name: string;
-  kind: "agent" | "turret";
+  kind: "agent" | "turret" | "decoy";
   team: Side;
   role: Role;
   weapon: WeaponId;
@@ -450,11 +505,13 @@ interface CombatFighterView {
 interface CombatChoice {
   type: "attack" | "retreat" | "advance";
   retreatRegion?: number;
+  useHeadhunter?: boolean;
+  rendezvousAfterAttack?: boolean;
 }
 
 interface CombatScene {
   id: string;
-  kind: "agent" | "turret";
+  kind: "agent" | "turret" | "decoy";
   deviceId?: string;
   mover: CombatFighterView;
   holder: CombatFighterView;
@@ -573,6 +630,10 @@ interface GameState {
   spikeKnownByDefense: boolean;
   droppedWeapons: DroppedWeapon[];
   deployables: Deployable[];
+  barriers: BarrierEffect[];
+  toxicScreens: ToxicScreenEffect[];
+  leerZones: LeerZoneEffect[];
+  gravNets: GravNetEffect[];
   fires: ZoneEffect[];
   stims: ZoneEffect[];
   smokes: SmokeEffect[];
@@ -598,6 +659,8 @@ interface GameState {
   floatingNumbers: FloatingNumberFx[];
   lastAftershockFx: AftershockAlert | null;
   turnKillCounts: Record<string, number>;
+  reynaDamageThisTurn: Record<string, string[]>;
+  reynaSoulWindows: ReynaSoulWindow[];
   lastKillFx: KillHighlight | null;
   roundKillHighlights: KillHighlight[];
   roundKillVictims: Record<string, string[]>;
@@ -870,22 +933,52 @@ const skill = (id: string, name: string, price: string, target: SkillTarget, des
   id, name, price, target, description,
 });
 
+function skillMaxCharges(definition: SkillDefinition) {
+  if (definition.id === "headhunter") return 8;
+  return definition.price.includes("2회") ? 2 : 1;
+}
+
+function skillPurchaseAmount(definition: SkillDefinition) {
+  return definition.id === "headhunter" ? 2 : 1;
+}
+
+function skillPurchasePrice(definition: SkillDefinition) {
+  return definition.id === "headhunter" || skillMaxCharges(definition) === 2 ? 1 : 2;
+}
+
+function skillRemainingCost(definition: SkillDefinition, current: number) {
+  const remaining = Math.max(0, skillMaxCharges(definition) - current);
+  return Math.ceil(remaining / skillPurchaseAmount(definition)) * skillPurchasePrice(definition);
+}
+
 const AGENTS: Record<string, AgentTemplate> = {
   "제트": { name: "제트", role: "duelist", skills: [skill("tailwind", "순풍", "2원 · 1회", "self", "다음 최초 교전의 총격 전에 인접 구역으로 이동합니다."), skill("updraft", "상승 기류", "1원 · 2회", "self", "다음 이동 거리와 무빙이 1 증가합니다.")] },
   "레이즈": { name: "레이즈", role: "duelist", skills: [skill("paint", "페인트탄", "2원 · 1회", "adjacent", `인접 구역의 적 모두에게 피해 ${SKILL_DAMAGE.paint}, 설치물을 파괴합니다.`), skill("blast", "폭발 팩", "1원 · 2회", "adjacent", "인접 구역으로 강제 이동하며 대기를 해제합니다.")] },
   "피닉스": { name: "피닉스", role: "duelist", skills: [skill("curve", "커브볼", "2원 · 1회", "adjacent", "상대 턴이 끝날 때까지 선택 구역의 적과 그 구역을 대기 중인 적의 첫 공격 에임을 3 낮춥니다."), skill("hot", "뜨거운 손", "1원 · 2회", "adjacent", `구역에 상대 턴이 끝날 때까지 불길을 만듭니다. 적은 닿는 순간과 그 구역에서 자신의 턴이 끝날 때 각각 피해 ${SKILL_DAMAGE.hot}, 피닉스 본인은 같은 방식으로 체력 ${SKILL_DAMAGE.hot}을 회복합니다.`)] },
   "네온": { name: "네온", role: "duelist", skills: [skill("gear", "고속 기어", "2원 · 1회", "self", "다음 이동 거리와 무빙이 1 증가합니다."), skill("relay", "릴레이 볼트", "1원 · 2회", "adjacent", "상대 턴이 끝날 때까지 구역 적의 우선도 숫자를 1 높입니다.")] },
+  "요루": { name: "요루", role: "duelist", skills: [skill("fakeout", "기만", "1원 · 2회", "adjacent", "인접 구역에 정상 체력의 요루처럼 보이는 분신을 보냅니다. 분신은 상대 턴 2회 뒤 사라지며, 공격한 적과 같은 구역의 적은 내 턴 종료까지 에임 -3을 받습니다."), skill("gatecrash", "관문 충돌", "2원 · 1회", "range2", "거리 2 이내에 관문을 준비합니다. 이후 추가행동으로 순간이동하며 교전 우선도 2를 적용합니다. 장벽을 무시합니다.")] },
   "사이퍼": { name: "사이퍼", role: "sentinel", skills: [skill("trip", "함정 철선", "1원 · 2회", "adjacent", "현재 구역과 인접 구역 사이에 철선을 설치합니다."), skill("camera", "스파이캠", "2원 · 1회", "self", "현재 구역에 주변을 밝히는 카메라를 설치합니다.")] },
   "킬조이": { name: "킬조이", role: "sentinel", skills: [skill("turret", "포탑", "2원 · 1회", "adjacent", "현재 구역에서 선택 방향을 감시하는 포탑을 설치합니다."), skill("alarm", "알람봇", "2원 · 1회", "self", "현재 구역에 탐지·취약 알람봇을 설치합니다.")] },
   "소바": { name: "소바", role: "initiator", skills: [skill("recon", "정찰 화살", "2원 · 1회", "range2", "거리 2 구역과 인접 구역을 탐지합니다. 대기 중인 적이 파괴하면 트레이드가 열립니다."), skill("shock", "충격 화살", "1원 · 2회", "range2", `거리 2 이내 구역을 지정합니다. 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.shock}(탐지 상태면 ${SKILL_DAMAGE.shock + 1}), 설치물을 파괴합니다.`)] },
   "브리치": { name: "브리치", role: "initiator", skills: [skill("flash", "섬광 폭발", "2원 · 1회", "range2", "거리 2 이내 구역 적의 첫 공격 에임을 3 낮춥니다."), skill("aftershock", "여진", "2원 · 1회", "range2", `거리 2 이내 구역을 지정해 채널링합니다. 준비 중에는 무빙 -1, 우선도 +2, 이동하면 취소됩니다. 목표는 상대에게 보이지 않으며, 내 다음 턴이 시작할 때 그 구역의 적 전원에게 피해 ${SKILL_DAMAGE.aftershock}를 입힙니다.`)] },
+  "스카이": { name: "스카이", role: "initiator", skills: [skill("regrowth", "재생", "1원 · 2회", "self", "자신을 제외한 같은 구역 및 인접 구역 아군 전원의 체력을 1 회복합니다."), skill("hawk", "인도하는 매", "1원 · 2회", "adjacent", "인접 구역 두 곳을 연속 지정합니다. 대기 적이 파괴하면 위치와 총기를 확인하고, 아니면 두 구역의 적을 내 턴 종료까지 탐지하고 에임 -3으로 만듭니다.")] },
   "브림스톤": { name: "브림스톤", role: "controller", skills: [skill("smoke", "공중 연막", "1원 · 2회", "range2", "거리 2 이내 구역을 하나 고르고, 그 구역과 인접한 구역 하나를 더 골라 두 구역을 잇는 통로에 연막을 겁니다. 사용 후 상대 턴이 네 번째로 끝날 때까지 유지됩니다."), skill("stim", "전투 자극제", "2원 · 1회", "adjacent", "인접 구역에 자극제 신호기를 설치합니다(내 다음 턴이 끝날 때까지 유지). 신호기에 닿은 아군은 각자 첫 교전이 끝날 때까지 에임 +1, 무빙 +1을 받습니다.")] },
   "오멘": { name: "오멘", role: "controller", skills: [skill("dark", "어둠의 장막", "1원 · 2회", "any", "사거리 제한 없이 구역 하나를 완전히 은신시킵니다(사용 후 상대 턴이 세 번째로 끝날 때까지 유지). 안팎 모두 서로 보이지 않지만 이동은 가능하며, 안에 있는 적 구역으로 들어가면 거리 0 교전이 벌어집니다. 이때 안에 있던 쪽은 우선도가 유리해지고, 탐지되지 않은 상대를 쏘는 쪽은 에임 -2를 받습니다."), skill("shadow", "어둠의 발걸음", "2원 · 1회", "range2", "거리 2 이내로 순간이동하고 우선도 4로 교전합니다.")] },
+  "바이퍼": { name: "바이퍼", role: "controller", skills: [skill("poison-cloud", "독성 연기", "2원 · 1회", "adjacent", "인접 구역에 회수 가능한 가스 방사기를 설치합니다. 추가행동으로 2턴 연막을 켜고, 바이퍼가 다시 닿으면 회수해 재설치할 수 있습니다."), skill("toxic-screen", "독성 장막", "2원 · 1회", "adjacent", "인접 구역 세 곳을 잇는 파괴 불가 장막을 설치합니다. 추가행동으로 1턴 연막을 켜며, 한 턴 재충전 후 다시 사용할 수 있습니다.")] },
+  "세이지": { name: "세이지", role: "sentinel", skills: [skill("healing-orb", "회복 구슬", "2원 · 1회", "ally", "같은 구역 또는 인접 구역 아군을 회복합니다. 아군은 2, 자신은 1 회복합니다."), skill("barrier-orb", "장벽 구슬", "2원 · 1회", "adjacent", "현재 구역과 인접 구역 사이에 4턴 장벽을 세웁니다. 일반 이동은 막지만 순간이동은 막지 않으며, 추가행동 2회로 파괴할 수 있습니다.")] },
+  "레이나": { name: "레이나", role: "duelist", skills: [skill("leer", "눈총", "1원 · 2회", "adjacent", "인접 구역에 눈을 설치합니다. 그 구역의 적과 그 구역을 대기 중인 적은 이번 팀 턴 동안 모든 공격 에임이 3 감소합니다."), skill("soul-harvest", "포식 / 무시", "1원 · 2회", "self", "이번 팀 턴에 레이나가 피해를 준 적이 거리 2 안에서 처치되면 포식 또는 무시를 선택합니다. 포식은 3턴 회복, 무시는 안전한 인접 이동입니다.")] },
+  "페이드": { name: "페이드", role: "initiator", skills: [skill("haunt", "귀체", "2원 · 1회", "range2", "거리 2 이내에 2턴 감시 장치를 설치합니다. 주변 적을 발각하며 적은 추가행동으로 제거할 수 있습니다."), skill("prowler", "추적귀", "1원 · 2회", "adjacent", "인접한 두 구역을 차례로 탐색합니다. 발각된 적, 마지막 위치가 확인된 적, 그 외 적 순서로 한 명을 찾아 발각·대기 해제·트레이드 표식을 적용합니다.")] },
+  "케이/오": { name: "케이/오", role: "initiator", skills: [skill("zero-point", "제로/포인트", "2원 · 1회", "range2", "거리 2 이내 목표와 주변의 요원 이름을 확인합니다. 위치 발각 없이 제압하고 범위 안 적 설치물을 다음 적 턴 종료까지 정지시킵니다."), skill("kayo-flash", "플래시/드라이브", "1원 · 2회", "range2", "거리 2 이내 구역의 적과 그 구역을 대기 중인 적은 첫 공격 에임이 3 감소합니다.")] },
+  "체임버": { name: "체임버", role: "sentinel", skills: [skill("headhunter", "헤드헌터", "1원당 2발 · 최대 8발", "self", "교전 중 공격할 때 사용할 수 있습니다. 셰리프와 같은 성능에 에임 +1을 받고 한 발을 소모합니다."), skill("rendezvous", "랑데부", "2원 · 1회", "self", "현재 구역에 귀환 장치를 설치합니다. 추가행동 또는 교전 공격 후 장치로 귀환하며 도착 교전 우선도는 5, 재사용 대기는 4턴입니다.")] },
+  "데드록": { name: "데드록", role: "sentinel", skills: [skill("gravnet", "중력그물", "1원 · 2회", "range2", "거리 2 이내 구역에 그물을 설치합니다. 적은 진입할 수 있지만 그 턴에는 이동·교전 탈주가 불가능하고 무빙 -1·우선도 +1을 받습니다."), skill("barrier-mesh", "장벽망", "2원 · 1회", "range2", "거리 2 이내 구역에 3턴 장벽망을 설치합니다. 진입한 적은 들어온 통로로만 나갈 수 있으며 추가행동 2회로 파괴됩니다.")] },
+  "하버": { name: "하버", role: "controller", skills: [skill("cove", "해만", "2원 · 1회", "any", "사거리 제한 없이 통로 하나에 2턴 연막을 만듭니다. 통로를 가로지르는 총격과 피해 스킬을 차단합니다."), skill("high-tide", "만조", "2원 · 1회", "adjacent", "인접한 두 구역을 이어 두 통로와 중간 구역에 2턴 연막을 만듭니다. 닿으면 이동이 멈추고 1턴 동안 무빙·이동력이 1 감소합니다.")] },
 };
 
 const AGENT_ART_KEY: Record<string, string> = {
   "제트": "jett", "레이즈": "raze", "피닉스": "phoenix", "네온": "neon", "사이퍼": "cypher",
   "킬조이": "killjoy", "소바": "sova", "브리치": "breach", "브림스톤": "brimstone", "오멘": "omen",
+  "요루": "yoru", "스카이": "skye", "세이지": "sage", "바이퍼": "viper",
+  "레이나": "reyna", "페이드": "fade", "케이/오": "kayo", "체임버": "chamber", "데드록": "deadlock", "하버": "harbor",
 };
 
 const agentArtClass = (name: string) => `agent-art agent-art-${AGENT_ART_KEY[name] ?? "jett"}`;
@@ -1041,7 +1134,7 @@ function createAgent(name: string, team: Side): Agent {
     detected: false,
     detectedExpiresTeamTurn: null,
     skills,
-    status: { aimPenalty: 0, priorityPenalty: 0, moveBonus: 0, moveRangeBonus: 0, evadeReady: false, vulnerable: false, ignoreGround: false, highGear: false },
+    status: { aimPenalty: 0, priorityPenalty: 0, moveBonus: 0, moveRangeBonus: 0, evadeReady: false, vulnerable: false, ignoreGround: false, highGear: false, highTideSlowed: false },
   };
 }
 
@@ -1113,6 +1206,10 @@ function createInitialGame(
     spikeKnownByDefense: false,
     droppedWeapons: [],
     deployables: [],
+    barriers: [],
+    toxicScreens: [],
+    leerZones: [],
+    gravNets: [],
     fires: [],
     stims: [],
     smokes: [],
@@ -1138,6 +1235,8 @@ function createInitialGame(
     floatingNumbers: [],
     lastAftershockFx: null,
     turnKillCounts: {},
+    reynaDamageThisTurn: {},
+    reynaSoulWindows: [],
     lastKillFx: null,
     roundKillHighlights: [],
     roundKillVictims: {},
@@ -1194,7 +1293,7 @@ function resetAgentForRound(agent: Agent, side: Side, economyReset: boolean) {
   agent.detected = false;
   agent.detectedExpiresTeamTurn = null;
   Object.keys(agent.skills).forEach((skillId) => { agent.skills[skillId] = 0; });
-  agent.status = { aimPenalty: 0, priorityPenalty: 0, moveBonus: 0, moveRangeBonus: 0, evadeReady: false, vulnerable: false, ignoreGround: false, highGear: false };
+  agent.status = { aimPenalty: 0, priorityPenalty: 0, moveBonus: 0, moveRangeBonus: 0, evadeReady: false, vulnerable: false, ignoreGround: false, highGear: false, highTideSlowed: false };
 }
 
 function resetTeamForRound(team: TeamState, side: Side, matchRound: number, economyReset: boolean) {
@@ -1265,6 +1364,10 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.spikeKnownByDefense = false;
   game.droppedWeapons = [];
   game.deployables = [];
+  game.barriers = [];
+  game.toxicScreens = [];
+  game.leerZones = [];
+  game.gravNets = [];
   game.fires = [];
   game.stims = [];
   game.smokes = [];
@@ -1290,6 +1393,8 @@ function prepareNextRoundState(game: GameState, swapSides: boolean) {
   game.floatingNumbers = [];
   game.lastAftershockFx = null;
   game.turnKillCounts = {};
+  game.reynaDamageThisTurn = {};
+  game.reynaSoulWindows = [];
   game.lastKillFx = null;
   game.roundKillHighlights = [];
   game.roundKillVictims = {};
@@ -1317,8 +1422,8 @@ function multiKillLabel(count: number) {
 
 function agentEquipmentCredits(agent: Agent) {
   const skillCoins = AGENTS[agent.name].skills.reduce((total, definition) => {
-    const perCharge = definition.price.includes("2회") ? 1 : 2;
-    return total + (agent.skills[definition.id] ?? 0) * perCharge;
+    const current = agent.skills[definition.id] ?? 0;
+    return total + Math.ceil(current / skillPurchaseAmount(definition)) * skillPurchasePrice(definition);
   }, 0);
   return (WEAPONS[agent.weapon].price + ARMOR_PRICE[agent.armorType] + skillCoins) * PROTOTYPE_CREDIT_RATE;
 }
@@ -1417,6 +1522,65 @@ function shortestPath(start: number, end: number): number[] {
     const last = path[path.length - 1];
     for (const next of GRAPH.get(last) ?? []) {
       if (visited.has(next)) continue;
+      const nextPath = [...path, next];
+      if (next === end) return nextPath;
+      visited.add(next);
+      queue.push(nextPath);
+    }
+  }
+  return [];
+}
+
+function isBarrierBlocked(game: GameState, a: number, b: number) {
+  const key = edgeKey(a, b);
+  return game.barriers.some((barrier) => barrier.hp > 0 && edgeKey(barrier.from, barrier.to) === key);
+}
+
+function isDeployableDisabled(game: GameState, deployable: Deployable) {
+  return deployable.disabledUntilTeamTurn !== undefined
+    && game.teamTurns[deployable.owner] <= deployable.disabledUntilTeamTurn;
+}
+
+function isToxicScreenDisabled(game: GameState, screen: ToxicScreenEffect) {
+  return screen.disabledUntilTeamTurn !== undefined
+    && game.teamTurns[screen.owner] <= screen.disabledUntilTeamTurn;
+}
+
+function isAgentSuppressed(game: GameState, agent: Agent) {
+  return game.statusEffects.some((effect) => effect.targetId === agent.id && effect.kind === "suppressed");
+}
+
+function hostileGravNetAt(game: GameState, agent: Agent, region = agent.region) {
+  return game.gravNets.find((net) => net.owner !== agent.team && net.region === region) ?? null;
+}
+
+function hostileBarrierMeshAt(game: GameState, agent: Agent, region = agent.region) {
+  return game.deployables.find((item) => item.kind === "barrier-mesh"
+    && item.owner !== agent.team
+    && item.region === region
+    && !isDeployableDisabled(game, item)) ?? null;
+}
+
+function canAgentTraverseEdge(game: GameState, agent: Agent, from: number, to: number) {
+  if (isBarrierBlocked(game, from, to)) return false;
+  if (hostileGravNetAt(game, agent, from)) return false;
+  const mesh = hostileBarrierMeshAt(game, agent, from);
+  if (!mesh) return true;
+  return mesh.meshEntries?.[agent.id] === to;
+}
+
+// Barriers are a temporary movement rule, so tactical distance and skill range
+// keep using the static map graph while actual walking routes avoid blocked edges.
+// Teleports deliberately bypass this helper and therefore ignore barriers.
+function shortestMovementPath(game: GameState, start: number, end: number, agent?: Agent): number[] {
+  if (start === end) return [start];
+  const queue: number[][] = [[start]];
+  const visited = new Set([start]);
+  while (queue.length) {
+    const path = queue.shift()!;
+    const current = path[path.length - 1];
+    for (const next of GRAPH.get(current) ?? []) {
+      if (visited.has(next) || (agent ? !canAgentTraverseEdge(game, agent, current, next) : isBarrierBlocked(game, current, next))) continue;
       const nextPath = [...path, next];
       if (next === end) return nextPath;
       visited.add(next);
@@ -1635,7 +1799,11 @@ function postplantRetakeRoutes(game: GameState, spikeRegion: number) {
   const knownStarts = aiEnemyIntel(game, "attack")
     .filter((enemy) => enemy.agent.alive && enemy.confidence >= 0.45)
     .map((enemy) => enemy.region);
-  const starts = [...new Set(knownStarts.length ? knownStarts : [DEFENSE_SPAWN_REGION])];
+  const site = siteForRegion(spikeRegion);
+  const fallbackStarts = site
+    ? [DEFENSE_SPAWN_REGION, ...SITE_APPROACH_REGIONS[site]]
+    : [DEFENSE_SPAWN_REGION];
+  const starts = [...new Set([...knownStarts, ...fallbackStarts])];
   return starts
     .map((origin) => shortestPath(origin, spikeRegion))
     .filter((route) => route.length >= 2);
@@ -1660,7 +1828,7 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
   if (game.spike.region === null) return attackCoreWaypoints(game);
   const spikeRegion = game.spike.region;
   const site = siteForRegion(spikeRegion) ?? game.attackPlan.targetSite;
-  const waitRange = WEAPONS[agent.weapon].type === "sniper" ? 2 : 1;
+  const waitRange = 2;
   const backRoute = POSTPLANT_BACK_ROUTES[site];
   // Score each candidate once (decorate-sort-undecorate) instead of recomputing
   // every metric on every comparator call during the O(n log n) sort.
@@ -1678,22 +1846,27 @@ function attackPostplantWaypoints(game: GameState, agent: Agent) {
       const exposed = postplantBodyExposure(game, region, spikeRegion);
       const lane = Math.max(0, ...(GRAPH.get(region) ?? []).map((next) => postplantLaneWaitScore(game, region, next, spikeRegion)));
       const occupied = game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === region).length;
-      const score = onSite * 38 + back * 9 + danger + exposed * 82 + occupied * 12 + aiRecentMovementPenalty(game, agent, region) - lane;
+      const score = onSite * 38 + back * 9 + danger + exposed * 82 + occupied * 34 + aiRecentMovementPenalty(game, agent, region) - lane;
       return { region, score };
     })
     .sort((a, b) => a.score - b.score)
     .map((entry) => entry.region);
   if (!candidates.length) return [spikeRegion];
+  const alive = game.teams.attack.agents.filter((ally) => ally.alive);
+  const uncrowdedCandidates = candidates.filter((region) =>
+    alive.filter((ally) => ally.id !== agent.id && ally.region === region).length < 2);
+  const spreadCandidates = uncrowdedCandidates.length ? uncrowdedCandidates : candidates;
   const currentHoldDirections = agent.waitDirs.length
     ? agent.waitDirs
     : aiSafeStrategicWaitDirections(game, agent).slice(0, 1);
-  if (candidates.includes(agent.region) && currentHoldDirections.some((region) =>
+  const sameRegionAllies = alive.filter((ally) => ally.id !== agent.id && ally.region === agent.region).length;
+  const duplicateHoldAllies = alive.filter((ally) => ally.id !== agent.id && ally.waitDirs.some((region) => currentHoldDirections.includes(region))).length;
+  if (sameRegionAllies <= 1 && duplicateHoldAllies <= 1 && spreadCandidates.includes(agent.region) && currentHoldDirections.some((region) =>
     postplantLaneWaitScore(game, agent.region, region, spikeRegion) > 0
     || (region === spikeRegion && postplantBodyExposure(game, agent.region, spikeRegion) === 0))) return [agent.region];
-  const alive = game.teams.attack.agents.filter((ally) => ally.alive);
   const index = Math.max(0, alive.findIndex((ally) => ally.id === agent.id));
-  const spreadCount = Math.min(3, candidates.length);
-  return [candidates[index % spreadCount]];
+  const spreadCount = Math.min(3, spreadCandidates.length);
+  return [spreadCandidates[index % spreadCount]];
 }
 
 type AttackPostplantUrgency = "none" | "surveillance-gap" | "site-entry" | "half-defuse" | "final-defuse";
@@ -1930,6 +2103,14 @@ function buyPhaseWeaponDifference(agent: Agent, weaponId: WeaponId) {
 }
 
 function ensureAiTacticalState(game: GameState) {
+  game.barriers ??= [];
+  game.toxicScreens ??= [];
+  game.leerZones ??= [];
+  game.gravNets ??= [];
+  game.reynaDamageThisTurn ??= {};
+  game.reynaSoulWindows ??= [];
+  game.deployables.filter((item) => item.kind === "fakeout" && item.expiresEnemyTurn === undefined)
+    .forEach((item) => { item.expiresEnemyTurn = game.teamTurns[otherSide(item.owner)] + 2; });
   game.aiEnemyKnowledge ??= [];
   game.aiRecoveryOrders ??= [];
   game.aiRetreatMemories ??= [];
@@ -2051,6 +2232,13 @@ function roll(max: number) {
   return Math.floor(Math.random() * Math.max(1, max)) + 1;
 }
 
+function coveBlocksDamageBetween(game: GameState, from: number, to: number) {
+  if (from === to) return false;
+  const path = shortestPath(from, to);
+  return path.slice(0, -1).some((region, index) => game.smokes.some((smoke) =>
+    smoke.sourceSkill === "cove" && smoke.key === edgeKey(region, path[index + 1])));
+}
+
 function finalStats(game: GameState, agent: Agent, ignoreConsumedAttackEffects = false) {
   const base = ROLE_STATS[agent.role];
   const weapon = WEAPONS[agent.weapon];
@@ -2061,8 +2249,10 @@ function finalStats(game: GameState, agent: Agent, ignoreConsumedAttackEffects =
   const timedMovePenalty = timed.reduce((sum, effect) => sum + (effect.movePenalty ?? 0), 0);
   const timedAimBonus = timed.reduce((sum, effect) => sum + (effect.aimBonus ?? 0), 0);
   const timedMoveBonus = timed.reduce((sum, effect) => sum + (effect.moveBonus ?? 0), 0);
+  const leerPenalty = game.leerZones.some((zone) => zone.owner !== agent.team
+    && (zone.region === agent.region || agent.waitDirs.includes(zone.region))) ? 3 : 0;
   return {
-    aim: Math.max(1, base.aim + weapon.aim - agent.status.aimPenalty - timedAimPenalty + timedAimBonus),
+    aim: Math.max(1, base.aim + weapon.aim - agent.status.aimPenalty - timedAimPenalty - leerPenalty + timedAimBonus),
     move: Math.max(1, base.move + weapon.move + agent.status.moveBonus + timedMoveBonus - timedMovePenalty - (aftershockCharging ? 1 : 0)),
     priorityBoost: 0,
     priorityPenalty: agent.status.priorityPenalty + timedPriorityPenalty + (aftershockCharging ? 2 : 0),
@@ -2079,6 +2269,7 @@ interface ShotResult {
   moveRoll: number;
   aimSize: number;
   moveSize: number;
+  blockedByCove?: boolean;
 }
 
 function appliedAimSize(game: GameState, attacker: Agent, defender: Agent, range: number, waiting: boolean, aimBonus: number, ignoreConsumedAttackEffects = false) {
@@ -2128,6 +2319,11 @@ function combatRetreatIsLocked(scene: CombatScene, fighterId: string) {
   return scene.retreatLockedIds.includes(fighterId) || (scene.openingAttackRequiredIds ?? []).includes(fighterId);
 }
 
+function combatRetreatRegions(game: GameState, scene: CombatScene, agent: Agent) {
+  if (combatRetreatIsLocked(scene, agent.id)) return [];
+  return (GRAPH.get(agent.region) ?? []).filter((region) => canAgentTraverseEdge(game, agent, agent.region, region));
+}
+
 function satisfyOpeningAttackRequirement(scene: CombatScene, fighterId: string) {
   scene.openingAttackRequiredIds = (scene.openingAttackRequiredIds ?? []).filter((id) => id !== fighterId);
 }
@@ -2136,6 +2332,9 @@ function calculateShotOdds(game: GameState, attacker: Agent, defender: Agent, ra
   const aim = appliedAimSize(game, attacker, defender, range, waitAimActive, aimBonus);
   const move = appliedMoveSize(game, defender, defenderMoveBonus);
   const damage = appliedDamageProfile(attacker, defender, range, waiting);
+  if (coveBlocksDamageBetween(game, attacker.region, defender.region)) {
+    return { aim, move, bodyDamage: 0, headDamage: 0, hitChance: 0, headChance: 0, killChance: 0, expectedDamage: 0 };
+  }
   const total = aim * move;
   let bodyOutcomes = 0;
   let headOutcomes = 0;
@@ -2188,6 +2387,7 @@ function calculateShotOutcomeProbabilities(
   const aim = appliedAimSize(game, attacker, defender, range, waitAimActive, aimBonus, ignoreConsumedAttackEffects);
   const move = appliedMoveSize(game, defender, defenderMoveBonus);
   const damage = appliedDamageProfile(attacker, defender, range, waiting, defenderVulnerable);
+  if (coveBlocksDamageBetween(game, attacker.region, defender.region)) return [{ damage: 0, hit: false, probability: 1 }];
   const outcomes = new Map<string, ShotOutcomeProbability>();
   const probability = 1 / (aim * move);
   for (let aimRoll = 1; aimRoll <= aim; aimRoll += 1) {
@@ -2210,13 +2410,14 @@ function makeShot(game: GameState, attacker: Agent, defender: Agent, range: numb
   const aimRoll = roll(aim);
   const moveRoll = roll(move);
   const value = aimRoll - moveRoll;
+  const blockedByCove = coveBlocksDamageBetween(game, attacker.region, defender.region);
   const head = value >= 5;
-  const damage = value <= 0 ? 0 : head ? damageProfile.head : damageProfile.body;
+  const damage = value <= 0 || blockedByCove ? 0 : head ? damageProfile.head : damageProfile.body;
   if (defender.status.vulnerable && damage > 0) defender.status.vulnerable = false;
   game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === defender.id && effect.consumeOnDefend));
   game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === attacker.id && effect.consumeOnAttack));
   return {
-    hit: value > 0,
+    hit: value > 0 && !blockedByCove,
     head,
     damage,
     bodyDamage: damageProfile.body,
@@ -2225,6 +2426,7 @@ function makeShot(game: GameState, attacker: Agent, defender: Agent, range: numb
     moveRoll,
     aimSize: aim,
     moveSize: move,
+    blockedByCove,
   };
 }
 
@@ -2259,6 +2461,46 @@ function applyDetection(game: GameState, agent: Agent) {
   game.statusEffects.push({ id: `exposed-${game.turnSerial}-${agent.id}`, owner: otherSide(agent.team), targetId: agent.id, kind: "exposed", movePenalty: 1, consumeOnDefend: true });
 }
 
+function applySimpleReveal(game: GameState, agent: Agent, owner: Side, kind: "haunt-reveal" | undefined = undefined) {
+  agent.detected = true;
+  const revealExpiry = game.teamTurns[agent.team] + (kind === "haunt-reveal" ? 0 : 1);
+  agent.detectedExpiresTeamTurn = Math.max(agent.detectedExpiresTeamTurn ?? 0, revealExpiry);
+  if (!kind) return;
+  game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === kind));
+  game.statusEffects.push({
+    id: `${kind}-${game.turnSerial}-${agent.id}`,
+    owner,
+    targetId: agent.id,
+    kind,
+    expiresEnemyTurn: revealExpiry,
+  });
+}
+
+function refreshHauntDetection(game: GameState) {
+  game.deployables
+    .filter((item) => item.kind === "haunt" && !isDeployableDisabled(game, item))
+    .forEach((haunt) => {
+      const watched = new Set([haunt.region, ...(GRAPH.get(haunt.region) ?? [])]);
+      game.teams[otherSide(haunt.owner)].agents
+        .filter((enemy) => enemy.alive && watched.has(enemy.region))
+        .forEach((enemy) => applySimpleReveal(game, enemy, haunt.owner, "haunt-reveal"));
+    });
+}
+
+function applyGravNetDebuff(game: GameState, net: GravNetEffect, agent: Agent) {
+  clearWait(agent);
+  game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === "gravnet"));
+  game.statusEffects.push({
+    id: `gravnet-${net.id}-${agent.id}`,
+    owner: net.owner,
+    targetId: agent.id,
+    kind: "gravnet",
+    movePenalty: 1,
+    priorityPenalty: 1,
+    expiresEnemyTurn: net.expiresEnemyTurn,
+  });
+}
+
 function isChanneling(game: GameState, agent: Agent) {
   return game.spike.actorId === agent.id && (game.spike.status === "planting" || game.spike.status === "defusing");
 }
@@ -2286,8 +2528,38 @@ function applyHeal(game: GameState, agent: Agent, amount: number, label: string)
   pushFloatingNumber(game, agent, healed, "heal");
 }
 
+function endDevour(game: GameState, agent: Agent, reason?: string) {
+  const active = game.statusEffects.some((effect) => effect.targetId === agent.id && effect.kind === "devour");
+  if (!active) return;
+  game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === "devour"));
+  agent.hp = Math.min(AGENT_MAX_HP, agent.hp);
+  if (agent.detectedExpiresTeamTurn === null) agent.detected = false;
+  if (reason) addLog(game, `${agent.name} 포식 종료 · ${reason}.`);
+}
+
+function applyDevourHeal(game: GameState, agent: Agent) {
+  const cap = AGENT_MAX_HP + MAX_ARMOR - agent.armor;
+  const healed = Math.max(0, Math.min(cap, agent.hp + 1) - agent.hp);
+  if (healed <= 0) return;
+  agent.hp += healed;
+  addLog(game, `${agent.name} 포식 회복 +${healed}${agent.hp > AGENT_MAX_HP ? " · 임시 체력" : ""}.`);
+  pushFloatingNumber(game, agent, healed, "heal");
+}
+
+function applyRangedSkillDamage(game: GameState, attacker: Agent, defender: Agent, damage: number, label: string) {
+  if (coveBlocksDamageBetween(game, attacker.region, defender.region)) {
+    addLog(game, `${label} — 해만이 ${attacker.name}의 피해를 차단했습니다.`);
+    return;
+  }
+  applyDamage(game, attacker, defender, damage, label, true);
+}
+
 function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, damage: number, label: string, showFx = false) {
   if (damage <= 0 || !defender.alive) return;
+  if (attacker?.name === "레이나" && attacker.team === game.turnSide) {
+    const contributors = game.reynaDamageThisTurn[defender.id] ?? [];
+    if (!contributors.includes(attacker.id)) game.reynaDamageThisTurn[defender.id] = [...contributors, attacker.id];
+  }
   if (defender.status.vulnerable) {
     damage += 1;
     defender.status.vulnerable = false;
@@ -2297,12 +2569,26 @@ function applyDamage(game: GameState, attacker: Agent | null, defender: Agent, d
   defender.armor -= armorDamage;
   if (armorDamage > 0) defender.armorDamaged = true;
   defender.hp -= damage - armorDamage;
+  endDevour(game, defender, "피해를 받아 회복이 중단됨");
   if (attacker) game.analytics[attacker.team].damage += Math.min(durabilityBefore, damage);
   addLog(game, `${label} — ${defender.name} 피해 ${damage} (체력 ${Math.max(0, defender.hp)} / 방어 ${defender.armor})`);
   if (showFx) pushFloatingNumber(game, defender, damage, "damage");
   if (defender.hp > 0) return;
   defender.hp = 0;
   defender.alive = false;
+  for (const reynaId of game.reynaDamageThisTurn[defender.id] ?? []) {
+    const reyna = getAgent(game, reynaId);
+    if (!reyna?.alive || reyna.team !== game.turnSide || distance(reyna.region, defender.region) > 2) continue;
+    game.reynaSoulWindows.push({
+      id: `soul-${game.turnSerial}-${defender.id}-${reyna.id}`,
+      agentId: reyna.id,
+      victimId: defender.id,
+      region: defender.region,
+      turnSerial: game.turnSerial,
+    });
+    addLog(game, `${reyna.name}가 거리 2 안에서 영혼 기회를 얻었습니다. 포식 또는 무시를 사용할 수 있습니다.`);
+  }
+  delete game.reynaDamageThisTurn[defender.id];
   // Death is public, final information. Remove stale tactical memories immediately so
   // neither AI side keeps routing around a blocker that no longer exists.
   game.aiEnemyKnowledge = (game.aiEnemyKnowledge ?? []).filter((memory) => memory.agentId !== defender.id);
@@ -2600,6 +2886,82 @@ function queueTurretEncounter(game: GameState, mover: Agent, turret: Deployable,
   addLog(game, `포탑 교전 시작: ${owner?.name ?? "킬조이"} 포탑(우선 2) → ${mover.name}.`);
 }
 
+function queueFakeoutEncounter(game: GameState, attacker: Agent, fakeout: Deployable, priority = 3) {
+  if (!attacker.alive || fakeout.owner === attacker.team) return false;
+  const owner = getAgent(game, fakeout.ownerAgentId);
+  const decoyId = `decoy-${fakeout.id}`;
+  game.combatQueue.push({
+    id: `combat-fakeout-${Date.now()}-${game.combatQueue.length}`,
+    kind: "decoy",
+    deviceId: fakeout.id,
+    mover: { id: attacker.id, name: attacker.name, kind: "agent", team: attacker.team, role: attacker.role, weapon: attacker.weapon, region: attacker.region, priority, hpBefore: attacker.hp, hpAfter: attacker.hp, armorBefore: attacker.armor, armorAfter: attacker.armor, shot: null },
+    holder: { id: decoyId, name: owner?.name ?? "요루", kind: "decoy", team: fakeout.owner, role: "duelist", weapon: owner?.weapon ?? "classic", region: fakeout.region, priority: 5, hpBefore: AGENT_MAX_HP, hpAfter: AGENT_MAX_HP, armorBefore: owner?.armor ?? 0, armorAfter: owner?.armor ?? 0, shot: null },
+    range: 0,
+    waiting: false,
+    offAngle: false,
+    simultaneous: false,
+    actorId: attacker.id,
+    firstActorId: attacker.id,
+    secondActorId: decoyId,
+    pendingNextActorId: null,
+    round: 1,
+    phase: "encounter",
+    resolved: false,
+    choices: {},
+    canMoverAttack: true,
+    moverAimBonus: 0,
+    holderAimBonus: 0,
+    moverTradePriorityBonus: 0,
+    holderTradePriorityBonus: 0,
+    moverTradeTargetPenalty: false,
+    holderTradeTargetPenalty: false,
+    moverShotsFired: 0,
+    holderShotsFired: 0,
+    moverMoveBonus: 0,
+    moverPriorityBase: priority,
+    moverRetreated: false,
+    moverAdvanced: false,
+    retreatedIds: [],
+    evaded: false,
+    result: `${attacker.name}이 ${owner?.name ?? "요루"}와 거리 0에서 마주쳤습니다.`,
+    waitDirections: [],
+    retreatLockedIds: [attacker.id],
+    openingAttackRequiredIds: [attacker.id],
+    waitClaim: null,
+    tailwindActorId: null,
+    pendingShotActorId: null,
+    approachMoverRegion: attacker.region,
+    contactMoverRegion: attacker.region,
+    contactHolderRegion: fakeout.region,
+  });
+  addLog(game, `${attacker.name}이 ${owner?.name ?? "요루"}처럼 보이는 상대와 교전을 시작합니다.`);
+  return true;
+}
+
+function retrieveViperEmitter(game: GameState, agent: Agent) {
+  if (agent.name !== "바이퍼") return;
+  const emitter = game.deployables.find((item) => item.kind === "poison-emitter" && item.ownerAgentId === agent.id && item.region === agent.region);
+  if (!emitter) return;
+  game.deployables = game.deployables.filter((item) => item.id !== emitter.id);
+  agent.skills["poison-cloud"] = 1;
+  addLog(game, `${agent.name}가 ${regionName(agent.region)}의 가스 방사기를 회수했습니다.`);
+}
+
+function activateRendezvous(game: GameState, agent: Agent, marker: Deployable, queueEncounter = true) {
+  if (marker.kind !== "rendezvous" || marker.ownerAgentId !== agent.id || isDeployableDisabled(game, marker) || (marker.readyOwnerTurn ?? 0) > game.teamTurns[agent.team]) return false;
+  const from = agent.region;
+  clearWait(agent);
+  cancelProgress(game, agent);
+  agent.region = marker.region;
+  clearTradeTargetOnMovement(game, agent, from, agent.region);
+  marker.readyOwnerTurn = game.teamTurns[agent.team] + 4;
+  showMovementFx(game, agent, [from, agent.region]);
+  if (queueEncounter && agent.alive) queueCurrentEncounter(game, agent, 5, true, 0, true, "movement");
+  showSkillFx(game, agent, "rendezvous", "랑데부", from, agent.region);
+  addLog(game, `${agent.name}가 랑데부로 ${regionName(agent.region)}에 귀환했습니다. 도착 교전 우선도 5 · 재사용 대기 4턴.`);
+  return true;
+}
+
 function triggerHazards(game: GameState, agent: Agent, from: number, to: number): boolean {
   const enemy = otherSide(agent.team);
   let stopped = false;
@@ -2612,8 +2974,13 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
     addLog(game, `${agent.name}가 자극제 신호기에 닿아 다음 교전까지 에임+1, 무빙+1을 받습니다.`);
   }
 
-  const trip = game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === from && item.to === to)
-    ?? game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === to && item.to === from);
+  retrieveViperEmitter(game, agent);
+
+  const fakeout = game.deployables.find((item) => item.kind === "fakeout" && item.owner === enemy && item.region === to && !isDeployableDisabled(game, item));
+  if (fakeout) queueFakeoutEncounter(game, agent, fakeout, game.pendingMovement ? movementCombatProfile(game.pendingMovement).priority : 3);
+
+  const trip = game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === from && item.to === to && !isDeployableDisabled(game, item))
+    ?? game.deployables.find((item) => item.kind === "trip" && item.owner === enemy && item.region === to && item.to === from && !isDeployableDisabled(game, item));
   if (trip) {
     if (agent.status.ignoreGround) {
       agent.status.ignoreGround = false;
@@ -2627,7 +2994,7 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
     }
   }
 
-  const alarm = game.deployables.find((item) => item.kind === "alarm" && item.owner === enemy && item.region === to);
+  const alarm = game.deployables.find((item) => item.kind === "alarm" && item.owner === enemy && item.region === to && !isDeployableDisabled(game, item));
   if (alarm) {
     if (agent.status.ignoreGround) {
       agent.status.ignoreGround = false;
@@ -2640,7 +3007,35 @@ function triggerHazards(game: GameState, agent: Agent, from: number, to: number)
     }
   }
 
-  const turret = game.deployables.find((item) => item.kind === "turret" && item.owner === enemy && item.to === to);
+  const mesh = game.deployables.find((item) => item.kind === "barrier-mesh" && item.owner === enemy && item.region === to && !isDeployableDisabled(game, item));
+  if (mesh) {
+    mesh.meshEntries ??= {};
+    mesh.meshEntries[agent.id] = from;
+    addLog(game, `${agent.name}이 장벽망에 진입했습니다. ${regionName(from)} 방향으로만 나갈 수 있습니다.`);
+  }
+
+  const gravNet = hostileGravNetAt(game, agent, to);
+  if (gravNet) {
+    applyGravNetDebuff(game, gravNet, agent);
+    stopped = true;
+    addLog(game, `${agent.name}이 중력그물에 붙잡혀 이번 턴 이동과 교전 탈주가 불가능합니다.`);
+  }
+
+  const highTide = game.smokes.some((smoke) => smoke.sourceSkill === "high-tide"
+    && (smoke.key === edgeKey(from, to) || smoke.region === from || smoke.region === to));
+  if (highTide) {
+    if (!agent.status.highTideSlowed) {
+      agent.status.moveBonus -= 1;
+      agent.status.moveRangeBonus -= 1;
+      agent.status.highTideSlowed = true;
+    }
+    stopped = true;
+    addLog(game, `${agent.name}이 만조에 닿아 이동을 멈췄습니다. 이번 턴 무빙·이동력 -1.`);
+  }
+
+  refreshHauntDetection(game);
+
+  const turret = game.deployables.find((item) => item.kind === "turret" && item.owner === enemy && item.to === to && !isDeployableDisabled(game, item));
   if (turret && isSmokeBlocked(game, turret.region, to)) {
     addLog(game, `${agent.name}이 연막 뒤로 포탑의 감시망을 피했습니다.`);
   } else if (turret) {
@@ -2726,6 +3121,8 @@ function queueNextTurnStartContact(game: GameState) {
   while (game.turnStartContactQueue.length) {
     const agent = getAgent(game, game.turnStartContactQueue.shift());
     if (!agent?.alive || agent.team !== game.turnSide) continue;
+    const fakeout = game.deployables.find((item) => item.kind === "fakeout" && item.owner !== agent.team && item.region === agent.region);
+    if (fakeout && queueFakeoutEncounter(game, agent, fakeout)) return;
     if (queueCurrentEncounter(game, agent, 3, true, 0, true, "turn-start")) return;
   }
 }
@@ -2792,7 +3189,7 @@ function finishMovement(game: GameState, agent: Agent, origin: number, stopped =
   // Only strip the positive movement boost this move consumed (updraft/gear +1);
   // negative penalties picked up mid-move (tripwire -1) must survive until turn end.
   agent.status.moveBonus = Math.min(0, agent.status.moveBonus);
-  agent.status.moveRangeBonus = 0;
+  agent.status.moveRangeBonus = Math.min(0, agent.status.moveRangeBonus);
   agent.status.ignoreGround = false;
   agent.status.highGear = false;
   if (agent.alive && movementKind !== "forced") recordAiMovementHistory(game, agent, origin);
@@ -2812,7 +3209,13 @@ function continuePendingMovement(game: GameState) {
   const origin = movement.path[0];
   while (movement.nextIndex < movement.path.length && agent.alive && !game.winner) {
     const from = agent.region;
-    agent.region = movement.path[movement.nextIndex];
+    const next = movement.path[movement.nextIndex];
+    if (!canAgentTraverseEdge(game, agent, from, next)) {
+      addLog(game, `${agent.name}의 이동이 이동 제한 효과에 막혔습니다.`);
+      finishMovement(game, agent, origin, true);
+      return;
+    }
+    agent.region = next;
     clearTradeTargetOnMovement(game, agent, from, agent.region);
     movement.nextIndex += 1;
     showMovementFx(game, agent, movement.path.slice(0, movement.nextIndex));
@@ -2843,7 +3246,8 @@ function continuePendingMovement(game: GameState) {
 }
 
 function moveAgent(game: GameState, agent: Agent, target: number, kind: CardKind | "shadow" | "special" | "forced", pathOverride?: number[]) {
-  const path = pathOverride?.length ? pathOverride : shortestPath(agent.region, target);
+  const overrideIsClear = pathOverride?.slice(0, -1).every((region, index) => canAgentTraverseEdge(game, agent, region, pathOverride[index + 1]));
+  const path = pathOverride?.length && overrideIsClear ? pathOverride : shortestMovementPath(game, agent.region, target, agent);
   if (path.length < 2) return;
   clearWait(agent);
   cancelProgress(game, agent);
@@ -2929,13 +3333,21 @@ function cardTargets(game: GameState, agent: Agent, card: ActionCard): number[] 
   const rangeBonus = agent.status.moveRangeBonus;
   if (card.kind === "basic" || card.kind === "peek") return REGIONS
     .filter((region) => {
-      const range = distance(agent.region, region.id);
-      return range <= 1 + rangeBonus && (card.kind === "basic" || range > 0);
+      const path = shortestMovementPath(game, agent.region, region.id, agent);
+      const range = path.length ? path.length - 1 : 99;
+      return range <= Math.max(1, 1 + rangeBonus) && (card.kind === "basic" || range > 0);
     })
     .map((region) => region.id);
-  if (card.kind === "entry") return REGIONS.filter((region) => distance(agent.region, region.id) > 0 && distance(agent.region, region.id) <= 2 + rangeBonus).map((region) => region.id);
+  if (card.kind === "entry") return REGIONS.filter((region) => {
+    const path = shortestMovementPath(game, agent.region, region.id, agent);
+    const range = path.length ? path.length - 1 : 99;
+    return range > 0 && range <= Math.max(1, 2 + rangeBonus);
+  }).map((region) => region.id);
   if (card.kind === "follow") {
-    return [...new Set(game.teams[agent.team].agents.filter((ally) => ally.alive && ally.id !== agent.id && distance(agent.region, ally.region) <= 2).map((ally) => ally.region))];
+    return [...new Set(game.teams[agent.team].agents.filter((ally) => {
+      const path = shortestMovementPath(game, agent.region, ally.region, agent);
+      return ally.alive && ally.id !== agent.id && path.length > 0 && path.length - 1 <= 2;
+    }).map((ally) => ally.region))];
   }
   if (card.kind === "control") return controlWaitTargetsFor(game, agent);
   return [];
@@ -2951,7 +3363,7 @@ function observedRegions(game: GameState, observer: Side): Set<number> {
     });
   }
   for (const enemy of game.teams[otherSide(observer)].agents.filter((item) => item.detected)) visible.add(enemy.region);
-  for (const camera of game.deployables.filter((item) => item.kind === "camera" && item.owner === observer)) {
+  for (const camera of game.deployables.filter((item) => item.kind === "camera" && item.owner === observer && !isDeployableDisabled(game, item))) {
     visible.add(camera.region);
     (GRAPH.get(camera.region) ?? []).forEach((region) => visible.add(region));
   }
@@ -3028,6 +3440,10 @@ const SKILL_FX_KIND: Record<string, SkillFx["kind"]> = {
   flash: "burst", aftershock: "burst", smoke: "smoke", dark: "smoke", shadow: "teleport",
   trip: "deploy", turret: "deploy", camera: "deploy", alarm: "deploy", stim: "deploy",
   tailwind: "self", updraft: "self", gear: "self",
+  fakeout: "deploy", gatecrash: "teleport", regrowth: "self", hawk: "scan", "healing-orb": "self",
+  "barrier-orb": "deploy", "poison-cloud": "deploy", "toxic-screen": "smoke",
+  leer: "deploy", "soul-harvest": "self", haunt: "deploy", prowler: "scan", "zero-point": "scan", "kayo-flash": "burst",
+  headhunter: "self", rendezvous: "teleport", gravnet: "deploy", "barrier-mesh": "deploy", cove: "smoke", "high-tide": "smoke",
 };
 
 function showSkillFx(game: GameState, agent: Agent, skillId: string, label: string, fromRegion: number, targetRegion: number) {
@@ -3138,7 +3554,7 @@ function operatorSiteAssessment(game: GameState, site: "A" | "B") {
 }
 
 function attackHasOperatorBreachUtility(game: GameState) {
-  const breachSkills = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark", "stim", "tailwind"]);
+  const breachSkills = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark", "stim", "tailwind", "fakeout", "gatecrash", "hawk", "poison-cloud", "toxic-screen", "barrier-orb", "leer", "haunt", "prowler", "zero-point", "kayo-flash", "gravnet", "cove", "high-tide"]);
   return game.teams.attack.agents.some((ally) =>
     ally.alive && AGENTS[ally.name].skills.some((skillDefinition) =>
       breachSkills.has(skillDefinition.id) && (ally.skills[skillDefinition.id] ?? 0) > 0));
@@ -3430,6 +3846,9 @@ function aiMovementDestinationAcceptable(game: GameState, agent: Agent, target: 
 }
 
 function shortestAiMovementPath(game: GameState, agent: Agent, target: number) {
+  if (game.barriers.length || game.gravNets.length || game.deployables.some((item) => item.kind === "barrier-mesh")) {
+    return shortestMovementPath(game, agent.region, target, agent);
+  }
   const routeLength = distance(agent.region, target);
   if (routeLength >= 99) return [];
   const routes: number[][] = [];
@@ -4200,7 +4619,9 @@ function aiPostplantWaitDirection(game: GameState, agent: Agent) {
 
 function aiPostplantNeedsWait(game: GameState, agent: Agent) {
   if (attackPostplantMustContest(game, agent)) return false;
-  return !agent.waitDirs.length && aiPostplantWaitDirection(game, agent) !== null;
+  return !agent.waitDirs.length
+    && attackPostplantWaypoints(game, agent).includes(agent.region)
+    && aiPostplantWaitDirection(game, agent) !== null;
 }
 
 function aiSniperWaitDestination(game: GameState, agent: Agent, targets: number[]) {
@@ -4330,7 +4751,7 @@ function defenseRetakeWeaponPickupIsSafe(game: GameState, agent: Agent, item: Dr
 function defenseRetakeEntryScore(game: GameState, agent: Agent) {
   const weapon = WEAPONS[agent.weapon];
   const stats = finalStats(game, agent);
-  const breachSkills = new Set(["paint", "blast", "curve", "relay", "flash", "aftershock", "shock", "tailwind", "gear", "smoke", "dark"]);
+  const breachSkills = new Set(["paint", "blast", "curve", "relay", "flash", "aftershock", "shock", "tailwind", "gear", "smoke", "dark", "fakeout", "gatecrash", "hawk", "poison-cloud", "toxic-screen", "barrier-orb", "leer", "haunt", "prowler", "zero-point", "kayo-flash", "gravnet", "cove", "high-tide"]);
   const readyBreachUtility = AGENTS[agent.name].skills.some((skill) =>
     breachSkills.has(skill.id) && (agent.skills[skill.id] ?? 0) > 0);
   const roleScore = agent.role === "duelist" ? 28 : agent.role === "initiator" ? 18 : agent.role === "controller" ? 10 : 4;
@@ -4432,7 +4853,7 @@ function updateDefensePlanReadout(game: GameState) {
 
 function defensePlanWaypoints(game: GameState, agent: Agent) {
   if (game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null) {
-    return [game.spike.region, ...(GRAPH.get(game.spike.region) ?? [])];
+    return defenseDroppedSpikeGuardRegions(game);
   }
   if (defenseRetakeMustAdvance(game, agent) && game.spike.region !== null) return [game.spike.region];
   const lane = defenseAssignedLane(game, agent);
@@ -4462,6 +4883,71 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
   return defenseLaneAnchors(lane);
 }
 
+function resolveProwlerSweep(game: GameState, caster: Agent, regions: [number, number]) {
+  const memories = game.enemyMemories.filter((memory) => memory.observer === caster.team);
+  const candidates = game.teams[otherSide(caster.team)].agents
+    .filter((enemy) => enemy.alive && regions.includes(enemy.region))
+    .map((enemy) => ({
+      enemy,
+      informationRank: enemy.detected ? 0 : memories.some((memory) => memory.agentId === enemy.id && regions.includes(memory.region)) ? 1 : 2,
+      regionRank: regions.indexOf(enemy.region),
+    }))
+    .sort((a, b) => a.regionRank - b.regionRank || a.informationRank - b.informationRank || a.enemy.id.localeCompare(b.enemy.id));
+  const target = candidates[0]?.enemy;
+  if (!target) {
+    game.enemyMemories = game.enemyMemories.filter((memory) => memory.observer !== caster.team || !regions.includes(memory.region));
+    addLog(game, `추적귀가 ${regions.map(regionName).join(" → ")}을 탐색했지만 적을 찾지 못했습니다. 오래된 위치 기억을 폐기합니다.`);
+    return null;
+  }
+  clearWait(target);
+  applySimpleReveal(game, target, caster.team);
+  addTrade(game, { enemyId: target.id, team: caster.team, sourceId: caster.id });
+  rememberEnemy(game, caster.team, target);
+  addLog(game, `추적귀가 ${regionName(target.region)}의 ${target.name}을 찾아 발각·대기 해제·트레이드 표식을 적용했습니다.`);
+  return target;
+}
+
+function applyZeroPoint(game: GameState, caster: Agent, targetRegion: number) {
+  const affected = new Set([targetRegion, ...(GRAPH.get(targetRegion) ?? [])]);
+  const enemySide = otherSide(caster.team);
+  const targets = game.teams[enemySide].agents.filter((enemy) => enemy.alive && affected.has(enemy.region));
+  targets.forEach((enemy) => {
+    game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === enemy.id && effect.kind === "suppressed"));
+    game.statusEffects.push({
+      id: `suppressed-${game.turnSerial}-${enemy.id}`,
+      owner: caster.team,
+      targetId: enemy.id,
+      kind: "suppressed",
+      expiresEnemyTurn: game.teamTurns[enemySide] + 1,
+    });
+  });
+  game.deployables.filter((item) => item.owner === enemySide && affected.has(item.region)).forEach((item) => {
+    item.disabledUntilTeamTurn = game.teamTurns[enemySide] + 1;
+    if (item.kind === "poison-emitter" && item.armed) {
+      item.armed = false;
+      game.smokes = game.smokes.filter((smoke) => !(smoke.sourceSkill === "poison-cloud" && smoke.sourceAgentId === item.ownerAgentId));
+    }
+  });
+  game.toxicScreens.filter((screen) => screen.owner === enemySide && screen.regions.some((region) => affected.has(region))).forEach((screen) => {
+    screen.disabledUntilTeamTurn = game.teamTurns[enemySide] + 1;
+    screen.active = false;
+    screen.expiresEnemyTurn = null;
+    game.smokes = game.smokes.filter((smoke) => !(smoke.sourceSkill === "toxic-screen" && smoke.sourceAgentId === screen.ownerAgentId));
+  });
+  const disabledNetIds = new Set(game.gravNets.filter((net) => net.owner === enemySide && affected.has(net.region)).map((net) => net.id));
+  game.gravNets = game.gravNets.filter((net) => !disabledNetIds.has(net.id));
+  game.statusEffects = game.statusEffects.filter((effect) => effect.kind !== "gravnet" || ![...disabledNetIds].some((netId) => effect.id.startsWith(`gravnet-${netId}-`)));
+  addLog(game, `제로/포인트 응답: ${targets.length ? targets.map((enemy) => enemy.name).join(", ") : "요원 없음"} · 위치는 공개되지 않습니다.`);
+  return targets;
+}
+
+function defenseDroppedSpikeGuardRegions(game: GameState) {
+  if (game.spike.status !== "dropped" || !game.spikeKnownByDefense || game.spike.region === null) return [];
+  const spikeRegion = game.spike.region;
+  return [spikeRegion, ...(GRAPH.get(spikeRegion) ?? []).filter((region) =>
+    region !== ATTACK_SPAWN_REGION || spikeRegion === ATTACK_SPAWN_REGION)];
+}
+
 function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) {
   const guardingDroppedSpike = game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null;
   const threat = defenseThreatSite(game);
@@ -4469,7 +4955,9 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
   const pair = defenseRetakePair(game);
   const pairSeparated = !!pair && distance(pair.leader.region, pair.escort.region) > 1;
   const flanking = !guardingDroppedSpike && !urgentRetake && defenseShouldFlank(game, agent, threat);
-  const safeTargets = guardingDroppedSpike || flanking || urgentRetake ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
+  const safeTargets = guardingDroppedSpike
+    ? targets.filter((region) => region !== ATTACK_SPAWN_REGION || game.spike.region === ATTACK_SPAWN_REGION)
+    : flanking || urgentRetake ? targets : targets.filter((region) => DEFENSE_OPERATING_REGIONS.has(region));
   if (!safeTargets.length) return null;
   if (pair && pairSeparated && agent.id === pair.leader.id && !urgentRetake) return null;
   const trailingSniper = urgentRetake
@@ -4510,6 +4998,10 @@ function aiDefenseDestination(game: GameState, agent: Agent, targets: number[]) 
 function aiPostplantHoldIsUseful(game: GameState, agent: Agent) {
   if (attackPostplantMustContest(game, agent)) return false;
   if (game.spike.region === null || !agent.waitDirs.length) return false;
+  const alive = game.teams.attack.agents.filter((ally) => ally.alive);
+  const sameRegionAllies = alive.filter((ally) => ally.id !== agent.id && ally.region === agent.region).length;
+  const duplicateHoldAllies = alive.filter((ally) => ally.id !== agent.id && ally.waitDirs.some((region) => agent.waitDirs.includes(region))).length;
+  if (sameRegionAllies > 1 || duplicateHoldAllies > 1) return false;
   const assignedPositions = attackPostplantWaypoints(game, agent);
   const positioned = assignedPositions.includes(agent.region)
     || (!SITE_REGIONS[game.attackPlan.targetSite].includes(agent.region) && distance(agent.region, game.spike.region) <= 2);
@@ -4523,7 +5015,10 @@ function aiPostplantHoldIsUseful(game: GameState, agent: Agent) {
 function aiHoldPositionDecision(game: GameState, side: Side): string | null {
   const alive = game.teams[side].agents.filter((agent) => agent.alive);
   if (!alive.length || game.actionsUsed >= 3) return null;
-  if (alive.some((agent) => aiWeaponPickupObjective(game, agent))) return null;
+  const attackPostplantActive = side === "attack"
+    && ["planted", "half", "defusing"].includes(game.spike.status)
+    && game.spike.region !== null;
+  if (!attackPostplantActive && alive.some((agent) => aiWeaponPickupObjective(game, agent))) return null;
 
   const exactEnemies = aiEnemyIntel(game, side).filter((enemy) => enemy.exact);
   const immediateContact = alive.some((ally) => exactEnemies.some((enemy) =>
@@ -4775,8 +5270,12 @@ function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) 
     const waitPenaltyA = waitA.waitingEnemies.length ? (waitA.acceptable ? 28 - waitA.score * .2 : 160 - waitA.survivalChance) : 0;
     const waitPenaltyB = waitB.waitingEnemies.length ? (waitB.acceptable ? 28 - waitB.score * .2 : 160 - waitB.survivalChance) : 0;
     const guardingDrop = agent.team === "defense" && game.spike.status === "dropped" && game.spikeKnownByDefense && game.spike.region !== null;
-    const territoryA = guardingDrop ? 8 - distance(a, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, ATTACK_SPAWN_REGION);
-    const territoryB = guardingDrop ? 8 - distance(b, game.spike.region!) * 3 : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, ATTACK_SPAWN_REGION);
+    const territoryA = guardingDrop
+      ? a === ATTACK_SPAWN_REGION && game.spike.region !== ATTACK_SPAWN_REGION ? -120 : 8 - distance(a, game.spike.region!) * 3
+      : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(a) ? 4 : -8) : -distance(a, ATTACK_SPAWN_REGION);
+    const territoryB = guardingDrop
+      ? b === ATTACK_SPAWN_REGION && game.spike.region !== ATTACK_SPAWN_REGION ? -120 : 8 - distance(b, game.spike.region!) * 3
+      : agent.team === "defense" ? (DEFENSE_OPERATING_REGIONS.has(b) ? 4 : -8) : -distance(b, ATTACK_SPAWN_REGION);
     return safetyB * 3 + territoryB - waitPenaltyB - (safetyA * 3 + territoryA - waitPenaltyA);
   })[0];
 }
@@ -5151,7 +5650,16 @@ function chooseAiOptionalContact(game: GameState, contact: PendingContact) {
     .map((enemyId) => assessAiOptionalContact(game, contact, enemyId))
     .filter((assessment): assessment is AiOptionalContactAssessment => assessment !== null)
     .sort((a, b) => b.score - a.score || b.winChance - a.winChance);
-  const best = assessments[0];
+  const postplantPressure = actor.team === "attack" ? attackPostplantPressure(game) : null;
+  const finalDefuseBlocker = postplantPressure?.urgency === "final-defuse"
+    && postplantPressure.checkerId === actor.id;
+  const objectiveAssessments = finalDefuseBlocker
+    ? assessments.filter((assessment) => {
+      const enemy = getAgent(game, assessment.enemyId);
+      return !!enemy && aiCombatObjectiveMustBeBroken(game, actor, enemy);
+    })
+    : assessments;
+  const best = objectiveAssessments[0];
   if (!best) return null;
 
   const urgentObjective = aiRetreatReentryIsUrgent(game, actor);
@@ -5283,10 +5791,10 @@ function aiSkillRegions(agent: Agent, target: SkillTarget) {
 
 function aiSkillPriority(game: GameState, side: Side, skillId: string) {
   const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
-  const attackBreach = ["recon", "smoke", "dark", "curve", "flash", "aftershock", "paint", "shock", "relay", "tailwind", "updraft", "gear", "blast", "stim", "trip", "camera", "turret", "alarm", "hot", "shadow"];
-  const attackPostplant = ["trip", "turret", "alarm", "camera", "hot", "smoke", "dark", "stim", "recon", "shock", "flash", "aftershock", "paint", "relay", "tailwind", "shadow", "blast", "updraft", "gear", "curve"];
-  const defenseHold = ["trip", "turret", "alarm", "camera", "smoke", "dark", "stim", "hot", "recon", "flash", "aftershock", "paint", "relay", "shock", "tailwind", "shadow", "blast", "updraft", "gear", "curve"];
-  const defenseRetake = ["recon", "smoke", "dark", "flash", "aftershock", "paint", "shock", "relay", "tailwind", "shadow", "blast", "stim", "trip", "turret", "alarm", "camera", "hot", "updraft", "gear", "curve"];
+  const attackBreach = ["zero-point", "haunt", "prowler", "hawk", "recon", "high-tide", "cove", "toxic-screen", "poison-cloud", "smoke", "dark", "leer", "kayo-flash", "fakeout", "curve", "flash", "gatecrash", "rendezvous", "gravnet", "aftershock", "paint", "shock", "relay", "healing-orb", "regrowth", "tailwind", "updraft", "gear", "blast", "stim", "barrier-mesh", "barrier-orb", "trip", "camera", "turret", "alarm", "hot", "shadow"];
+  const attackPostplant = ["barrier-mesh", "barrier-orb", "gravnet", "rendezvous", "fakeout", "poison-cloud", "toxic-screen", "trip", "turret", "alarm", "haunt", "camera", "hot", "cove", "high-tide", "smoke", "dark", "stim", "zero-point", "prowler", "hawk", "recon", "shock", "kayo-flash", "flash", "leer", "gatecrash", "aftershock", "paint", "relay", "healing-orb", "regrowth", "tailwind", "shadow", "blast", "updraft", "gear", "curve"];
+  const defenseHold = ["barrier-mesh", "barrier-orb", "gravnet", "rendezvous", "poison-cloud", "toxic-screen", "trip", "turret", "alarm", "haunt", "camera", "cove", "high-tide", "smoke", "dark", "stim", "hot", "zero-point", "prowler", "hawk", "recon", "kayo-flash", "flash", "leer", "fakeout", "aftershock", "paint", "relay", "shock", "healing-orb", "regrowth", "tailwind", "gatecrash", "shadow", "blast", "updraft", "gear", "curve"];
+  const defenseRetake = ["zero-point", "prowler", "hawk", "recon", "cove", "high-tide", "poison-cloud", "toxic-screen", "smoke", "dark", "kayo-flash", "flash", "leer", "gatecrash", "rendezvous", "gravnet", "aftershock", "paint", "shock", "relay", "fakeout", "healing-orb", "regrowth", "tailwind", "shadow", "blast", "stim", "barrier-mesh", "barrier-orb", "trip", "turret", "alarm", "haunt", "camera", "hot", "updraft", "gear", "curve"];
   const order = side === "attack"
     ? spikeActive ? attackPostplant : attackBreach
     : spikeActive ? defenseRetake : defenseHold;
@@ -5297,6 +5805,7 @@ function aiSkillPriority(game: GameState, side: Side, skillId: string) {
 function attackAiSkillWindowOpen(game: GameState, agent: Agent, skillId: string, intel: AiEnemyIntel[], recoveryBlockerIds: Set<string>) {
   if (agent.team !== "attack" || ["planting", "planted", "half", "defusing"].includes(game.spike.status)) return true;
   if (skillId === "hot" && agent.hp < AGENT_MAX_HP) return true;
+  if (["regrowth", "healing-orb"].includes(skillId) && game.teams.attack.agents.some((ally) => ally.alive && ally.hp < AGENT_MAX_HP && distance(agent.region, ally.region) <= 1)) return true;
   if (intel.some((enemy) => enemy.exact && distance(agent.region, enemy.region) <= 2)) return true;
   if (intel.some((enemy) => recoveryBlockerIds.has(enemy.agent.id))) return true;
 
@@ -5304,8 +5813,8 @@ function attackAiSkillWindowOpen(game: GameState, agent: Agent, skillId: string,
   const distanceToSite = Math.min(...SITE_REGIONS[targetSite].map((region) => distance(agent.region, region)));
   const phase = attackPlanPhase(game);
   if (phase === "execute") return distanceToSite <= 2;
-  if (skillId === "recon") return game.cycle >= 2 && distanceToSite <= 3;
-  if (["smoke", "dark"].includes(skillId)) {
+  if (["recon", "haunt", "zero-point"].includes(skillId)) return game.cycle >= 2 && distanceToSite <= 3;
+  if (["smoke", "dark", "poison-cloud", "toxic-screen", "cove", "high-tide"].includes(skillId)) {
     const knownHold = intel.some((enemy) => enemy.confidence >= 0.5 && (
       enemy.waitDirs.some((region) => SITE_REGIONS[targetSite].includes(region))
       || WEAPONS[enemy.weapon].type === "sniper"
@@ -5321,6 +5830,42 @@ function aiHasFollowupMovementCard(game: GameState, agent: Agent) {
     !card.used
     && canUseCard(card, agent)
     && cardTargets(game, agent, card).some((region) => region !== agent.region));
+}
+
+function aiRemainingCardPlans(game: GameState, side: Side) {
+  const team = game.teams[side];
+  const committedCard = team.hand.find((card) =>
+    card.id === game.selectedCardId && card.used && !!card.committedAgentId);
+  const cardPlans: { card: ActionCard; agent: Agent }[] = [];
+
+  if (committedCard?.committedAgentId) {
+    const committedAgent = getAgent(game, committedCard.committedAgentId);
+    if (committedAgent?.alive && aiCardHasLegalResolution(game, committedCard, committedAgent)) {
+      cardPlans.push({ card: committedCard, agent: committedAgent });
+    }
+  } else if (game.actionsUsed < 3) {
+    for (const card of team.hand.filter((item) => !item.used)) {
+      for (const agent of team.agents) {
+        if (agent.alive && aiCardHasLegalResolution(game, card, agent)) cardPlans.push({ card, agent });
+      }
+    }
+  }
+  return cardPlans;
+}
+
+function aiShortDurationUtilityHasFollowup(game: GameState, side: Side, effectRegions: number[]) {
+  const cardPlans = aiRemainingCardPlans(game, side);
+  const affected = new Set(effectRegions);
+  const affectedEnemyRegions = new Set(aiEnemyIntel(game, side)
+    .filter((enemy) => affected.has(enemy.region))
+    .map((enemy) => enemy.region));
+  return cardPlans.some(({ card, agent }) => {
+    if (card.kind === "control") return false;
+    return cardTargets(game, agent, card).some((destination) =>
+      destination !== agent.region
+      && (affected.has(destination)
+        || [...affectedEnemyRegions].some((enemyRegion) => distance(destination, enemyRegion) <= 1)));
+  });
 }
 
 function aiPhoenixShouldHoldOwnFire(game: GameState, agent: Agent) {
@@ -5420,9 +5965,14 @@ function aiDarkRegion(game: GameState, agent: Agent, intel: AiEnemyIntel[]): num
   const attackersInside = agent.team === "defense" && aiEnemyIntel(game, "defense").some((enemy) =>
     enemy.exact && SITE_REGIONS[targetSite].includes(enemy.region),
   );
+  const protectedSpikeRegion = agent.team === "attack"
+    && ["planted", "half", "defusing"].includes(game.spike.status)
+    ? game.spike.region
+    : null;
   const candidates = REGIONS
     .filter((region) => !game.smokes.some((smoke) => smoke.region === region.id)
       && region.id !== agent.region
+      && region.id !== protectedSpikeRegion
       && !game.teams[agent.team].agents.some((ally) => ally.alive && ally.id !== agent.id && ally.region === region.id))
     .map((region) => {
       let score = Math.max(0, 5 - distance(region.id, objective));
@@ -5447,14 +5997,15 @@ function aiDarkRegion(game: GameState, agent: Agent, intel: AiEnemyIntel[]): num
 // smoke walls off any single edge with at least one endpoint within range 2
 // of the caster (not anchored to the caster's own tile), scored the same way
 // as before the self-anchored redesign.
-function aiSmokeEdge(game: GameState, agent: Agent, intel: AiEnemyIntel[]): [number, number] | null {
+function aiSmokeEdge(game: GameState, agent: Agent, intel: AiEnemyIntel[], unlimited = false): [number, number] | null {
+  const inRange = (a: number, b: number) => unlimited || distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2;
   const guardedRecovery = aiGuardedRecoveryObjectives(game, agent.team)[0];
   if (guardedRecovery) {
     for (const blocker of guardedRecovery.blockers) {
       const waitPath = shortestPath(blocker.region, guardedRecovery.region);
       const recoveryEdge = waitPath.slice(0, -1)
         .map((region, index) => [region, waitPath[index + 1]] as [number, number])
-        .find(([a, b]) => !isSmokeBlocked(game, a, b) && (distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2));
+        .find(([a, b]) => !isSmokeBlocked(game, a, b) && inRange(a, b));
       if (recoveryEdge) return recoveryEdge;
     }
   }
@@ -5467,7 +6018,7 @@ function aiSmokeEdge(game: GameState, agent: Agent, intel: AiEnemyIntel[]): [num
         const holdPath = shortestPath(hold.enemy.region, heldRegion);
         const holdEdge = holdPath.slice(0, -1)
           .map((region, index) => [region, holdPath[index + 1]] as [number, number])
-          .find(([a, b]) => !isSmokeBlocked(game, a, b) && (distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2));
+          .find(([a, b]) => !isSmokeBlocked(game, a, b) && inRange(a, b));
         if (holdEdge) return holdEdge;
       }
     }
@@ -5482,7 +6033,7 @@ function aiSmokeEdge(game: GameState, agent: Agent, intel: AiEnemyIntel[]): [num
     enemy.exact && SITE_REGIONS[targetSite].includes(enemy.region),
   );
   const candidates = EDGES
-    .filter(([a, b]) => !isSmokeBlocked(game, a, b) && (distance(agent.region, a) <= 2 || distance(agent.region, b) <= 2))
+    .filter(([a, b]) => !isSmokeBlocked(game, a, b) && inRange(a, b))
     .map(([a, b]) => {
       const edge: [number, number] = [a, b];
       let score = Math.max(0, 5 - Math.min(distance(a, objective), distance(b, objective)));
@@ -5562,6 +6113,52 @@ function completeAiSkill(game: GameState, agent: Agent, definition: SkillDefinit
   checkWinner(game);
 }
 
+function toxicScreenEdges(screen: ToxicScreenEffect) {
+  return screen.regions.slice(0, -1).map((from, index) => [from, screen.regions[index + 1]] as [number, number]);
+}
+
+function aiToxicScreenHasImmediateFollowup(game: GameState, side: Side, screen: ToxicScreenEffect) {
+  const screenEdges = new Set(toxicScreenEdges(screen).map(([from, to]) => edgeKey(from, to)));
+  return aiRemainingCardPlans(game, side).some(({ card, agent }) => {
+    if (card.kind === "control") return false;
+    return cardTargets(game, agent, card).some((destination) => {
+      if (destination === agent.region) return false;
+      const path = shortestMovementPath(game, agent.region, destination, agent);
+      return path.slice(0, -1).some((from, index) => screenEdges.has(edgeKey(from, path[index + 1])));
+    });
+  });
+}
+
+function toxicScreenPreservesPostplantSight(game: GameState, screen: ToxicScreenEffect) {
+  if (screen.owner !== "attack" || game.spike.region === null || !["planted", "half", "defusing"].includes(game.spike.status)) return true;
+  const spikeRegion = game.spike.region;
+  const blocked = new Set(toxicScreenEdges(screen).map(([a, b]) => edgeKey(a, b)));
+  return game.teams.attack.agents.some((ally) => {
+    if (!ally.alive) return false;
+    if (ally.region === spikeRegion) return true;
+    const path = shortestPath(ally.region, spikeRegion);
+    return path.length === 2 && !blocked.has(edgeKey(path[0], path[1])) && !isSmokeBlocked(game, path[0], path[1]);
+  });
+}
+
+function aiThreeEdgeScreenPath(game: GameState, agent: Agent, objective: number) {
+  const paths: [number, number, number, number][] = [];
+  for (const first of GRAPH.get(agent.region) ?? []) {
+    for (const second of GRAPH.get(first) ?? []) {
+      if (second === agent.region) continue;
+      for (const third of GRAPH.get(second) ?? []) {
+        if (third === first || third === agent.region) continue;
+        paths.push([agent.region, first, second, third]);
+      }
+    }
+  }
+  return paths.sort((a, b) => {
+    const score = (path: [number, number, number, number]) => Math.min(...path.map((region) => distance(region, objective)))
+      + path.filter((region) => SITE_REGIONS[agent.team === "attack" ? game.attackPlan.targetSite : defenseThreatSite(game) ?? game.defensePlan.strongSite ?? "A"].includes(region)).length * -2;
+    return score(a) - score(b);
+  })[0] ?? null;
+}
+
 function tryUseAiSkill(game: GameState, side: Side): boolean {
   const intel = aiEnemyIntel(game, side);
   const observed = observedRegions(game, side);
@@ -5579,9 +6176,117 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
     const reservingPlantAction = item.id === plantingReserveCarrierId
       && item.extraActions === 1
       && !!REGIONS.find((region) => region.id === item.region)?.site;
-    return item.alive && item.extraActions > 0 && !isChanneling(game, item) && !reservingPlantAction;
+    return item.alive && item.extraActions > 0 && !isChanneling(game, item) && !isAgentSuppressed(game, item) && !reservingPlantAction;
   })) {
-    const camera = agent.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === side && item.ownerAgentId === agent.id) : null;
+    retrieveViperEmitter(game, agent);
+    const agentObjective = aiObjectiveRegion(game, side, agent.region, intel);
+    const staticObjectivePath = shortestPath(agent.region, agentObjective);
+    const adjacentBarrier = game.barriers.find((barrier) => barrier.hp > 0 && (barrier.from === agent.region || barrier.to === agent.region));
+    const barrierOnObjectivePath = adjacentBarrier && staticObjectivePath.length > 1 && edgeKey(staticObjectivePath[0], staticObjectivePath[1]) === edgeKey(adjacentBarrier.from, adjacentBarrier.to);
+    const urgentBarrierBreak = !!adjacentBarrier && (
+      !!barrierOnObjectivePath && adjacentBarrier.owner !== side
+      || side === "defense" && defenseRetakeIsActive(game)
+      || side === "attack" && attackForcedPlantMode(game)
+    );
+    if (urgentBarrierBreak) {
+      if (!applyActionStartFire(game, agent)) return true;
+      adjacentBarrier.hp -= 1;
+      agent.extraActions = Math.max(0, agent.extraActions - 1);
+      addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name} 장벽 파괴 · 내구도 ${Math.max(0, adjacentBarrier.hp)}/2.`);
+      if (adjacentBarrier.hp <= 0) game.barriers = game.barriers.filter((barrier) => barrier.id !== adjacentBarrier.id);
+      return true;
+    }
+
+    const nearbyDevice = enemyDeployables
+      .filter((device) => !["poison-emitter", "fakeout"].includes(device.kind) && distance(agent.region, device.region) <= 1)
+      .map((device) => {
+        const trappingAgent = device.kind === "barrier-mesh" && device.region === agent.region;
+        const revealingAgent = device.kind === "haunt" && distance(device.region, agent.region) <= 1;
+        const objectivePressure = distance(device.region, agentObjective) <= 1;
+        const tacticalValue = device.kind === "barrier-mesh" ? 12 : device.kind === "haunt" ? 9 : device.kind === "rendezvous" ? 8 : 5;
+        return { device, score: (trappingAgent ? 30 : 0) + (revealingAgent ? 18 : 0) + (objectivePressure ? 8 : 0) + tacticalValue };
+      })
+      .sort((a, b) => b.score - a.score)[0];
+    if (nearbyDevice && nearbyDevice.score >= 13) {
+      if (!applyActionStartFire(game, agent)) return true;
+      const { device } = nearbyDevice;
+      agent.extraActions = Math.max(0, agent.extraActions - 1);
+      if ((device.hp ?? 1) > 1) {
+        device.hp = (device.hp ?? 1) - 1;
+        addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}이 ${device.kind} 파괴 중 · 내구도 ${device.hp}/${device.maxHp ?? 2}.`);
+      } else {
+        game.deployables = game.deployables.filter((item) => item.id !== device.id);
+        addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}이 전술 경로의 ${device.kind} 설치물을 파괴했습니다.`);
+      }
+      return true;
+    }
+
+    const gatecrash = agent.name === "요루" ? game.deployables.find((item) => item.kind === "gatecrash" && item.ownerAgentId === agent.id) : null;
+    const gatecrashProgress = gatecrash
+      ? distance(agent.region, agentObjective) - distance(gatecrash.region, agentObjective)
+      : 0;
+    const gatecrashRoute = gatecrash ? shortestMovementPath(game, agent.region, gatecrash.region, agent) : [];
+    const gatecrashBypassesBarrier = !!gatecrash
+      && (gatecrashRoute.length === 0 || gatecrashRoute.length - 1 > distance(agent.region, gatecrash.region));
+    const gatecrashTacticalWindow = side === "attack"
+      ? attackPlanPhase(game) === "execute" || ["planting", "planted", "half", "defusing"].includes(game.spike.status)
+      : !!defenseThreatSite(game) || defenseRetakeIsActive(game);
+    const gatecrashSafer = !!gatecrash
+      && knownThreatScoreAtRegion(game, side, gatecrash.region) + 8 < knownThreatScoreAtRegion(game, side, agent.region);
+    const gatecrashUseful = !!gatecrash
+      && gatecrash.region !== agent.region
+      && (aiRetreatReentryIsUrgent(game, agent)
+        || gatecrashBypassesBarrier && gatecrashProgress >= 0
+        || gatecrashTacticalWindow && gatecrashProgress >= 0
+          && knownThreatScoreAtRegion(game, side, gatecrash.region) <= knownThreatScoreAtRegion(game, side, agent.region) + 6
+        || gatecrashSafer && gatecrashProgress >= -1);
+    if (gatecrashUseful && gatecrash) {
+      if (!applyActionStartFire(game, agent)) return true;
+      const from = agent.region;
+      clearWait(agent);
+      cancelProgress(game, agent);
+      agent.region = gatecrash.region;
+      clearTradeTargetOnMovement(game, agent, from, agent.region);
+      game.deployables = game.deployables.filter((item) => item.id !== gatecrash.id);
+      showMovementFx(game, agent, [from, agent.region]);
+      triggerHazards(game, agent, agent.region, agent.region);
+      if (agent.alive) queueCurrentEncounter(game, agent, 2, true, 0, true, "movement");
+      agent.extraActions = Math.max(0, agent.extraActions - 1);
+      showSkillFx(game, agent, "gatecrash", "관문 충돌", from, agent.region);
+      addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name} 관문 충돌 순간이동 · 우선도 2.`);
+      return true;
+    }
+
+    const emitter = agent.name === "바이퍼" ? game.deployables.find((item) => item.kind === "poison-emitter" && item.ownerAgentId === agent.id && !item.armed && !isDeployableDisabled(game, item)) : null;
+    if (emitter && (intel.some((enemy) => enemy.exact && distance(enemy.region, emitter.region) <= 1) || distance(emitter.region, agentObjective) <= 1)) {
+      if (!applyActionStartFire(game, agent)) return true;
+      emitter.armed = true;
+      game.smokes.push({ key: `poison-${emitter.id}`, region: emitter.region, owner: side, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 2, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "poison-cloud" });
+      agent.extraActions = Math.max(0, agent.extraActions - 1);
+      showSkillFx(game, agent, "poison-cloud", "독성 연기", agent.region, emitter.region);
+      addLog(game, `${SIDE_LABEL[side]} AI · ${regionName(emitter.region)} 독성 연기 가동.`);
+      return true;
+    }
+
+    const screen = agent.name === "바이퍼" ? game.toxicScreens.find((item) => item.ownerAgentId === agent.id && !item.active && !isToxicScreenDisabled(game, item) && item.readyOwnerTurn <= game.teamTurns[side]) : null;
+    const screenEnemyPressure = !!screen && intel.some((enemy) => enemy.exact && screen.regions.some((region) => distance(region, enemy.region) <= 1));
+    const screenObjectiveActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+    const screenEntryWindow = !!screen
+      && aiToxicScreenHasImmediateFollowup(game, side, screen)
+      && (side === "attack" ? attackPlanPhase(game) === "execute" : !!defenseThreatSite(game) || defenseRetakeIsActive(game));
+    if (screen && toxicScreenPreservesPostplantSight(game, screen) && (screenEnemyPressure || screenObjectiveActive || screenEntryWindow)) {
+      if (!applyActionStartFire(game, agent)) return true;
+      screen.active = true;
+      screen.expiresEnemyTurn = game.teamTurns[otherSide(side)] + 1;
+      screen.readyOwnerTurn = game.teamTurns[side] + 2;
+      toxicScreenEdges(screen).forEach(([from, to]) => game.smokes.push({ key: edgeKey(from, to), owner: side, expiresEnemyTurn: screen.expiresEnemyTurn!, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "toxic-screen" }));
+      agent.extraActions = Math.max(0, agent.extraActions - 1);
+      showSkillFx(game, agent, "toxic-screen", "독성 장막", agent.region, screen.regions[3]);
+      addLog(game, `${SIDE_LABEL[side]} AI · 독성 장막 1턴 가동.`);
+      return true;
+    }
+
+    const camera = agent.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === side && item.ownerAgentId === agent.id && !isDeployableDisabled(game, item)) : null;
     const cameraTarget = camera ? game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && !enemy.detected && [camera.region, ...(GRAPH.get(camera.region) ?? [])].includes(enemy.region)) : null;
     if (cameraTarget) {
       if (!applyActionStartFire(game, agent)) return true;
@@ -5592,12 +6297,72 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       return true;
     }
 
+    const soul = agent.name === "레이나"
+      ? game.reynaSoulWindows.find((window) => window.agentId === agent.id && window.turnSerial === game.turnSerial)
+      : null;
+    if (soul && (agent.skills["soul-harvest"] ?? 0) > 0) {
+      const devourActive = game.statusEffects.some((effect) => effect.targetId === agent.id && effect.kind === "devour");
+      const durabilityCap = AGENT_MAX_HP + MAX_ARMOR - agent.armor;
+      if (!devourActive && agent.hp < durabilityCap) {
+        if (!applyActionStartFire(game, agent)) return true;
+        game.reynaSoulWindows = game.reynaSoulWindows.filter((window) => window.id !== soul.id);
+        agent.skills["soul-harvest"] = Math.max(0, (agent.skills["soul-harvest"] ?? 0) - 1);
+        agent.extraActions = Math.max(0, agent.extraActions - 1);
+        agent.detected = true;
+        game.statusEffects.push({ id: `ai-devour-${game.turnSerial}-${agent.id}`, owner: side, targetId: agent.id, kind: "devour", remainingTicks: 3 });
+        showSkillFx(game, agent, "soul-harvest", "포식", agent.region, agent.region);
+        game.analytics[side].skillsUsed += 1;
+        addAnalyticsEvent(game, side, "skill", `${agent.name} · 포식`);
+        addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}가 포식을 시작했습니다.`);
+        return true;
+      }
+      const dismissTarget = (GRAPH.get(agent.region) ?? [])
+        .filter((region) => canAgentTraverseEdge(game, agent, agent.region, region))
+        .map((region) => ({ region, score: knownThreatScoreAtRegion(game, side, region) + distance(region, agentObjective) * 2 }))
+        .sort((a, b) => a.score - b.score)[0];
+      if (dismissTarget && knownThreatScoreAtRegion(game, side, agent.region) > dismissTarget.score + 4) {
+        if (!applyActionStartFire(game, agent)) return true;
+        const from = agent.region;
+        clearWait(agent);
+        cancelProgress(game, agent);
+        agent.region = dismissTarget.region;
+        clearTradeTargetOnMovement(game, agent, from, agent.region);
+        showMovementFx(game, agent, [from, agent.region]);
+        game.reynaSoulWindows = game.reynaSoulWindows.filter((window) => window.id !== soul.id);
+        agent.skills["soul-harvest"] = Math.max(0, (agent.skills["soul-harvest"] ?? 0) - 1);
+        agent.extraActions = Math.max(0, agent.extraActions - 1);
+        showSkillFx(game, agent, "soul-harvest", "무시", from, agent.region);
+        game.analytics[side].skillsUsed += 1;
+        addAnalyticsEvent(game, side, "skill", `${agent.name} · 무시`);
+        addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}가 무시로 ${regionName(agent.region)}에 안전하게 이동했습니다.`);
+        return true;
+      }
+    }
+
+    const rendezvous = agent.name === "체임버"
+      ? game.deployables.find((item) => item.kind === "rendezvous" && item.ownerAgentId === agent.id && !isDeployableDisabled(game, item) && (item.readyOwnerTurn ?? 0) <= game.teamTurns[side])
+      : null;
+    if (rendezvous && rendezvous.region !== agent.region) {
+      const currentThreat = knownThreatScoreAtRegion(game, side, agent.region);
+      const markerThreat = knownThreatScoreAtRegion(game, side, rendezvous.region);
+      const markerProgress = distance(agent.region, agentObjective) - distance(rendezvous.region, agentObjective);
+      if (markerThreat + 6 < currentThreat || markerProgress > 1 && markerThreat <= currentThreat) {
+        if (!applyActionStartFire(game, agent)) return true;
+        const from = agent.region;
+        if (!activateRendezvous(game, agent, rendezvous, true)) continue;
+        agent.extraActions = Math.max(0, agent.extraActions - 1);
+        showSkillFx(game, agent, "rendezvous", "랑데부", from, agent.region);
+        addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}가 랑데부로 귀환했습니다 · 도착 우선도 5.`);
+        return true;
+      }
+    }
+
     const definitions = [...AGENTS[agent.name].skills]
       .filter((definition) => (agent.skills[definition.id] ?? 0) > 0)
       .sort((a, b) => aiSkillPriority(game, side, a.id) - aiSkillPriority(game, side, b.id));
     for (const definition of definitions) {
       if (!attackAiSkillWindowOpen(game, agent, definition.id, intel, recoveryBlockerIds)) continue;
-      const needsFollowupTeamAction = ["tailwind", "updraft", "gear", "curve", "relay", "flash", "recon", "smoke", "dark", "stim"].includes(definition.id);
+      const needsFollowupTeamAction = ["tailwind", "updraft", "gear", "curve", "relay", "flash", "recon", "smoke", "dark", "stim", "fakeout", "hawk", "gatecrash", "poison-cloud", "toxic-screen", "barrier-orb", "leer", "prowler", "kayo-flash", "zero-point", "gravnet", "cove", "high-tide"].includes(definition.id);
       const hasCommittedFollowup = game.teams[side].hand.some((card) =>
         card.id === game.selectedCardId
         && card.used
@@ -5609,6 +6374,158 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       const currentAndAdjacent = [agent.region, ...(GRAPH.get(agent.region) ?? [])];
       const exactIntel = intel.filter((item) => item.exact);
       const objective = aiObjectiveRegion(game, side, agent.region, intel);
+
+      if (definition.id === "rendezvous") {
+        if (game.deployables.some((item) => item.kind === "rendezvous" && item.ownerAgentId === agent.id)) continue;
+        const spikeHold = side === "attack" && game.spike.region !== null
+          && ["planting", "planted", "half", "defusing"].includes(game.spike.status)
+          && distance(agent.region, game.spike.region) <= 2;
+        const defensiveAnchor = side === "defense" && (DEFENSE_OPERATING_REGIONS.has(agent.region) || !!defenseThreatSite(game));
+        if (!spikeHold && !defensiveAnchor && !exactIntel.some((enemy) => distance(agent.region, enemy.region) <= 2)) continue;
+        if (!begin()) return true;
+        game.deployables.push({ id: `ai-rendezvous-${game.turnSerial}-${agent.id}`, kind: "rendezvous", owner: side, ownerAgentId: agent.id, region: agent.region, readyOwnerTurn: game.teamTurns[side] });
+        finish();
+        return true;
+      }
+
+      if (definition.id === "leer") {
+        const entryRegion = aiEntryUtilityRegion(game, agent, GRAPH.get(agent.region) ?? []);
+        const target = (GRAPH.get(agent.region) ?? []).map((region) => ({
+          region,
+          score: exactIntel.filter((enemy) => enemy.region === region || enemy.agent.waitDirs.includes(region)).length * 8
+            + (entryRegion === region ? 4 : 0),
+        })).sort((a, b) => b.score - a.score)[0];
+        if (!target || target.score <= 0 || !aiShortDurationUtilityHasFollowup(game, side, [target.region])) continue;
+        if (!begin()) return true;
+        game.leerZones.push({ id: `ai-leer-${game.turnSerial}-${agent.id}`, owner: side, ownerAgentId: agent.id, region: target.region, expiresOwnerTurn: game.teamTurns[side] });
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "haunt") {
+        if (game.deployables.some((item) => item.kind === "haunt" && item.ownerAgentId === agent.id)) continue;
+        const target = aiSkillRegions(agent, "range2").map((region) => {
+          const watched = new Set([region, ...(GRAPH.get(region) ?? [])]);
+          const score = intel.filter((enemy) => watched.has(enemy.region)).reduce((sum, enemy) => sum + Math.round(enemy.confidence * 9), 0)
+            + Math.max(0, 4 - distance(region, objective));
+          return { region, score };
+        }).sort((a, b) => b.score - a.score)[0];
+        if (!target || target.score <= 1) continue;
+        if (!begin()) return true;
+        game.deployables.push({ id: `ai-haunt-${game.turnSerial}-${agent.id}`, kind: "haunt", owner: side, ownerAgentId: agent.id, region: target.region, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 2 });
+        refreshHauntDetection(game);
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "prowler") {
+        const routes = (GRAPH.get(agent.region) ?? []).flatMap((first) =>
+          (GRAPH.get(first) ?? []).filter((second) => second !== agent.region).map((second) => {
+            const swept = [first, second] as [number, number];
+            const targets = intel.filter((enemy) => swept.includes(enemy.region));
+            const score = targets.reduce((sum, enemy) => sum + (enemy.exact ? 10 : Math.round(enemy.confidence * 7)) + (enemy.region === first ? 2 : 0), 0)
+              + Math.max(0, 4 - distance(second, objective));
+            return { swept, score };
+          }));
+        const target = routes.sort((a, b) => b.score - a.score)[0];
+        if (!target || target.score <= 1 || !aiShortDurationUtilityHasFollowup(game, side, target.swept)) continue;
+        if (!begin()) return true;
+        resolveProwlerSweep(game, agent, target.swept);
+        finish(target.swept[1]);
+        return true;
+      }
+
+      if (definition.id === "zero-point") {
+        const target = aiSkillRegions(agent, "range2").map((region) => {
+          const affected = new Set([region, ...(GRAPH.get(region) ?? [])]);
+          const agentScore = intel.filter((enemy) => affected.has(enemy.region)).reduce((sum, enemy) => sum + Math.round(enemy.confidence * 10), 0);
+          const deviceScore = enemyDeployables.filter((item) => affected.has(item.region) && !isDeployableDisabled(game, item)).length * 4;
+          return { region, score: agentScore + deviceScore + Math.max(0, 3 - distance(region, objective)) };
+        }).sort((a, b) => b.score - a.score)[0];
+        if (!target || target.score <= 2 || !aiShortDurationUtilityHasFollowup(game, side, [target.region, ...(GRAPH.get(target.region) ?? [])])) continue;
+        if (!begin()) return true;
+        applyZeroPoint(game, agent, target.region);
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "kayo-flash") {
+        const entryRegion = aiEntryUtilityRegion(game, agent, aiSkillRegions(agent, "range2"));
+        const target = aiSkillRegions(agent, "range2").map((region) => ({
+          region,
+          targets: exactIntel.filter((enemy) => enemy.region === region || enemy.agent.waitDirs.includes(region)),
+          entryScore: entryRegion === region ? 2 : 0,
+        })).sort((a, b) => b.targets.length * 6 + b.entryScore - (a.targets.length * 6 + a.entryScore))[0];
+        if (!target || (!target.targets.length && !target.entryScore) || !aiShortDurationUtilityHasFollowup(game, side, [target.region])) continue;
+        if (!begin()) return true;
+        game.teams[otherSide(side)].agents
+          .filter((enemy) => enemy.alive && (enemy.region === target.region || enemy.waitDirs.includes(target.region)))
+          .forEach((enemy) => game.statusEffects.push({ id: `ai-kayo-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 }));
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "gravnet") {
+        const target = aiSkillRegions(agent, "range2").map((region) => ({
+          region,
+          targets: exactIntel.filter((enemy) => enemy.region === region),
+          objectiveScore: region === objective ? 3 : 0,
+        })).sort((a, b) => b.targets.length * 9 + b.objectiveScore - (a.targets.length * 9 + a.objectiveScore))[0];
+        if (!target || !target.targets.length || !aiShortDurationUtilityHasFollowup(game, side, [target.region])) continue;
+        if (!begin()) return true;
+        const net: GravNetEffect = { id: `ai-gravnet-${game.turnSerial}-${agent.id}`, owner: side, ownerAgentId: agent.id, region: target.region, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 };
+        game.gravNets.push(net);
+        target.targets.forEach(({ agent: enemy }) => applyGravNetDebuff(game, net, enemy));
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "barrier-mesh") {
+        if (game.deployables.some((item) => item.kind === "barrier-mesh" && item.ownerAgentId === agent.id)) continue;
+        const target = aiSkillRegions(agent, "range2").map((region) => {
+          const routePressure = intel.reduce((sum, enemy) => sum + (shortestPath(enemy.region, objective).includes(region) ? Math.round(enemy.confidence * 7) : 0), 0);
+          const occupants = exactIntel.filter((enemy) => enemy.region === region).length * 10;
+          const holdBonus = game.spike.region === region && ["planting", "planted", "half", "defusing"].includes(game.spike.status) ? 10 : 0;
+          return { region, score: routePressure + occupants + holdBonus };
+        }).sort((a, b) => b.score - a.score)[0];
+        if (!target || target.score <= 2) continue;
+        if (!begin()) return true;
+        game.deployables.push({ id: `ai-barrier-mesh-${game.turnSerial}-${agent.id}`, kind: "barrier-mesh", owner: side, ownerAgentId: agent.id, region: target.region, hp: 2, maxHp: 2, meshEntries: {}, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 3 });
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "cove") {
+        if (game.smokes.some((smoke) => smoke.sourceAgentId === agent.id && smoke.sourceSkill === "cove")) continue;
+        const edge = aiSmokeEdge(game, agent, intel, true);
+        if (!edge) continue;
+        if (!begin()) return true;
+        game.smokes.push({ key: edgeKey(edge[0], edge[1]), owner: side, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 2, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "cove" });
+        finish(edge[1]);
+        return true;
+      }
+
+      if (definition.id === "high-tide") {
+        if (game.smokes.some((smoke) => smoke.sourceAgentId === agent.id && smoke.sourceSkill === "high-tide")) continue;
+        const paths = (GRAPH.get(agent.region) ?? []).flatMap((first) =>
+          (GRAPH.get(first) ?? []).filter((second) => second !== agent.region).map((second) => ({
+            first,
+            second,
+            score: exactIntel.filter((enemy) => [first, second].includes(enemy.region) || enemy.agent.waitDirs.some((wait) => [first, second].includes(wait))).length * 8
+              + Math.max(0, 5 - distance(second, objective)),
+          })));
+        const path = paths.sort((a, b) => b.score - a.score)[0];
+        if (!path || path.score <= 1 || !aiShortDurationUtilityHasFollowup(game, side, [path.first, path.second])) continue;
+        if (!begin()) return true;
+        const expiry = game.teamTurns[otherSide(side)] + 2;
+        game.smokes.push(
+          { key: edgeKey(agent.region, path.first), owner: side, expiresEnemyTurn: expiry, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "high-tide" },
+          { key: `ai-high-tide-region-${game.turnSerial}-${agent.id}`, region: path.first, owner: side, expiresEnemyTurn: expiry, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "high-tide" },
+          { key: edgeKey(path.first, path.second), owner: side, expiresEnemyTurn: expiry, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "high-tide" },
+        );
+        finish(path.second);
+        return true;
+      }
 
       if (definition.id === "tailwind") {
         if (agent.status.evadeReady || !aiHasFollowupMovementCard(game, agent) || !intel.some((item) => distance(agent.region, item.region) <= 2)) continue;
@@ -5629,6 +6546,125 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         return true;
       }
 
+      if (definition.id === "regrowth") {
+        const healRegions = new Set([agent.region, ...(GRAPH.get(agent.region) ?? [])]);
+        const wounded = game.teams[side].agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.hp < AGENT_MAX_HP && healRegions.has(ally.region));
+        if (!wounded.length || aiRetreatReentryIsUrgent(game, agent)) continue;
+        if (!begin()) return true;
+        wounded.forEach((ally) => applyHeal(game, ally, 1, "재생"));
+        finish();
+        return true;
+      }
+
+      if (definition.id === "healing-orb") {
+        const target = game.teams[side].agents
+          .filter((ally) => ally.alive && ally.hp < AGENT_MAX_HP && distance(agent.region, ally.region) <= 1)
+          .sort((a, b) => (AGENT_MAX_HP - b.hp) - (AGENT_MAX_HP - a.hp) || Number(a.id === agent.id) - Number(b.id === agent.id))[0];
+        if (!target || aiRetreatReentryIsUrgent(game, agent)) continue;
+        if (!begin()) return true;
+        applyHeal(game, target, target.id === agent.id ? 1 : 2, "회복 구슬");
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "fakeout") {
+        const route = shortestPath(agent.region, objective);
+        const target = route[1] ?? (GRAPH.get(agent.region) ?? [])[0];
+        if (target === undefined || game.deployables.some((item) => item.kind === "fakeout" && item.ownerAgentId === agent.id)) continue;
+        const useful = exactIntel.some((enemy) => enemy.region === target || enemy.agent.waitDirs.includes(target))
+          || distance(agent.region, objective) <= 3
+          || side === "attack" && attackPlanPhase(game) === "execute";
+        if (!useful) continue;
+        if (!begin()) return true;
+        const fakeout: Deployable = { id: `ai-fakeout-${game.turnSerial}-${agent.id}`, kind: "fakeout", owner: side, ownerAgentId: agent.id, region: target, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 2 };
+        game.deployables.push(fakeout);
+        const defender = game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && enemy.region === target);
+        if (defender) queueFakeoutEncounter(game, defender, fakeout);
+        finish(target);
+        return true;
+      }
+
+      if (definition.id === "gatecrash") {
+        if (game.deployables.some((item) => item.kind === "gatecrash" && item.ownerAgentId === agent.id)) continue;
+        const target = aiSkillRegions(agent, "range2")
+          .filter((region) => region !== agent.region && !exactIntel.some((enemy) => enemy.region === region))
+          .sort((a, b) => distance(a, objective) + knownThreatScoreAtRegion(game, side, a) * 2 - (distance(b, objective) + knownThreatScoreAtRegion(game, side, b) * 2))[0];
+        if (target === undefined || distance(target, objective) >= distance(agent.region, objective)) continue;
+        if (!begin()) return true;
+        game.deployables.push({ id: `ai-gatecrash-${game.turnSerial}-${agent.id}`, kind: "gatecrash", owner: side, ownerAgentId: agent.id, region: target });
+        finish(target);
+        return true;
+      }
+
+      if (definition.id === "hawk") {
+        const route = shortestPath(agent.region, objective);
+        const first = route[1] ?? (GRAPH.get(agent.region) ?? [])[0];
+        const second = route[2] ?? (first === undefined ? undefined : (GRAPH.get(first) ?? []).find((region) => region !== agent.region));
+        if (first === undefined || second === undefined) continue;
+        const useful = exactIntel.some((enemy) => [first, second].includes(enemy.region) || enemy.agent.waitDirs.some((region) => [first, second].includes(region)))
+          || side === "attack" && attackPlanPhase(game) === "execute"
+          || side === "defense" && defenseRetakeIsActive(game);
+        if (!useful) continue;
+        if (!aiShortDurationUtilityHasFollowup(game, side, [first, second])) continue;
+        if (!begin()) return true;
+        const waitingEnemy = reconArrowWatcher(game, side, first) ?? reconArrowWatcher(game, side, second);
+        if (waitingEnemy) {
+          rememberEnemy(game, side, waitingEnemy);
+          addLog(game, `${waitingEnemy.name}이 AI 인도하는 매를 파괴했습니다. 위치와 ${WEAPONS[waitingEnemy.weapon].name} 확인.`);
+        } else {
+          game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && [first, second].includes(enemy.region)).forEach((enemy) => {
+            game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === enemy.id && effect.kind === "hawk-blind"));
+            game.statusEffects.push({ id: `ai-hawk-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "hawk-blind", aimPenalty: 3 });
+            enemy.detected = true;
+          });
+        }
+        finish(second);
+        return true;
+      }
+
+      if (definition.id === "barrier-orb") {
+        const candidates = (GRAPH.get(agent.region) ?? [])
+          .filter((region) => !isBarrierBlocked(game, agent.region, region))
+          .map((region) => {
+            const edge = edgeKey(agent.region, region);
+            const enemyRouteScore = intel.reduce((score, enemy) => {
+              const path = shortestPath(enemy.region, objective);
+              return score + (path.slice(0, -1).some((step, index) => edgeKey(step, path[index + 1]) === edge) ? Math.max(1, Math.round(enemy.confidence * 6)) : 0);
+            }, 0);
+            const ownPathPenalty = shortestPath(agent.region, objective).slice(0, 2).length === 2 && edgeKey(agent.region, shortestPath(agent.region, objective)[1]) === edge ? 8 : 0;
+            const holdBonus = side === "defense" && !defenseRetakeIsActive(game) ? 5 : side === "attack" && ["planted", "half", "defusing"].includes(game.spike.status) ? 6 : 0;
+            return { region, score: enemyRouteScore + holdBonus - ownPathPenalty };
+          })
+          .sort((a, b) => b.score - a.score);
+        const target = candidates[0];
+        if (!target || target.score <= 0) continue;
+        if (!begin()) return true;
+        game.barriers.push({ id: `ai-barrier-${game.turnSerial}-${agent.id}`, owner: side, ownerAgentId: agent.id, from: agent.region, to: target.region, hp: 2, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 4 });
+        finish(target.region);
+        return true;
+      }
+
+      if (definition.id === "poison-cloud") {
+        if (game.deployables.some((item) => item.kind === "poison-emitter" && item.ownerAgentId === agent.id)) continue;
+        const target = (GRAPH.get(agent.region) ?? [])
+          .sort((a, b) => distance(a, objective) - distance(b, objective))[0];
+        if (target === undefined || distance(agent.region, objective) > 3 && !exactIntel.length) continue;
+        if (!begin()) return true;
+        game.deployables.push({ id: `ai-poison-${game.turnSerial}-${agent.id}`, kind: "poison-emitter", owner: side, ownerAgentId: agent.id, region: target, armed: false });
+        finish(target);
+        return true;
+      }
+
+      if (definition.id === "toxic-screen") {
+        if (game.toxicScreens.some((screen) => screen.ownerAgentId === agent.id)) continue;
+        const path = aiThreeEdgeScreenPath(game, agent, objective);
+        if (!path || distance(agent.region, objective) > 4 && !exactIntel.length) continue;
+        if (!begin()) return true;
+        game.toxicScreens.push({ id: `ai-toxic-screen-${game.turnSerial}-${agent.id}`, owner: side, ownerAgentId: agent.id, regions: path, active: false, readyOwnerTurn: game.teamTurns[side], expiresEnemyTurn: null });
+        finish(path[3]);
+        return true;
+      }
+
       if (definition.id === "paint") {
         const entryRegion = aiEntryUtilityRegion(game, agent, currentAndAdjacent);
         const target = [...currentAndAdjacent].map((region) => ({
@@ -5642,9 +6678,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
           clearWait(enemy);
-          applyDamage(game, agent, enemy, SKILL_DAMAGE.paint, "페인트탄", true);
+          applyRangedSkillDamage(game, agent, enemy, SKILL_DAMAGE.paint, "페인트탄");
         });
-        game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side);
+        game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side || item.kind === "poison-emitter");
         finish(target.region);
         return true;
       }
@@ -5698,7 +6734,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.fires.push({ id: `ai-hot-${game.turnSerial}-${target}`, owner: side, ownerAgentId: agent.id, region: target, expiresOwnerTurn: game.teamTurns[side] + 1, expiresOn: "owner-start" });
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target).forEach((enemy) => {
-          applyDamage(game, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉", true);
+          applyRangedSkillDamage(game, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉");
         });
         if (target === agent.region) applyHeal(game, agent, 1, "불길");
         finish(target);
@@ -5750,6 +6786,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         })).sort((a, b) => b.targets.length * 5 + b.entryScore - (a.targets.length * 5 + a.entryScore));
         const target = candidates[0];
         if (!target || (!target.targets.length && !target.entryScore)) continue;
+        if (!aiShortDurationUtilityHasFollowup(game, side, [target.region])) continue;
         if (!begin()) return true;
         game.teams[otherSide(side)].agents
           .filter((enemy) => enemy.alive && enemy.region === target.region)
@@ -5823,9 +6860,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!target?.score) continue;
         if (!begin()) return true;
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
-          applyDamage(game, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살", true);
+          applyRangedSkillDamage(game, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살");
         });
-        game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side);
+        game.deployables = game.deployables.filter((item) => item.region !== target.region || item.owner === side || item.kind === "poison-emitter");
         finish(target.region);
         return true;
       }
@@ -5965,12 +7002,13 @@ function aiPreCardActionPlan(game: GameState, side: Side): AiPreCardActionPlan |
     || game.teams[side].agents.some((agent) => agent.extraActions > 0)
     || game.teams[side].hand.some((card) => card.id === game.selectedCardId && card.used && card.committedAgentId)) return null;
 
+  const urgentAttackPostplant = side === "attack" && attackPostplantPressure(game).needsAction;
   const plans: AiPreCardActionPlan[] = [];
   for (const card of game.teams[side].hand.filter((item) => !item.used)) {
     for (const agent of game.teams[side].agents) {
       if (!aiCardHasLegalResolution(game, card, agent)) continue;
 
-      const currentWeapon = aiCurrentWeaponPickup(game, agent);
+      const currentWeapon = urgentAttackPostplant ? null : aiCurrentWeaponPickup(game, agent);
       if (currentWeapon) {
         plans.push({
           cardId: card.id,
@@ -5998,7 +7036,7 @@ function aiPreCardActionPlan(game: GameState, side: Side): AiPreCardActionPlan |
       const usedSkill = simulation.analytics[side].skillsUsed > skillCountBefore || simulatedAgent.extraActions < extraBefore;
       if (!usedSkill) continue;
       const skillId = simulation.lastSkillFx?.skillId;
-      const setupBonus = skillId && ["tailwind", "updraft", "gear", "curve", "relay", "flash", "recon", "smoke", "dark", "stim"].includes(skillId) ? 35 : 0;
+      const setupBonus = skillId && ["tailwind", "updraft", "gear", "curve", "relay", "flash", "recon", "smoke", "dark", "stim", "fakeout", "hawk", "gatecrash", "poison-cloud", "toxic-screen", "barrier-orb", "leer", "haunt", "prowler", "zero-point", "kayo-flash", "gravnet", "cove", "high-tide"].includes(skillId) ? 35 : 0;
       plans.push({
         cardId: card.id,
         agentId: agent.id,
@@ -6117,7 +7155,7 @@ function MatchAnalysisPanel({ game, compact = false }: { game: GameState; compac
 
 function CombatVitalSlots({ fighter }: { fighter: CombatFighterView }) {
   const slots = (kind: "hp" | "armor", before: number, after: number) => {
-    const max = kind === "hp" ? AGENT_MAX_HP : MAX_ARMOR;
+    const max = kind === "hp" ? Math.max(AGENT_MAX_HP, before, after) : MAX_ARMOR;
     return (
       <span className={`combat-vital-slots ${kind}`} aria-label={`${kind === "hp" ? "체력" : "방어구"} ${after}/${max}`}>
         {Array.from({ length: max }, (_, index) => {
@@ -6135,10 +7173,14 @@ function CombatVitalSlots({ fighter }: { fighter: CombatFighterView }) {
 
 function AgentStatusBadges({ game, agent, compact = false }: { game: GameState; agent: Agent; compact?: boolean }) {
   const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id);
+  const leerAffected = game.leerZones.some((zone) => zone.owner !== agent.team && (zone.region === agent.region || agent.waitDirs.includes(zone.region)));
   const badges = [
-    timed.some((effect) => effect.kind === "blind" || (effect.aimPenalty ?? 0) >= 3) ? { key: "blind", icon: "✦", label: "실명 · 다음 공격 에임 감소" } : null,
+    timed.some((effect) => effect.kind === "blind" || (effect.aimPenalty ?? 0) >= 3) || leerAffected ? { key: "blind", icon: "✦", label: leerAffected ? "눈총 · 구역 내 모든 공격 에임 -3" : "실명 · 다음 공격 에임 감소" } : null,
     timed.some((effect) => effect.kind === "concussed" || (effect.priorityPenalty ?? 0) > 0) ? { key: "concussed", icon: "⌁", label: "충격 · 공격 우선도 지연" } : null,
     agent.detected ? { key: "detected", icon: "◎", label: "탐지됨" } : null,
+    timed.some((effect) => effect.kind === "suppressed") ? { key: "suppressed", icon: "S", label: "제압 · 스킬 및 스킬 추가행동 불가" } : null,
+    timed.some((effect) => effect.kind === "devour") ? { key: "devour", icon: "D", label: "포식 · 턴 종료 회복 / 피격 시 중단" } : null,
+    timed.some((effect) => effect.kind === "gravnet") ? { key: "gravnet", icon: "N", label: "중력그물 · 이동 및 교전 탈주 불가" } : null,
     timed.some((effect) => effect.kind === "exposed") ? { key: "exposed", icon: "M↓!", label: "탐지 노출 · 다음 교전 무빙 -1" } : null,
     agent.status.vulnerable ? { key: "vulnerable", icon: "!", label: "취약 · 다음 피해 +1" } : null,
     agent.status.aimPenalty > 0 ? { key: "aim-down", icon: "A↓", label: `에임 -${agent.status.aimPenalty}` } : null,
@@ -6331,9 +7373,7 @@ function SelectionScreen(props: SelectionScreenProps) {
 
 function remainingSkillBuyCost(agent: Agent): number {
   return AGENTS[agent.name].skills.reduce((total, definition) => {
-    const max = definition.price.includes("2회") ? 2 : 1;
-    const unitPrice = max === 2 ? 1 : 2;
-    return total + Math.max(0, max - (agent.skills[definition.id] ?? 0)) * unitPrice;
+    return total + skillRemainingCost(definition, agent.skills[definition.id] ?? 0);
   }, 0);
 }
 
@@ -6361,7 +7401,7 @@ function aiBuyAllSkills(team: TeamState, agent: Agent) {
   const cost = remainingSkillBuyCost(agent);
   if (team.funds < cost) return false;
   AGENTS[agent.name].skills.forEach((definition) => {
-    agent.skills[definition.id] = definition.price.includes("2회") ? 2 : 1;
+    agent.skills[definition.id] = skillMaxCharges(definition);
   });
   team.funds -= cost;
   return true;
@@ -6459,14 +7499,16 @@ function autoBuyTeamLoadout(game: GameState, side: Side) {
   const skillRounds = [
     team.agents.flatMap((agent) => AGENTS[agent.name].skills.slice(0, 1).map((definition) => ({ agent, definition }))),
     team.agents.flatMap((agent) => AGENTS[agent.name].skills.slice(1).map((definition) => ({ agent, definition }))),
-    team.agents.flatMap((agent) => AGENTS[agent.name].skills.filter((definition) => definition.price.includes("2회")).map((definition) => ({ agent, definition }))),
+    ...Array.from({ length: 4 }, () => team.agents.flatMap((agent) => AGENTS[agent.name].skills
+      .filter((definition) => skillMaxCharges(definition) > 1)
+      .map((definition) => ({ agent, definition })))),
   ];
   for (const purchases of skillRounds) {
     for (const { agent, definition } of purchases) {
-      const max = definition.price.includes("2회") ? 2 : 1;
-      const price = max === 2 ? 1 : 2;
+      const max = skillMaxCharges(definition);
+      const price = skillPurchasePrice(definition);
       if ((agent.skills[definition.id] ?? 0) < max && team.funds >= price) {
-        agent.skills[definition.id] = (agent.skills[definition.id] ?? 0) + 1;
+        agent.skills[definition.id] = Math.min(max, (agent.skills[definition.id] ?? 0) + skillPurchaseAmount(definition));
         team.funds -= price;
       }
     }
@@ -6562,7 +7604,7 @@ function PurchaseScreen({ game, side, selectedId, step, onSelect, onWeapon, onBu
         <div className="purchase-weapons">{Object.values(WEAPONS).map((weapon) => { const locked = weapon.unlock > game.matchRound; const equipped = agent.weapon === weapon.id; const difference = buyPhaseWeaponDifference(agent, weapon.id); const bulkTargets = team.agents.filter((item) => item.weapon !== weapon.id); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + buyPhaseWeaponDifference(item, weapon.id), 0); return <div key={weapon.id} className={`purchase-weapon-option ${locked ? "locked" : ""}`}><button disabled={locked || equipped || difference > team.funds} className={`purchase-primary ${equipped ? "equipped" : ""}`} onClick={() => onWeapon(weapon)} title={weaponRuleSummary(weapon)}><WeaponSilhouette weapon={weapon.id} /><span>{weapon.type === "sniper" ? "SNP" : weapon.type === "shotgun" ? "SG" : "GUN"}</span><strong>{weapon.name}</strong><small>몸통 {weapon.body} · 헤드 {weapon.head}</small><small className="weapon-rule-copy">{weaponRuleSummary(weapon)}</small><b>{locked ? `${weapon.unlock}R 해금` : equipped ? "장착 중" : difference < 0 ? `이번 구매 환불 ${-difference}원` : difference ? `${difference}원` : weapon.id === (agent.buyBaselineWeapon ?? agent.weapon) ? "보존 총기로 복귀" : "무료 교체"}</b></button><button className="bulk-buy" disabled={locked || bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkWeapon(weapon)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `이번 구매 환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div>
         <div className="purchase-lower">
           <div><div className="purchase-section-title"><div><span>02</span><strong>방어구</strong></div></div><div className="purchase-armors">{([{"type":"none","name":"방어구 없음","detail":"장비값 환불","price":0,"value":0},{"type":"light","name":"소형 방어구","detail":"방어 1","price":2,"value":1},{"type":"regen","name":"회복 방어구","detail":"턴 종료 회복","price":4,"value":1},{"type":"heavy","name":"대형 방어구","detail":"방어 2","price":6,"value":2}] as const).map((armor) => { const difference = armor.price - ARMOR_PRICE[agent.armorType]; const bulkTargets = team.agents.filter((item) => item.armorType !== armor.type); const bulkCount = bulkTargets.length; const bulkCost = bulkTargets.reduce((sum, item) => sum + armor.price - ARMOR_PRICE[item.armorType], 0); return <div key={armor.type} className="purchase-armor-option"><button className="purchase-primary" disabled={difference > team.funds || agent.armorType === armor.type} onClick={() => onArmor(armor.type, armor.price, armor.value)}><strong>{armor.name}</strong><span>{armor.detail}</span><b>{difference < 0 ? `환불 ${-difference}원` : difference ? `${difference}원` : "무료 교체"}</b></button><button className="bulk-buy" disabled={bulkCount === 0 || bulkCost > team.funds} onClick={() => onBulkArmor(armor.type, armor.price, armor.value)}><span>팀 일괄</span><b>{bulkCount}명 · {bulkCost < 0 ? `환불 ${-bulkCost}` : bulkCost}원</b></button></div>; })}</div></div>
-          <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = item.price.includes("2회") ? 2 : 1; const current = agent.skills[item.id] ?? 0; const price = max === 2 ? 1 : 2; return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)} title={item.description}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}회 구매</small><small className="skill-rule-copy">{item.description}</small></div><b>{price}원</b></button>; })}</div></div>
+          <div><div className="purchase-section-title skill-title"><div><span>03</span><strong>스킬</strong></div><div className="skill-bulk-actions"><button disabled={agentSkillCost === 0 || agentSkillCost > team.funds} onClick={() => onAllSkills("agent")}>선택 요원 전부 · {agentSkillCost}원</button><button disabled={teamSkillCost === 0 || teamSkillCost > team.funds} onClick={() => onAllSkills("team")}>팀 전원 전부 · {teamSkillCost}원</button></div></div><div className="purchase-skills">{AGENTS[agent.name].skills.map((item) => { const max = skillMaxCharges(item); const current = agent.skills[item.id] ?? 0; const price = skillPurchasePrice(item); return <button key={item.id} disabled={current >= max || team.funds < price} onClick={() => onSkill(item)} title={item.description}><span className={skillArtClass(item.id)} aria-label={`${item.name} 아이콘`} /><div><strong>{item.name}</strong><small>{current}/{max}{item.id === "headhunter" ? "발" : "회"} 구매</small><small className="skill-rule-copy">{item.description}</small></div><b>{price}원</b></button>; })}</div></div>
         </div>
       </section>
       <aside className="purchase-confirm"><span className="eyebrow">BUY PHASE</span><h2>{team.funds}원 남음</h2><p>남은 자금은 다음 매치 라운드로 이월됩니다. 전원이 같은 장비를 가질 필요는 없습니다.</p><div className="loadout-summary">{team.agents.map((item) => <article key={item.id}><i className={agentArtClass(item.name)} aria-label={`${item.name} 초상`} /><span><strong>{item.name}</strong><small>{WEAPONS[item.weapon].name} · 방어 {item.armor}</small></span><b>{Object.values(item.skills).reduce((sum, value) => sum + value, 0)}U</b></article>)}</div><button onClick={onContinue}><span>{side === "defense" ? "수비 배치 단계" : "본진 대기 설정"}</span><strong>구매 확정</strong></button></aside>
@@ -6774,7 +7816,7 @@ function AiController(props: AiControllerProps) {
       if (scene.phase === "tailwind") {
         const actor = getAgent(props.game, scene.tailwindActorId);
         if (actor && props.sides.includes(actor.team)) {
-          const options = GRAPH.get(actor.region) ?? [];
+          const options = (GRAPH.get(actor.region) ?? []).filter((region) => canAgentTraverseEdge(props.game, actor, actor.region, region));
           const choice = aiRetreatDestination(props.game, actor, options);
           if (choice) action = () => props.onTailwind(choice);
         }
@@ -6782,7 +7824,7 @@ function AiController(props: AiControllerProps) {
         const actor = getAgent(props.game, scene.actorId);
         if (actor && props.sides.includes(actor.team)) {
           const canAdvance = actor.id === scene.mover.id && props.game.pendingMovement?.agentId === actor.id && props.game.pendingMovement.nextIndex < props.game.pendingMovement.path.length;
-          const retreatOptions = combatRetreatIsLocked(scene, actor.id) ? [] : GRAPH.get(actor.region) ?? [];
+          const retreatOptions = combatRetreatRegions(props.game, scene, actor);
           const retreatTarget = aiRetreatDestination(props.game, actor, retreatOptions);
           if (actor.id === scene.mover.id && !scene.canMoverAttack) {
             if (canAdvance) action = props.onCombatAdvance;
@@ -7118,14 +8160,29 @@ export default function Home() {
       if (definition.id === "smoke" && game.targeting.selected?.length) {
         return new Set(GRAPH.get(game.targeting.selected[0]) ?? []);
       }
+      if (definition.id === "hawk" && game.targeting.selected?.length) {
+        return new Set(GRAPH.get(game.targeting.selected.at(-1)!) ?? []);
+      }
+      if (definition.id === "toxic-screen" && game.targeting.selected?.length) {
+        return new Set((GRAPH.get(game.targeting.selected.at(-1)!) ?? []).filter((region) => !game.targeting?.selected?.includes(region) && region !== agent.region));
+      }
+      if (["prowler", "high-tide"].includes(definition.id) && game.targeting.selected?.length) {
+        return new Set((GRAPH.get(game.targeting.selected.at(-1)!) ?? []).filter((region) => !game.targeting?.selected?.includes(region) && region !== agent.region));
+      }
+      if (definition.id === "cove" && game.targeting.selected?.length) return new Set(GRAPH.get(game.targeting.selected[0]) ?? []);
+      if (definition.id === "soul-harvest" && game.targeting.variant === "dismiss") {
+        return new Set((GRAPH.get(agent.region) ?? []).filter((region) => canAgentTraverseEdge(game, agent, agent.region, region)));
+      }
       if (definition.id === "blast") return new Set([agent.region, ...(GRAPH.get(agent.region) ?? [])]);
       if (["paint", "hot", "relay"].includes(definition.id)) return new Set([agent.region, ...(GRAPH.get(agent.region) ?? [])]);
+      if (definition.id === "healing-orb") return new Set([agent.region, ...(GRAPH.get(agent.region) ?? [])].filter((region) => game.teams[agent.team].agents.some((ally) => ally.alive && ally.region === region && ally.hp < AGENT_MAX_HP)));
       if (definition.target === "adjacent") return new Set(GRAPH.get(agent.region) ?? []);
+      if (definition.target === "ally") return new Set([agent.region, ...(GRAPH.get(agent.region) ?? [])]);
       if (definition.target === "range2") return new Set(REGIONS.filter((region) => distance(agent.region, region.id) <= 2).map((region) => region.id));
       if (definition.target === "any") return new Set(REGIONS.map((region) => region.id));
     }
     if (game.targeting?.kind === "special") {
-      if (game.targeting.origin !== undefined) return new Set(GRAPH.get(game.targeting.origin) ?? []);
+      if (game.targeting.origin !== undefined) return new Set((GRAPH.get(game.targeting.origin) ?? []).filter((region) => !isBarrierBlocked(game, game.targeting!.origin!, region)));
       return new Set(activeTeam.agents.filter((agent) => agent.alive).map((agent) => agent.region));
     }
     if (selectedAgent && selectedCard && canUseCard(selectedCard, selectedAgent)) return new Set(cardTargets(game, selectedAgent, selectedCard));
@@ -7149,8 +8206,8 @@ export default function Home() {
   };
 
   const recommendedLineups = () => {
-    setAttackPick(["제트", "레이즈", "소바", "브리치", "브림스톤"]);
-    setDefensePick(["피닉스", "네온", "사이퍼", "킬조이", "오멘"]);
+    setAttackPick(["요루", "레이즈", "스카이", "소바", "바이퍼"]);
+    setDefensePick(["피닉스", "네온", "세이지", "킬조이", "오멘"]);
   };
 
   const confirmLineups = () => {
@@ -7218,10 +8275,10 @@ export default function Home() {
     const team = draft.teams[side];
     const agent = getAgent(draft, setupAgentId);
     if (!agent || agent.team !== side) return;
-    const max = definition.price.includes("2회") ? 2 : 1;
-    const price = max === 2 ? 1 : 2;
+    const max = skillMaxCharges(definition);
+    const price = skillPurchasePrice(definition);
     if ((agent.skills[definition.id] ?? 0) >= max || team.funds < price) return;
-    agent.skills[definition.id] = (agent.skills[definition.id] ?? 0) + 1;
+    agent.skills[definition.id] = Math.min(max, (agent.skills[definition.id] ?? 0) + skillPurchaseAmount(definition));
     team.funds -= price;
   });
 
@@ -7233,7 +8290,7 @@ export default function Home() {
     if (targets.length === 0 || total === 0 || team.funds < total) return;
     targets.forEach((agent) => {
       AGENTS[agent.name].skills.forEach((definition) => {
-        agent.skills[definition.id] = definition.price.includes("2회") ? 2 : 1;
+        agent.skills[definition.id] = skillMaxCharges(definition);
       });
     });
     team.funds -= total;
@@ -7375,15 +8432,25 @@ export default function Home() {
       if (!definition) return;
       const skillOrigin = agent.region;
       const isSmokeSecondPoint = targeting.skillId === "smoke" && !!targeting.selected?.length;
+      const isHawkSecondPoint = targeting.skillId === "hawk" && !!targeting.selected?.length;
+      const isToxicScreenNextPoint = targeting.skillId === "toxic-screen" && !!targeting.selected?.length;
+      const isPathSkillNextPoint = ["prowler", "high-tide"].includes(targeting.skillId) && !!targeting.selected?.length;
+      const isCoveSecondPoint = targeting.skillId === "cove" && !!targeting.selected?.length;
+      const isDismissDestination = targeting.skillId === "soul-harvest" && targeting.variant === "dismiss";
       const isBlastDestination = targeting.skillId === "blast" && !!targeting.targetAgentId;
-      const isValid = isSmokeSecondPoint
+      const isValid = isSmokeSecondPoint || isCoveSecondPoint
         ? (GRAPH.get(targeting.selected![0]) ?? []).includes(region)
+        : isHawkSecondPoint || isToxicScreenNextPoint || isPathSkillNextPoint
+          ? (GRAPH.get(targeting.selected!.at(-1)!) ?? []).includes(region) && !targeting.selected!.includes(region) && region !== agent.region
+        : isDismissDestination
+          ? (GRAPH.get(agent.region) ?? []).includes(region) && canAgentTraverseEdge(draft, agent, agent.region, region)
         : isBlastDestination
           ? (GRAPH.get(getAgent(draft, targeting.targetAgentId)?.region ?? -1) ?? []).includes(region)
           : targeting.skillId === "blast" || ["paint", "hot", "relay"].includes(targeting.skillId)
             ? region === agent.region || (GRAPH.get(agent.region) ?? []).includes(region)
             : definition.target === "any"
         || (definition.target === "adjacent" && (GRAPH.get(agent.region) ?? []).includes(region))
+        || (definition.target === "ally" && (region === agent.region || (GRAPH.get(agent.region) ?? []).includes(region)))
         || (definition.target === "range2" && distance(agent.region, region) <= 2);
       if (!isValid) return;
 
@@ -7393,12 +8460,125 @@ export default function Home() {
         return;
       }
 
+      if (targeting.skillId === "hawk" && !targeting.selected?.length) {
+        targeting.selected = [region];
+        addLog(draft, `${definition.name}: 매가 이어서 이동할 인접 구역을 선택하세요.`);
+        return;
+      }
+
+      if (["prowler", "high-tide"].includes(targeting.skillId) && !targeting.selected?.length) {
+        targeting.selected = [region];
+        addLog(draft, `${definition.name}: 이어서 탐색하거나 장막을 이을 두 번째 인접 구역을 선택하세요.`);
+        return;
+      }
+
+      if (targeting.skillId === "cove" && !targeting.selected?.length) {
+        targeting.selected = [region];
+        addLog(draft, `${definition.name}: 해만으로 막을 통로의 반대편 구역을 선택하세요.`);
+        return;
+      }
+
+      if (targeting.skillId === "toxic-screen") {
+        const selected = [...(targeting.selected ?? []), region];
+        if (selected.length < 3) {
+          targeting.selected = selected;
+          addLog(draft, `${definition.name}: 장막 경로 ${selected.length}/3 · 다음 인접 구역을 선택하세요.`);
+          return;
+        }
+        targeting.selected = selected;
+      }
+
       const enemies = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && enemy.region === region);
       const deployableId = () => `${targeting.skillId}-${Date.now()}-${region}`;
+
+      if (isDismissDestination) {
+        const soul = draft.reynaSoulWindows.find((window) => window.agentId === agent.id && window.turnSerial === draft.turnSerial);
+        if (!soul || (agent.skills[definition.id] ?? 0) < 1) return;
+        const from = agent.region;
+        clearWait(agent);
+        cancelProgress(draft, agent);
+        agent.region = region;
+        clearTradeTargetOnMovement(draft, agent, from, region);
+        showMovementFx(draft, agent, [from, region]);
+        draft.reynaSoulWindows = draft.reynaSoulWindows.filter((window) => window.id !== soul.id);
+        showSkillFx(draft, agent, definition.id, "무시", from, region);
+        agent.extraActions = Math.max(0, agent.extraActions - 1);
+        agent.skills[definition.id] = Math.max(0, (agent.skills[definition.id] ?? 0) - 1);
+        draft.analytics[agent.team].skillsUsed += 1;
+        addAnalyticsEvent(draft, agent.team, "skill", `${agent.name} · 무시`);
+        addLog(draft, `${agent.name}가 무시로 ${regionName(region)}까지 피해·교전 없이 이동했습니다.`);
+        draft.targeting = null;
+        return;
+      }
       switch (targeting.skillId) {
+        case "fakeout": {
+          const fakeout = { id: deployableId(), kind: "fakeout" as const, owner: agent.team, ownerAgentId: agent.id, region, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 2 };
+          draft.deployables.push(fakeout);
+          const defender = draft.teams[otherSide(agent.team)].agents.find((enemy) => enemy.alive && enemy.region === region);
+          if (defender) queueFakeoutEncounter(draft, defender, fakeout);
+          addLog(draft, `기만이 ${regionName(region)}에 정상 체력의 요루처럼 진입했습니다.`);
+          break;
+        }
+        case "gatecrash":
+          draft.deployables = draft.deployables.filter((item) => !(item.kind === "gatecrash" && item.ownerAgentId === agent.id));
+          draft.deployables.push({ id: deployableId(), kind: "gatecrash", owner: agent.team, ownerAgentId: agent.id, region });
+          addLog(draft, `관문 충돌 표식이 ${regionName(region)}에 준비됐습니다. 추가행동으로 순간이동할 수 있습니다.`);
+          break;
+        case "leer":
+          draft.leerZones.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, expiresOwnerTurn: draft.teamTurns[agent.team] });
+          addLog(draft, `눈총이 ${regionName(region)}에 설치됐습니다. 구역 내부와 구역을 대기 중인 적은 이번 팀 턴 동안 에임 -3.`);
+          break;
+        case "haunt":
+          draft.deployables.push({ id: deployableId(), kind: "haunt", owner: agent.team, ownerAgentId: agent.id, region, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 2 });
+          refreshHauntDetection(draft);
+          addLog(draft, `귀체가 ${regionName(region)}에 설치되어 주변을 2턴 동안 감시합니다.`);
+          break;
+        case "prowler": {
+          const first = targeting.selected![0];
+          resolveProwlerSweep(draft, agent, [first, region]);
+          break;
+        }
+        case "zero-point":
+          applyZeroPoint(draft, agent, region);
+          break;
+        case "kayo-flash": {
+          const targets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && (enemy.region === region || enemy.waitDirs.includes(region)));
+          targets.forEach((enemy) => draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 }));
+          addLog(draft, `플래시/드라이브가 ${regionName(region)} 내부와 해당 구역 대기 적 ${targets.length}명에게 적용됐습니다.`);
+          break;
+        }
+        case "gravnet": {
+          const net: GravNetEffect = { id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 };
+          draft.gravNets.push(net);
+          enemies.forEach((enemy) => applyGravNetDebuff(draft, net, enemy));
+          addLog(draft, `중력그물이 ${regionName(region)}에 설치됐습니다. 붙잡힌 적은 이번 턴 이동·교전 탈주 불가.`);
+          break;
+        }
+        case "barrier-mesh":
+          draft.deployables = draft.deployables.filter((item) => !(item.kind === "barrier-mesh" && item.ownerAgentId === agent.id));
+          draft.deployables.push({ id: deployableId(), kind: "barrier-mesh", owner: agent.team, ownerAgentId: agent.id, region, hp: 2, maxHp: 2, meshEntries: {}, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 3 });
+          addLog(draft, `장벽망이 ${regionName(region)}에 설치됐습니다. 이미 안에 있는 적은 파괴 전까지 통로로 나갈 수 없습니다.`);
+          break;
+        case "cove": {
+          const first = targeting.selected![0];
+          draft.smokes.push({ key: edgeKey(first, region), owner: agent.team, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 2, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "cove" });
+          addLog(draft, `해만이 ${regionName(first)} ↔ ${regionName(region)} 통로의 시야와 모든 피해를 2턴 동안 차단합니다.`);
+          break;
+        }
+        case "high-tide": {
+          const first = targeting.selected![0];
+          const expiry = draft.teamTurns[otherSide(agent.team)] + 2;
+          draft.smokes.push(
+            { key: edgeKey(agent.region, first), owner: agent.team, expiresEnemyTurn: expiry, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "high-tide" },
+            { key: `high-tide-region-${deployableId()}`, region: first, owner: agent.team, expiresEnemyTurn: expiry, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "high-tide" },
+            { key: edgeKey(first, region), owner: agent.team, expiresEnemyTurn: expiry, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "high-tide" },
+          );
+          addLog(draft, `만조가 ${regionName(agent.region)} → ${regionName(first)} → ${regionName(region)}에 생성됐습니다. 접촉 시 이동 중단·무빙/이동력 -1.`);
+          break;
+        }
         case "paint":
-          enemies.forEach((enemy) => { clearWait(enemy); applyDamage(draft, agent, enemy, SKILL_DAMAGE.paint, "페인트탄", true); });
-          draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team);
+          enemies.forEach((enemy) => { clearWait(enemy); applyRangedSkillDamage(draft, agent, enemy, SKILL_DAMAGE.paint, "페인트탄"); });
+          draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team || item.kind === "poison-emitter");
           break;
         case "blast": {
           if (!targeting.targetAgentId) {
@@ -7430,7 +8610,7 @@ export default function Home() {
           break;
         case "hot":
           draft.fires.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-start" });
-          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉", true));
+          enemies.forEach((enemy) => applyRangedSkillDamage(draft, agent, enemy, SKILL_DAMAGE.hot, "불길 접촉"));
           if (region === agent.region) applyHeal(draft, agent, 1, "불길");
           break;
         case "stim": {
@@ -7464,14 +8644,60 @@ export default function Home() {
           }
           break;
         }
+        case "hawk": {
+          const [first] = targeting.selected!;
+          const waitingEnemy = reconArrowWatcher(draft, agent.team, first) ?? reconArrowWatcher(draft, agent.team, region);
+          if (waitingEnemy) {
+            rememberEnemy(draft, agent.team, waitingEnemy);
+            addLog(draft, `${waitingEnemy.name}이 인도하는 매를 파괴했습니다. 위치 ${regionName(waitingEnemy.region)} / 총기 ${WEAPONS[waitingEnemy.weapon].name} 확인.`);
+          } else {
+            const swept = new Set([first, region]);
+            const targets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && swept.has(enemy.region));
+            targets.forEach((enemy) => {
+              draft.statusEffects = draft.statusEffects.filter((effect) => !(effect.targetId === enemy.id && effect.kind === "hawk-blind"));
+              draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "hawk-blind", aimPenalty: 3 });
+              enemy.detected = true;
+            });
+            addLog(draft, `인도하는 매가 ${regionName(first)}와 ${regionName(region)}의 적 ${targets.length}명을 턴 종료까지 탐지·에임 -3으로 만들었습니다.`);
+          }
+          break;
+        }
         case "shock":
-          enemies.forEach((enemy) => applyDamage(draft, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살", true));
-          draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team);
+          enemies.forEach((enemy) => applyRangedSkillDamage(draft, agent, enemy, SKILL_DAMAGE.shock + (enemy.detected ? 1 : 0), "충격 화살"));
+          draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team || item.kind === "poison-emitter");
           break;
         case "aftershock":
           draft.aftershocks.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, readyOnTurn: draft.teamTurns[agent.team] + 1 });
           addLog(draft, `${SIDE_LABEL[agent.team]}이 어딘가에 여진을 준비했습니다. 다음 턴 시작을 조심하세요.`);
           break;
+        case "healing-orb": {
+          const candidates = draft.teams[agent.team].agents.filter((ally) => ally.alive && ally.region === region && ally.hp < AGENT_MAX_HP);
+          if (!candidates.length) return;
+          if (candidates.length > 1) {
+            targeting.candidateAgentIds = candidates.map((candidate) => candidate.id);
+            addLog(draft, `회복 구슬을 받을 아군을 선택하세요.`);
+            return;
+          }
+          applyHeal(draft, candidates[0], candidates[0].id === agent.id ? 1 : 2, "회복 구슬");
+          break;
+        }
+        case "barrier-orb":
+          if (isBarrierBlocked(draft, agent.region, region)) return;
+          draft.barriers.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, from: agent.region, to: region, hp: 2, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 4 });
+          addLog(draft, `${regionName(agent.region)} ↔ ${regionName(region)} 통로에 내구도 2 장벽이 생성됐습니다. 순간이동은 통과할 수 있습니다.`);
+          break;
+        case "poison-cloud":
+          draft.deployables = draft.deployables.filter((item) => !(item.kind === "poison-emitter" && item.ownerAgentId === agent.id));
+          draft.deployables.push({ id: deployableId(), kind: "poison-emitter", owner: agent.team, ownerAgentId: agent.id, region, armed: false });
+          addLog(draft, `독성 연기 방사기가 ${regionName(region)}에 설치됐습니다.`);
+          break;
+        case "toxic-screen": {
+          const [first, second, third] = targeting.selected!;
+          draft.toxicScreens = draft.toxicScreens.filter((screen) => screen.ownerAgentId !== agent.id);
+          draft.toxicScreens.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, regions: [agent.region, first, second, third], active: false, readyOwnerTurn: draft.teamTurns[agent.team], expiresEnemyTurn: null });
+          addLog(draft, `독성 장막이 ${[agent.region, first, second, third].map(regionName).join(" → ")} 경로에 설치됐습니다.`);
+          break;
+        }
         case "smoke": {
           const first = targeting.selected![0];
           draft.smokes.push({ key: edgeKey(first, region), owner: agent.team, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 4, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
@@ -7505,7 +8731,8 @@ export default function Home() {
   };
 
   const activateSkill = (definition: SkillDefinition) => {
-    if (!selectedAgent?.alive || selectedAgent.extraActions < 1 || (selectedAgent.skills[definition.id] ?? 0) < 1 || game.pendingContact || game.winner) return;
+    if (!selectedAgent?.alive || selectedAgent.extraActions < 1 || (selectedAgent.skills[definition.id] ?? 0) < 1 || game.pendingContact || game.winner || isAgentSuppressed(game, selectedAgent)) return;
+    if (["headhunter", "soul-harvest"].includes(definition.id)) return;
     if (definition.target !== "self") {
       mutate((draft) => {
         const agent = getAgent(draft, selectedAgent.id);
@@ -7526,6 +8753,17 @@ export default function Home() {
       if (definition.id === "gear") agent.status.highGear = true;
       if (definition.id === "camera") draft.deployables.push({ id: `camera-${Date.now()}`, kind: "camera", owner: agent.team, ownerAgentId: agent.id, region: agent.region });
       if (definition.id === "alarm") draft.deployables.push({ id: `alarm-${Date.now()}`, kind: "alarm", owner: agent.team, ownerAgentId: agent.id, region: agent.region });
+      if (definition.id === "regrowth") {
+        const healRegions = new Set([agent.region, ...(GRAPH.get(agent.region) ?? [])]);
+        draft.teams[agent.team].agents
+          .filter((ally) => ally.alive && ally.id !== agent.id && healRegions.has(ally.region))
+          .forEach((ally) => applyHeal(draft, ally, 1, "재생"));
+      }
+      if (definition.id === "rendezvous") {
+        draft.deployables = draft.deployables.filter((item) => !(item.kind === "rendezvous" && item.ownerAgentId === agent.id));
+        draft.deployables.push({ id: `rendezvous-${Date.now()}`, kind: "rendezvous", owner: agent.team, ownerAgentId: agent.id, region: agent.region, readyOwnerTurn: draft.teamTurns[agent.team] });
+        addLog(draft, `${agent.name}가 ${regionName(agent.region)}에 랑데부를 설치했습니다.`);
+      }
       showSkillFx(draft, agent, definition.id, definition.name, agent.region, agent.region);
       agent.extraActions -= 1;
       agent.skills[definition.id] -= 1;
@@ -7547,6 +8785,19 @@ export default function Home() {
         targeting.candidateAgentIds = [];
         addLog(draft, `${target.name}이 이동할 인접 구역을 선택하세요.`);
       }
+      if (targeting.skillId === "healing-orb" && kind === "agent") {
+        const target = getAgent(draft, id);
+        const definition = AGENTS[caster.name].skills.find((item) => item.id === "healing-orb");
+        if (!target?.alive || !definition || target.team !== caster.team || target.hp >= AGENT_MAX_HP || distance(caster.region, target.region) > 1) return;
+        applyHeal(draft, target, target.id === caster.id ? 1 : 2, "회복 구슬");
+        showSkillFx(draft, caster, definition.id, definition.name, caster.region, target.region);
+        caster.extraActions = Math.max(0, caster.extraActions - 1);
+        caster.skills[definition.id] = Math.max(0, (caster.skills[definition.id] ?? 0) - 1);
+        draft.analytics[caster.team].skillsUsed += 1;
+        addAnalyticsEvent(draft, caster.team, "skill", `${caster.name} · ${definition.name}`);
+        addLog(draft, `${caster.name} 스킬 — ${definition.name} 사용.`);
+        draft.targeting = null;
+      }
     });
   };
 
@@ -7554,9 +8805,9 @@ export default function Home() {
     if (draft.pendingContact) return;
     const agent = getAgent(draft, selectedAgent?.id);
     const enemy = getAgent(draft, enemyId);
-    if (!agent || agent.name !== "사이퍼" || agent.extraActions < 1 || !enemy?.alive) return;
+    if (!agent || agent.name !== "사이퍼" || agent.extraActions < 1 || !enemy?.alive || isAgentSuppressed(draft, agent)) return;
     const camera = draft.deployables.find((item) => item.kind === "camera" && item.owner === agent.team);
-    if (!camera || !new Set([camera.region, ...(GRAPH.get(camera.region) ?? [])]).has(enemy.region)) return;
+    if (!camera || isDeployableDisabled(draft, camera) || !new Set([camera.region, ...(GRAPH.get(camera.region) ?? [])]).has(enemy.region)) return;
     if (!applyActionStartFire(draft, agent)) return;
     applyDetection(draft, enemy);
     agent.extraActions -= 1;
@@ -7567,11 +8818,16 @@ export default function Home() {
     if (draft.pendingContact) return;
     const agent = getAgent(draft, selectedAgent?.id);
     const device = draft.deployables.find((item) => item.id === deployableId);
-    if (!agent || agent.extraActions < 1 || !device || device.owner === agent.team || distance(agent.region, device.region) > 1) return;
+    if (!agent || agent.extraActions < 1 || !device || device.owner === agent.team || distance(agent.region, device.region) > 1 || ["poison-emitter", "fakeout"].includes(device.kind)) return;
     if (!applyActionStartFire(draft, agent)) return;
-    draft.deployables = draft.deployables.filter((item) => item.id !== deployableId);
     agent.extraActions -= 1;
-    addLog(draft, `${agent.name}이 적 ${device.kind} 설치물을 파괴했습니다.`);
+    if ((device.hp ?? 1) > 1) {
+      device.hp = (device.hp ?? 1) - 1;
+      addLog(draft, `${agent.name}이 적 ${device.kind} 설치물을 파괴 중입니다. 내구도 ${device.hp}/${device.maxHp ?? 2}.`);
+    } else {
+      draft.deployables = draft.deployables.filter((item) => item.id !== deployableId);
+      addLog(draft, `${agent.name}이 적 ${device.kind} 설치물을 파괴했습니다.`);
+    }
   });
 
   const handleRegionClick = (region: number) => {
@@ -7659,11 +8915,12 @@ export default function Home() {
     setPendingStayConfirm(null);
   };
 
-  const quickAction = (type: "plant" | "half" | "final" | "pickup" | "drop" | "spike" | "spike-transfer", pickupId?: string) => {
+  const quickAction = (type: "plant" | "half" | "final" | "pickup" | "drop" | "spike" | "spike-transfer" | "gatecrash" | "poison-cloud" | "toxic-screen" | "rendezvous" | "break-barrier", targetId?: string) => {
     if (!selectedAgent || selectedAgent.extraActions < 1 || game.pendingContact) return;
     mutate((draft) => {
       const agent = getAgent(draft, selectedAgent.id);
       if (!agent || !agent.alive || agent.extraActions < 1) return;
+      if (["gatecrash", "poison-cloud", "toxic-screen", "rendezvous"].includes(type) && isAgentSuppressed(draft, agent)) return;
       if (!applyActionStartFire(draft, agent)) return;
       if (type === "plant") {
         const region = REGIONS.find((item) => item.id === agent.region);
@@ -7690,8 +8947,8 @@ export default function Home() {
         addLog(draft, `${agent.name} 최종 해체 시작. 다음 수비 턴 시작까지 버티세요.`);
       }
       if (type === "pickup") {
-        const dropped = pickupId
-          ? draft.droppedWeapons.find((item) => item.id === pickupId && item.region === agent.region)
+        const dropped = targetId
+          ? draft.droppedWeapons.find((item) => item.id === targetId && item.region === agent.region)
           : draft.droppedWeapons.find((item) => item.region === agent.region);
         if (!dropped) return;
         if (agent.weapon !== "classic") draft.droppedWeapons.push({ id: `swap-${Date.now()}`, region: agent.region, weapon: agent.weapon, knownBy: [agent.team] });
@@ -7725,6 +8982,94 @@ export default function Home() {
         agent.extraActions -= 1;
         addLog(draft, `${agent.name}이 ${carrier.name}에게서 스파이크를 넘겨받았습니다.`);
       }
+      if (type === "gatecrash") {
+        const marker = draft.deployables.find((item) => item.id === targetId && item.kind === "gatecrash" && item.ownerAgentId === agent.id);
+        if (!marker) return;
+        const from = agent.region;
+        clearWait(agent);
+        cancelProgress(draft, agent);
+        agent.region = marker.region;
+        clearTradeTargetOnMovement(draft, agent, from, agent.region);
+        draft.deployables = draft.deployables.filter((item) => item.id !== marker.id);
+        showMovementFx(draft, agent, [from, agent.region]);
+        triggerHazards(draft, agent, agent.region, agent.region);
+        if (agent.alive) queueCurrentEncounter(draft, agent, 2, true, 0, true, "movement");
+        agent.extraActions -= 1;
+        showSkillFx(draft, agent, "gatecrash", "관문 충돌", from, agent.region);
+        addLog(draft, `${agent.name}이 장벽과 경로를 무시하고 관문으로 순간이동했습니다. 교전 우선도 2.`);
+      }
+      if (type === "poison-cloud") {
+        const emitter = draft.deployables.find((item) => item.id === targetId && item.kind === "poison-emitter" && item.ownerAgentId === agent.id && !item.armed && !isDeployableDisabled(draft, item));
+        if (!emitter) return;
+        emitter.armed = true;
+        draft.smokes.push({ key: `poison-${emitter.id}`, region: emitter.region, owner: agent.team, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 2, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "poison-cloud" });
+        agent.extraActions -= 1;
+        showSkillFx(draft, agent, "poison-cloud", "독성 연기", agent.region, emitter.region);
+        addLog(draft, `${agent.name}이 ${regionName(emitter.region)}의 독성 연기를 2턴 동안 가동했습니다.`);
+      }
+      if (type === "toxic-screen") {
+        const screen = draft.toxicScreens.find((item) => item.id === targetId && item.ownerAgentId === agent.id && !item.active && !isToxicScreenDisabled(draft, item) && item.readyOwnerTurn <= draft.teamTurns[agent.team]);
+        if (!screen) return;
+        screen.active = true;
+        screen.expiresEnemyTurn = draft.teamTurns[otherSide(agent.team)] + 1;
+        screen.readyOwnerTurn = draft.teamTurns[agent.team] + 2;
+        screen.regions.slice(0, -1).forEach((from, index) => {
+          const to = screen.regions[index + 1];
+          draft.smokes.push({ key: edgeKey(from, to), owner: agent.team, expiresEnemyTurn: screen.expiresEnemyTurn!, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "toxic-screen" });
+        });
+        agent.extraActions -= 1;
+        showSkillFx(draft, agent, "toxic-screen", "독성 장막", agent.region, screen.regions[3]);
+        addLog(draft, `${agent.name}이 독성 장막을 1턴 동안 가동했습니다.`);
+      }
+      if (type === "rendezvous") {
+        const marker = draft.deployables.find((item) => item.id === targetId && item.kind === "rendezvous" && item.ownerAgentId === agent.id);
+        if (!marker || !activateRendezvous(draft, agent, marker)) return;
+        agent.extraActions -= 1;
+      }
+      if (type === "break-barrier") {
+        const barrier = draft.barriers.find((item) => item.id === targetId && item.hp > 0 && (item.from === agent.region || item.to === agent.region));
+        if (!barrier) return;
+        const opposite = barrier.from === agent.region ? barrier.to : barrier.from;
+        barrier.hp -= 1;
+        agent.extraActions -= 1;
+        const warned = draft.teams[otherSide(agent.team)].agents.some((enemy) => enemy.alive && enemy.region === opposite);
+        addLog(draft, warned
+          ? `${regionName(barrier.from)} ↔ ${regionName(barrier.to)} 장벽 파괴 중임이 반대편에 확인됐습니다. 내구도 ${Math.max(0, barrier.hp)}/2.`
+          : `${agent.name}이 장벽을 파괴 중입니다. 내구도 ${Math.max(0, barrier.hp)}/2.`);
+        if (barrier.hp <= 0) {
+          draft.barriers = draft.barriers.filter((item) => item.id !== barrier.id);
+          addLog(draft, `장벽이 파괴되어 통로를 다시 이동할 수 있습니다.`);
+        }
+      }
+    });
+  };
+
+  const useReynaSoul = (variant: "devour" | "dismiss") => {
+    if (!selectedAgent?.alive || selectedAgent.name !== "레이나" || selectedAgent.extraActions < 1 || (selectedAgent.skills["soul-harvest"] ?? 0) < 1 || isAgentSuppressed(game, selectedAgent)) return;
+    const soul = game.reynaSoulWindows.find((window) => window.agentId === selectedAgent.id && window.turnSerial === game.turnSerial);
+    if (!soul) return;
+    if (variant === "dismiss") {
+      mutate((draft) => {
+        const agent = getAgent(draft, selectedAgent.id);
+        if (!agent?.alive || isAgentSuppressed(draft, agent) || !applyActionStartFire(draft, agent)) return;
+        draft.targeting = { kind: "skill", agentId: agent.id, skillId: "soul-harvest", variant: "dismiss" };
+        addLog(draft, `${agent.name} 무시: 피해와 교전 없이 이동할 인접 구역을 선택하세요.`);
+      });
+      return;
+    }
+    mutate((draft) => {
+      const agent = getAgent(draft, selectedAgent.id);
+      const activeSoul = draft.reynaSoulWindows.find((window) => window.agentId === agent?.id && window.turnSerial === draft.turnSerial);
+      if (!agent?.alive || !activeSoul || isAgentSuppressed(draft, agent) || draft.statusEffects.some((effect) => effect.targetId === agent.id && effect.kind === "devour") || !applyActionStartFire(draft, agent)) return;
+      draft.reynaSoulWindows = draft.reynaSoulWindows.filter((window) => window.id !== activeSoul.id);
+      agent.skills["soul-harvest"] = Math.max(0, (agent.skills["soul-harvest"] ?? 0) - 1);
+      agent.extraActions = Math.max(0, agent.extraActions - 1);
+      agent.detected = true;
+      draft.statusEffects.push({ id: `devour-${draft.turnSerial}-${agent.id}`, owner: agent.team, targetId: agent.id, kind: "devour", remainingTicks: 3 });
+      showSkillFx(draft, agent, "soul-harvest", "포식", agent.region, agent.region);
+      draft.analytics[agent.team].skillsUsed += 1;
+      addAnalyticsEvent(draft, agent.team, "skill", `${agent.name} · 포식`);
+      addLog(draft, `${agent.name}가 포식을 시작했습니다. 자기 팀 턴 종료마다 최대 3회 회복하며 피해를 받으면 중단됩니다.`);
     });
   };
 
@@ -7733,6 +9078,9 @@ export default function Home() {
     mutate((draft) => {
       const endingSide = draft.turnSide;
       const endingTeam = draft.teams[endingSide];
+      const hawkRevealIds = new Set(draft.statusEffects
+        .filter((effect) => effect.owner === endingSide && effect.kind === "hawk-blind")
+        .map((effect) => effect.targetId));
       clearTeamExtraActions(draft, endingSide);
       for (const agent of endingTeam.agents) {
         if (agent.alive && agent.armorType === "regen") agent.armor = 1;
@@ -7743,12 +9091,19 @@ export default function Home() {
           applyDamage(draft, getAgent(draft, enemyFire.ownerAgentId), agent, SKILL_DAMAGE.hot, "불길 지속 피해", true);
           addLog(draft, `${agent.name}가 불길 속에서 턴을 마쳐 피해를 입었습니다.`);
         }
+        const devour = draft.statusEffects.find((effect) => effect.targetId === agent.id && effect.kind === "devour");
+        if (agent.alive && devour) {
+          applyDevourHeal(draft, agent);
+          devour.remainingTicks = Math.max(0, (devour.remainingTicks ?? 1) - 1);
+          if (devour.remainingTicks <= 0) endDevour(draft, agent, "3번의 회복 완료");
+        }
         agent.status.aimPenalty = 0;
         agent.status.priorityPenalty = 0;
         agent.status.vulnerable = false;
         agent.status.evadeReady = false;
         agent.status.ignoreGround = false;
         agent.status.highGear = false;
+        agent.status.highTideSlowed = false;
         agent.status.moveBonus = 0;
         agent.status.moveRangeBonus = 0;
       }
@@ -7758,10 +9113,40 @@ export default function Home() {
           agent.detectedExpiresTeamTurn = null;
         }
       });
-      draft.statusEffects = draft.statusEffects.filter((effect) => effect.owner !== endingSide || effect.kind === "exposed" || effect.expiresEnemyTurn !== undefined);
+      draft.statusEffects = draft.statusEffects.filter((effect) => effect.owner !== endingSide || effect.kind === "exposed" || effect.kind === "devour" || effect.expiresEnemyTurn !== undefined);
       draft.statusEffects = draft.statusEffects.filter((effect) =>
         !(effect.expiresEnemyTurn !== undefined && otherSide(effect.owner) === endingSide && draft.teamTurns[endingSide] >= effect.expiresEnemyTurn));
+      hawkRevealIds.forEach((agentId) => {
+        const target = getAgent(draft, agentId);
+        if (target && target.detectedExpiresTeamTurn === null) target.detected = false;
+      });
       draft.smokes = draft.smokes.filter((smoke) => !(otherSide(smoke.owner) === endingSide && draft.teamTurns[endingSide] >= smoke.expiresEnemyTurn));
+      draft.leerZones = draft.leerZones.filter((zone) => !(zone.owner === endingSide && draft.teamTurns[endingSide] >= zone.expiresOwnerTurn));
+      draft.gravNets = draft.gravNets.filter((net) => !(otherSide(net.owner) === endingSide && draft.teamTurns[endingSide] >= net.expiresEnemyTurn));
+      draft.toxicScreens.forEach((screen) => {
+        if (screen.active && otherSide(screen.owner) === endingSide && screen.expiresEnemyTurn !== null && draft.teamTurns[endingSide] >= screen.expiresEnemyTurn) {
+          screen.active = false;
+          screen.expiresEnemyTurn = null;
+        }
+      });
+      draft.barriers = draft.barriers.filter((barrier) => !(otherSide(barrier.owner) === endingSide && draft.teamTurns[endingSide] >= barrier.expiresEnemyTurn));
+      const expiringDeployables = draft.deployables.filter((item) => ["fakeout", "haunt", "barrier-mesh"].includes(item.kind)
+        && item.expiresEnemyTurn !== undefined
+        && otherSide(item.owner) === endingSide
+        && draft.teamTurns[endingSide] >= item.expiresEnemyTurn);
+      draft.deployables = draft.deployables.filter((item) => !expiringDeployables.some((expired) => expired.id === item.id));
+      const expiredFakeouts = expiringDeployables.filter((item) => item.kind === "fakeout");
+      if (expiredFakeouts.length) addLog(draft, `기만 분신 ${expiredFakeouts.length}개가 상대 턴 2회 경과로 사라졌습니다.`);
+      draft.deployables.forEach((item) => {
+        if (item.owner === endingSide && item.disabledUntilTeamTurn !== undefined && draft.teamTurns[endingSide] >= item.disabledUntilTeamTurn) {
+          item.disabledUntilTeamTurn = undefined;
+        }
+      });
+      draft.toxicScreens.forEach((screen) => {
+        if (screen.owner === endingSide && screen.disabledUntilTeamTurn !== undefined && draft.teamTurns[endingSide] >= screen.disabledUntilTeamTurn) {
+          screen.disabledUntilTeamTurn = undefined;
+        }
+      });
       drawFive(endingTeam, draft.cycle * 31 + (endingSide === "attack" ? 7 : 3));
       draft.trade = [];
       draft.revealedEnemyIds = [];
@@ -7780,6 +9165,8 @@ export default function Home() {
       draft.lastMovementFx = null;
       draft.postCombatMovementFxQueue = [];
       draft.turnKillCounts = {};
+      draft.reynaDamageThisTurn = {};
+      draft.reynaSoulWindows = [];
 
       if (endingSide === "defense") {
         draft.turnSide = "attack";
@@ -7797,6 +9184,7 @@ export default function Home() {
       const newSide = draft.turnSide;
       draft.turnSerial += 1;
       draft.teamTurns[newSide] += 1;
+      refreshHauntDetection(draft);
       if (newSide === "attack" && draft.cycle > PRE_PLANT_CYCLE_LIMIT && !["planting", "planted", "half", "defusing"].includes(draft.spike.status)) {
         draft.winner = "defense";
         draft.winReason = `설치 전 ${PRE_PLANT_CYCLE_LIMIT}라운드 시간 종료`;
@@ -7895,7 +9283,45 @@ export default function Home() {
     view.shot = shot;
   };
 
-  const performCombatShot = (draft: GameState, scene: CombatScene, shooter: Agent, target: Agent) => {
+  const makeChosenCombatShot = (
+    draft: GameState,
+    shooter: Agent,
+    target: Agent,
+    scene: CombatScene,
+    choice: Pick<CombatChoice, "useHeadhunter">,
+    aimBonus: number,
+    defenderMoveBonus: number,
+  ) => {
+    const useHeadhunter = !!choice.useHeadhunter && shooter.name === "체임버" && !isAgentSuppressed(draft, shooter) && (shooter.skills.headhunter ?? 0) > 0;
+    const originalWeapon = shooter.weapon;
+    if (useHeadhunter) shooter.weapon = "sheriff";
+    const shot = makeShot(draft, shooter, target, scene.range, combatShotIsWaiting(scene, shooter.id), aimBonus + (useHeadhunter ? 1 : 0), defenderMoveBonus, combatShotGetsWaitAim(scene, shooter.id));
+    shooter.weapon = originalWeapon;
+    if (useHeadhunter) {
+      shooter.skills.headhunter = Math.max(0, (shooter.skills.headhunter ?? 0) - 1);
+      addLog(draft, `${shooter.name} 헤드헌터 사격 · 잔탄 ${shooter.skills.headhunter}/8.`);
+    }
+    return shot;
+  };
+
+  const combatRendezvous = (draft: GameState, scene: CombatScene, agent: Agent, requested?: boolean) => {
+    if (!requested || agent.name !== "체임버" || isAgentSuppressed(draft, agent)) return false;
+    const marker = draft.deployables.find((item) => item.kind === "rendezvous" && item.ownerAgentId === agent.id && !isDeployableDisabled(draft, item) && (item.readyOwnerTurn ?? 0) <= draft.teamTurns[agent.team]);
+    if (!marker) return false;
+    const from = agent.region;
+    if (!activateRendezvous(draft, agent, marker, false)) return false;
+    const movement = createMovementFx(agent, [from, agent.region]);
+    if (movement) {
+      scene.postMovementFx ??= [];
+      scene.postMovementFx.push(movement);
+    }
+    scene.retreatedIds ??= [];
+    if (!scene.retreatedIds.includes(agent.id)) scene.retreatedIds.push(agent.id);
+    draft.pendingReengagements.push({ agentId: agent.id, priority: 5, canAttack: true, moveBonus: 0 });
+    return true;
+  };
+
+  const performCombatShot = (draft: GameState, scene: CombatScene, shooter: Agent, target: Agent, choice: Pick<CombatChoice, "useHeadhunter"> = {}) => {
     const shooterBefore = { hp: shooter.hp, armor: shooter.armor };
     const targetBefore = { hp: target.hp, armor: target.armor };
     scene.mover.shot = null;
@@ -7912,17 +9338,18 @@ export default function Home() {
     const shooterIsMover = shooter.id === scene.mover.id;
     const targetMoveBonus = (target.id === scene.mover.id ? scene.moverMoveBonus : 0) + phantomOpeningMoveBonus(target, scene.round === 1);
     const waitingShot = combatShotIsWaiting(scene, shooter.id);
-    const shot = makeShot(draft, shooter, target, scene.range, waitingShot, shooterIsMover ? scene.moverAimBonus : scene.holderAimBonus, targetMoveBonus, combatShotGetsWaitAim(scene, shooter.id));
+    const shot = makeChosenCombatShot(draft, shooter, target, scene, choice, shooterIsMover ? scene.moverAimBonus : scene.holderAimBonus, targetMoveBonus);
     if (shooterIsMover) scene.moverShotsFired += 1;
     else scene.holderShotsFired += 1;
     recordShot(draft, shooter.team, shot, `${shooter.name} → ${target.name}`);
     if (shooterIsMover) scene.moverAimBonus = 0;
     else scene.holderAimBonus = 0;
     if (shot.hit) applyDamage(draft, shooter, target, shot.damage, `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"}`);
+    else if (shot.blockedByCove) addLog(draft, `${shooter.name} → ${target.name} 총격을 해만이 차단했습니다.`);
     else addLog(draft, `${shooter.name} → ${target.name} 빗나감 [${shot.aimRoll}/${shot.aimSize} - ${shot.moveRoll}/${shot.moveSize}]`);
     refreshCombatView(scene, shooter, shot, shooterBefore);
     refreshCombatView(scene, target, null, targetBefore);
-    return { shot, text: shot.hit ? `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"} · 피해 ${shot.damage}` : `${shooter.name}의 공격이 빗나갔습니다.` };
+    return { shot, text: shot.hit ? `${shooter.name} ${shot.head ? "헤드샷" : "몸통 명중"} · 피해 ${shot.damage}` : shot.blockedByCove ? `해만이 ${shooter.name}의 공격을 차단했습니다.` : `${shooter.name}의 공격이 빗나갔습니다.` };
   };
 
   const performTurretShot = (draft: GameState, scene: CombatScene) => {
@@ -7938,11 +9365,12 @@ export default function Home() {
     const aimRoll = roll(5);
     const moveSize = Math.max(1, finalStats(draft, target).move + scene.moverMoveBonus + phantomOpeningMoveBonus(target, scene.round === 1));
     const moveRoll = roll(moveSize);
-    const hit = aimRoll - moveRoll > 0;
+    const blockedByCove = coveBlocksDamageBetween(draft, turret.region, target.region);
+    const hit = aimRoll - moveRoll > 0 && !blockedByCove;
     const vulnerableBonus = target.status.vulnerable ? 1 : 0;
     const damagePower = SKILL_DAMAGE.turret + vulnerableBonus;
     const damage = hit ? damagePower : 0;
-    const shot: ShotResult = { hit, head: false, damage, bodyDamage: damagePower, headDamage: damagePower, aimRoll, moveRoll, aimSize: 5, moveSize };
+    const shot: ShotResult = { hit, head: false, damage, bodyDamage: damagePower, headDamage: damagePower, aimRoll, moveRoll, aimSize: 5, moveSize, blockedByCove };
     recordShot(draft, turret.owner, shot, `${scene.holder.name} → ${target.name}`);
     scene.mover.shot = null;
     scene.holder.shot = shot;
@@ -7951,6 +9379,9 @@ export default function Home() {
       applyDamage(draft, getAgent(draft, turret.ownerAgentId), target, damage, "포탑 명중");
       draft.deployables = draft.deployables.filter((item) => item.id !== turret.id);
       scene.result = `${scene.holder.name} 명중 · 피해 ${damage}. 포탑은 공격 후 소멸합니다.`;
+    } else if (blockedByCove) {
+      addLog(draft, `해만이 ${scene.holder.name}의 포탑 사격을 차단했습니다.`);
+      scene.result = `해만이 포탑 사격을 차단했습니다. 포탑은 감시를 유지합니다.`;
     } else {
       addLog(draft, `${scene.holder.name}이 ${target.name}을 놓쳤습니다 [${aimRoll}/5 - ${moveRoll}/${moveSize}].`);
       scene.result = `${scene.holder.name}의 공격이 빗나갔습니다. 포탑은 감시를 유지합니다.`;
@@ -8056,14 +9487,14 @@ export default function Home() {
     if (moverChoice.type === "attack" && scene.canMoverAttack) {
       if (holder.status.evadeReady) { holder.status.evadeReady = false; scene.evaded = true; lines.push(`${holder.name} 회피`); }
       else {
-        moverShot = makeShot(draft, mover, holder, scene.range, combatShotIsWaiting(scene, mover.id), scene.moverAimBonus, holderRetreatMoveBonus + holderPhantomBonus, combatShotGetsWaitAim(scene, mover.id));
+        moverShot = makeChosenCombatShot(draft, mover, holder, scene, moverChoice, scene.moverAimBonus, holderRetreatMoveBonus + holderPhantomBonus);
         scene.moverShotsFired += 1;
       }
     }
     if (holderChoice.type === "attack") {
       if (mover.status.evadeReady) { mover.status.evadeReady = false; scene.evaded = true; lines.push(`${mover.name} 회피`); }
       else {
-        holderShot = makeShot(draft, holder, mover, scene.range, combatShotIsWaiting(scene, holder.id), scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus + moverPhantomBonus, combatShotGetsWaitAim(scene, holder.id));
+        holderShot = makeChosenCombatShot(draft, holder, mover, scene, holderChoice, scene.holderAimBonus, scene.moverMoveBonus + moverRetreatMoveBonus + moverPhantomBonus);
         scene.holderShotsFired += 1;
       }
     }
@@ -8073,8 +9504,10 @@ export default function Home() {
     scene.holderAimBonus = 0;
     if (moverShot?.hit) applyDamage(draft, mover, holder, moverShot.damage, `${mover.name} ${moverShot.head ? "헤드샷" : "몸통 명중"}`);
     if (holderShot?.hit) applyDamage(draft, holder, mover, holderShot.damage, `${holder.name} ${holderShot.head ? "헤드샷" : "몸통 명중"}`);
-    if (moverChoice.type === "attack" && moverShot) lines.push(moverShot.hit ? `${mover.name} 피해 ${moverShot.damage}` : `${mover.name} 빗나감`);
-    if (holderChoice.type === "attack" && holderShot) lines.push(holderShot.hit ? `${holder.name} 피해 ${holderShot.damage}` : `${holder.name} 빗나감`);
+    const moverRendezvous = mover.alive && moverChoice.type === "attack" && combatRendezvous(draft, scene, mover, moverChoice.rendezvousAfterAttack);
+    const holderRendezvous = holder.alive && holderChoice.type === "attack" && combatRendezvous(draft, scene, holder, holderChoice.rendezvousAfterAttack);
+    if (moverChoice.type === "attack" && moverShot) lines.push(moverShot.hit ? `${mover.name} 피해 ${moverShot.damage}` : moverShot.blockedByCove ? `${mover.name} 해만에 차단` : `${mover.name} 빗나감`);
+    if (holderChoice.type === "attack" && holderShot) lines.push(holderShot.hit ? `${holder.name} 피해 ${holderShot.damage}` : holderShot.blockedByCove ? `${holder.name} 해만에 차단` : `${holder.name} 빗나감`);
     if (moverRetreatMoveBonus) lines.push(`${mover.name} 동시 후퇴 무빙 +2`);
     if (holderRetreatMoveBonus) lines.push(`${holder.name} 동시 후퇴 무빙 +2`);
     refreshCombatView(scene, mover, moverShot, moverBefore);
@@ -8086,7 +9519,7 @@ export default function Home() {
       addTrade(draft, { enemyId: holder.id, team: mover.team, sourceId: mover.id });
       lines.push(`${mover.name} 계속 이동`);
     }
-    const exited = moverChoice.type === "retreat" || holderChoice.type === "retreat" || moverChoice.type === "advance";
+    const exited = moverChoice.type === "retreat" || holderChoice.type === "retreat" || moverChoice.type === "advance" || moverRendezvous || holderRendezvous;
     scene.resolved = exited || !mover.alive || !holder.alive;
     scene.pendingNextActorId = scene.resolved ? null : scene.firstActorId;
     scene.phase = "result";
@@ -8094,16 +9527,59 @@ export default function Home() {
     checkWinner(draft);
   };
 
-  const combatAttack = () => mutate((draft) => {
+  const combatAttack = (requested: Pick<CombatChoice, "useHeadhunter" | "rendezvousAfterAttack"> = {}) => mutate((draft) => {
     const scene = draft.combatQueue[0];
-    if (!scene || scene.kind !== "agent" || scene.phase !== "choice") return;
+    if (!scene || scene.phase !== "choice") return;
+    if (scene.kind === "decoy") {
+      const attacker = getAgent(draft, scene.actorId);
+      const fakeout = draft.deployables.find((item) => item.id === scene.deviceId && item.kind === "fakeout");
+      if (!attacker?.alive || !fakeout || fakeout.owner === attacker.team) return;
+      const damage = scene.holder.hpBefore + scene.holder.armorBefore;
+      const shot: ShotResult = {
+        hit: true,
+        head: false,
+        damage,
+        bodyDamage: damage,
+        headDamage: damage,
+        aimRoll: Math.max(1, finalStats(draft, attacker).aim),
+        moveRoll: 1,
+        aimSize: Math.max(1, finalStats(draft, attacker).aim),
+        moveSize: 1,
+      };
+      draft.statusEffects = draft.statusEffects.filter((effect) => !(effect.targetId === attacker.id && effect.consumeOnAttack));
+      draft.deployables = draft.deployables.filter((item) => item.id !== fakeout.id);
+      draft.teams[attacker.team].agents
+        .filter((ally) => ally.alive && ally.region === attacker.region)
+        .forEach((target) => {
+          draft.statusEffects = draft.statusEffects.filter((effect) => !(effect.targetId === target.id && effect.kind === "fakeout-blind"));
+          draft.statusEffects.push({ id: `fakeout-blind-${draft.turnSerial}-${target.id}`, owner: attacker.team, targetId: target.id, kind: "fakeout-blind", aimPenalty: 3, consumeOnAttack: true });
+        });
+      scene.mover.shot = shot;
+      scene.moverShotsFired = 1;
+      scene.holder.hpAfter = 0;
+      scene.holder.armorAfter = 0;
+      scene.resolved = true;
+      scene.pendingNextActorId = null;
+      scene.phase = "result";
+      scene.result = `${attacker.name}의 공격은 반드시 명중했지만 기만이 폭발했습니다. 같은 구역 ${draft.teams[attacker.team].agents.filter((ally) => ally.alive && ally.region === attacker.region).length}명 에임 -3.`;
+      recordShot(draft, attacker.team, shot, `${attacker.name} → 기만`);
+      addLog(draft, `${attacker.name}이 기만을 공격했습니다. 공격자 구역 전체에 에임 -3.`);
+      return;
+    }
+    if (scene.kind !== "agent") return;
     const actor = getAgent(draft, scene.actorId);
     const targetId = scene.actorId === scene.mover.id ? scene.holder.id : scene.mover.id;
     const target = getAgent(draft, targetId);
     if (!actor?.alive || !target?.alive || (actor.id === scene.mover.id && !scene.canMoverAttack)) return;
+    const aiChoice = controlledAiSides.includes(actor.team);
+    const readyRendezvous = actor.name === "체임버" && draft.deployables.some((item) => item.kind === "rendezvous" && item.ownerAgentId === actor.id && !isDeployableDisabled(draft, item) && (item.readyOwnerTurn ?? 0) <= draft.teamTurns[actor.team]);
+    const choice: Pick<CombatChoice, "useHeadhunter" | "rendezvousAfterAttack"> = {
+      useHeadhunter: requested.useHeadhunter || aiChoice && actor.name === "체임버" && (actor.skills.headhunter ?? 0) > 0 && weaponTacticalValue(actor.weapon) <= weaponTacticalValue("sheriff"),
+      rendezvousAfterAttack: requested.rendezvousAfterAttack || aiChoice && readyRendezvous && (actor.hp + actor.armor <= 2 || calculateShotOdds(draft, target, actor, scene.range, combatShotIsWaiting(scene, target.id), 0, 0).killChance >= 35),
+    };
     satisfyOpeningAttackRequirement(scene, actor.id);
     if (scene.simultaneous) {
-      scene.choices[actor.id] = { type: "attack" };
+      scene.choices[actor.id] = { type: "attack", ...choice };
       const otherId = actor.id === scene.firstActorId ? scene.secondActorId : scene.firstActorId;
       if (!scene.choices[otherId]) {
         scene.actorId = otherId;
@@ -8129,11 +9605,12 @@ export default function Home() {
       prepareTailwind(draft, scene, target, actor);
       return;
     }
-    const outcome = performCombatShot(draft, scene, actor, target);
-    scene.resolved = !target.alive || !actor.alive;
+    const outcome = performCombatShot(draft, scene, actor, target, choice);
+    const rendezvoused = actor.alive && combatRendezvous(draft, scene, actor, choice.rendezvousAfterAttack);
+    scene.resolved = rendezvoused || !target.alive || !actor.alive;
     scene.pendingNextActorId = scene.resolved ? null : target.id;
     scene.phase = "result";
-    scene.result = scene.resolved ? `${target.name}이 제거되어 교전이 종료됩니다.` : outcome.text;
+    scene.result = rendezvoused ? `${actor.name}가 공격 후 랑데부로 귀환했습니다.` : scene.resolved ? `${target.name}이 제거되어 교전이 종료됩니다.` : outcome.text;
     checkWinner(draft);
   });
 
@@ -8141,7 +9618,7 @@ export default function Home() {
     const scene = draft.combatQueue[0];
     if (!scene || scene.kind !== "agent" || scene.phase !== "choice") return;
     const actor = getAgent(draft, scene.actorId);
-    if (!actor?.alive || combatRetreatIsLocked(scene, actor.id) || !(GRAPH.get(actor.region) ?? []).includes(region)) return;
+    if (!actor?.alive || !combatRetreatRegions(draft, scene, actor).includes(region)) return;
     if (scene.simultaneous) {
       scene.choices[actor.id] = { type: "retreat", retreatRegion: region };
       const otherId = actor.id === scene.firstActorId ? scene.secondActorId : scene.firstActorId;
@@ -8189,7 +9666,7 @@ export default function Home() {
   const tailwindMove = (region: number) => mutate((draft) => {
     const scene = draft.combatQueue[0];
     const agent = getAgent(draft, scene?.tailwindActorId);
-    if (!scene || scene.phase !== "tailwind" || !agent?.alive || !(GRAPH.get(agent.region) ?? []).includes(region)) return;
+    if (!scene || scene.phase !== "tailwind" || !agent?.alive || !(GRAPH.get(agent.region) ?? []).includes(region) || !canAgentTraverseEdge(draft, agent, agent.region, region)) return;
     const avoidedShot = !!scene.pendingShotActorId;
     const from = agent.region;
     clearWait(agent);
@@ -8200,7 +9677,7 @@ export default function Home() {
     showMovementFx(draft, agent, [from, region]);
     triggerHazards(draft, agent, from, region);
     if (draft.pendingMovement?.agentId === agent.id) {
-      const newPath = shortestPath(agent.region, draft.pendingMovement.target);
+      const newPath = shortestMovementPath(draft, agent.region, draft.pendingMovement.target, agent);
       draft.pendingMovement.path = newPath.length ? newPath : [agent.region];
       draft.pendingMovement.nextIndex = 1;
     } else if (agent.alive) {
@@ -8226,8 +9703,10 @@ export default function Home() {
         performTurretShot(draft, scene);
         return;
       }
-      const openingTailwind = [getAgent(draft, scene.mover.id), getAgent(draft, scene.holder.id)]
-        .find((agent) => agent?.alive && agent.team === draft.turnSide && agent.status.evadeReady && (GRAPH.get(agent.region)?.length ?? 0) > 0);
+      const openingTailwind = scene.kind === "agent"
+        ? [getAgent(draft, scene.mover.id), getAgent(draft, scene.holder.id)]
+          .find((agent) => agent?.alive && agent.team === draft.turnSide && agent.status.evadeReady && (GRAPH.get(agent.region)?.length ?? 0) > 0)
+        : undefined;
       if (openingTailwind) {
         scene.phase = "tailwind";
         scene.tailwindActorId = openingTailwind.id;
@@ -8361,7 +9840,8 @@ export default function Home() {
     const committedAiAgent = getAgent(draft, committedAiCard?.committedAgentId);
     const resolvingCommittedAiCard = !!committedAiCard && !!committedAiAgent?.alive;
     const activeDefenseRetake = side === "defense" && defenseRetakeIsActive(draft);
-    if (!activeDefenseRetake && !(side === "attack" && attackForcedPlantMode(draft)) && aiPickupWeaponAtCurrentRegion(draft, side)) return;
+    const urgentAttackPostplant = side === "attack" && attackPostplantPressure(draft).needsAction;
+    if (!activeDefenseRetake && !(side === "attack" && attackForcedPlantMode(draft)) && !urgentAttackPostplant && aiPickupWeaponAtCurrentRegion(draft, side)) return;
     if (side === "defense" && ["planted", "half"].includes(draft.spike.status) && draft.spike.region !== null) {
       const defuser = draft.teams.defense.agents.find((agent) =>
         agent.alive
@@ -8476,9 +9956,9 @@ export default function Home() {
         ? { entry: 0, peek: 1, follow: 2, basic: 3, control: 4 }
         : { peek: 0, basic: 1, follow: 2, control: 3, entry: 4 }
       : { control: 0, basic: 1, follow: 2, peek: 3, entry: 4 };
-    const recoveryFrontliners = team.agents.filter((agent) =>
+    const recoveryFrontliners = attackPostplant ? [] : team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && isAiRecoveryFrontlineLeader(draft, agent));
-    const classicWeaponClaimants = forcedPlant ? [] : team.agents.filter((agent) =>
+    const classicWeaponClaimants = forcedPlant || attackPostplant ? [] : team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && agent.weapon === "classic" && !!aiWeaponPickupObjective(draft, agent));
     const holdSetupAgents = team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && (aiSniperNeedsWait(draft, agent) || aiPostplantNeedsWait(draft, agent)));
@@ -8528,7 +10008,7 @@ export default function Home() {
           && memory.agentId === agent.id
           && draft.trade.some((trade) => trade.team === agent.team && trade.sourceId === memory.agentId))) return 54;
         if (side === "attack" && attackOperatorBreachActive(draft)) {
-          const breachSkillIds = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark", "stim", "tailwind"]);
+          const breachSkillIds = new Set(["paint", "blast", "curve", "relay", "recon", "shock", "flash", "aftershock", "smoke", "dark", "stim", "tailwind", "fakeout", "gatecrash", "hawk", "poison-cloud", "toxic-screen", "barrier-orb", "leer", "haunt", "prowler", "zero-point", "kayo-flash", "gravnet", "cove", "high-tide"]);
           const hasBreachSkill = AGENTS[agent.name].skills.some((skillDefinition) =>
             breachSkillIds.has(skillDefinition.id) && (agent.skills[skillDefinition.id] ?? 0) > 0);
           const targetRegion = draft.attackPlan.operatorTargetRegion;
@@ -8612,7 +10092,7 @@ export default function Home() {
         const postplantContestDestination = contestingPostplant
           ? attackPostplantContestDestination(draft, agent, targets)
           : null;
-        const recoveryObjective = (forcedPlant && draft.spike.status === "carried") || operatorBreach || contestingPostplant
+        const recoveryObjective = (forcedPlant && draft.spike.status === "carried") || operatorBreach || contestingPostplant || attackPostplant
           ? null
           : aiRecoveryObjectiveForAgent(draft, agent);
         const recoveryDecision = recoveryObjective
@@ -8623,8 +10103,8 @@ export default function Home() {
         const postplantWaitDestination = card.kind === "basic" && !contestingPostplant && aiPostplantNeedsWait(draft, agent) ? agent.region : null;
         if (recoveryDecision?.order && recoveryDecision.destination === null && tradeDestination === null) continue;
         const escortDestination = side === "attack" ? aiSpikeEscortDestination(draft, agent, targets) : null;
-        const weaponDestination = forcedPlant || operatorBreach || contestingPostplant ? null : aiWeaponDestination(draft, agent, targets);
-        const recoveryEscortDestination = forcedPlant || operatorBreach || contestingPostplant ? null : aiRecoveryEscortDestination(draft, agent, targets);
+        const weaponDestination = forcedPlant || operatorBreach || contestingPostplant || attackPostplant ? null : aiWeaponDestination(draft, agent, targets);
+        const recoveryEscortDestination = forcedPlant || operatorBreach || contestingPostplant || attackPostplant ? null : aiRecoveryEscortDestination(draft, agent, targets);
         const priorityDestination = agent.weapon === "classic"
           ? weaponDestination ?? escortDestination
           : escortDestination ?? weaponDestination;
@@ -8678,9 +10158,15 @@ export default function Home() {
       : game.spike.status === "dropped"
         ? `회수 필요${game.spike.region !== null ? ` · ${game.spike.region}번` : ""}`
         : game.spike.status === "planting" ? "설치 진행" : game.spike.status === "planted" ? "설치됨" : game.spike.status === "half" ? "반 해체" : game.spike.status === "defusing" ? "최종 해체" : game.spike.status === "defused" ? "해체 완료" : "폭발";
-  const nearbyEnemyDeployables = selectedAgent ? game.deployables.filter((item) => item.owner !== selectedAgent.team && distance(selectedAgent.region, item.region) <= 1 && visible.has(item.region)) : [];
+  const nearbyEnemyDeployables = selectedAgent ? game.deployables.filter((item) => item.owner !== selectedAgent.team && !["poison-emitter", "fakeout"].includes(item.kind) && distance(selectedAgent.region, item.region) <= 1 && visible.has(item.region)) : [];
   const friendlyCamera = selectedAgent?.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === selectedAgent.team) : null;
   const cameraTargets = friendlyCamera ? game.teams[otherSide(selectedAgent!.team)].agents.filter((enemy) => enemy.alive && !enemy.detected && [friendlyCamera.region, ...(GRAPH.get(friendlyCamera.region) ?? [])].includes(enemy.region)) : [];
+  const friendlyGatecrash = selectedAgent?.name === "요루" ? game.deployables.find((item) => item.kind === "gatecrash" && item.ownerAgentId === selectedAgent.id) : null;
+  const friendlyEmitter = selectedAgent?.name === "바이퍼" ? game.deployables.find((item) => item.kind === "poison-emitter" && item.ownerAgentId === selectedAgent.id) : null;
+  const friendlyToxicScreen = selectedAgent?.name === "바이퍼" ? game.toxicScreens.find((item) => item.ownerAgentId === selectedAgent.id) : null;
+  const friendlyRendezvous = selectedAgent?.name === "체임버" ? game.deployables.find((item) => item.kind === "rendezvous" && item.ownerAgentId === selectedAgent.id) : null;
+  const reynaSoulReady = !!selectedAgent && selectedAgent.name === "레이나" && game.reynaSoulWindows.some((window) => window.agentId === selectedAgent.id && window.turnSerial === game.turnSerial);
+  const adjacentBarriers = selectedAgent ? game.barriers.filter((barrier) => barrier.from === selectedAgent.region || barrier.to === selectedAgent.region) : [];
   const pendingContactAgent = getAgent(game, game.pendingContact?.agentId);
   const pendingContactEnemies = (game.pendingContact?.enemyIds ?? []).map((id) => getAgent(game, id)).filter((agent): agent is Agent => !!agent?.alive);
   const canPlant = selectedAgent?.team === "attack" && selectedRegion?.site && game.spike.status === "carried" && game.spike.carrierId === selectedAgent.id;
@@ -8706,9 +10192,11 @@ export default function Home() {
     )
     : null;
   const combatRetreatLocked = !!(combatScene && combatActor && combatRetreatIsLocked(combatScene, combatActor.id));
-  const combatRetreatOptions = combatActor && !combatRetreatLocked ? GRAPH.get(combatActor.region) ?? [] : [];
+  const combatHeadhunterReady = !!combatActor && combatActor.name === "체임버" && !isAgentSuppressed(game, combatActor) && (combatActor.skills.headhunter ?? 0) > 0;
+  const combatRendezvousReady = !!combatActor && combatActor.name === "체임버" && !isAgentSuppressed(game, combatActor) && game.deployables.some((item) => item.kind === "rendezvous" && item.ownerAgentId === combatActor.id && !isDeployableDisabled(game, item) && (item.readyOwnerTurn ?? 0) <= game.teamTurns[combatActor.team]);
+  const combatRetreatOptions = combatActor && combatScene ? combatRetreatRegions(game, combatScene, combatActor) : [];
   const tailwindActor = combatScene ? getAgent(game, combatScene.tailwindActorId) : null;
-  const tailwindOptions = tailwindActor ? GRAPH.get(tailwindActor.region) ?? [] : [];
+  const tailwindOptions = tailwindActor ? (GRAPH.get(tailwindActor.region) ?? []).filter((region) => canAgentTraverseEdge(game, tailwindActor, tailwindActor.region, region)) : [];
   const nextCombatActor = combatScene ? getAgent(game, combatScene.pendingNextActorId) : null;
   const combatFocusAgent = combatScene?.phase === "encounter" ? getAgent(game, combatScene.firstActorId) : combatScene?.phase === "tailwind" ? tailwindActor : combatScene?.phase === "choice" ? combatActor : nextCombatActor;
   const combatFocusSide = combatFocusAgent?.team ?? (combatScene?.kind === "turret" ? combatScene.holder.team : game.turnSide);
@@ -8855,7 +10343,11 @@ export default function Home() {
               const angle = Math.atan2(dy, dx) * 180 / Math.PI;
               const smoke = game.smokes.find((item) => item.key === edgeKey(a, b));
               const smokeKnown = !!smoke && (smoke.owner === viewerSide || observed.has(a) || observed.has(b));
-              return <span key={`${a}-${b}`} className={`map-edge ${smokeKnown ? "smoked" : ""}`} style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
+              const barrier = game.barriers.find((item) => edgeKey(item.from, item.to) === edgeKey(a, b));
+              const barrierKnown = !!barrier && (barrier.owner === viewerSide || observed.has(a) || observed.has(b));
+              const toxicScreen = game.toxicScreens.find((screen) => screen.regions.slice(0, -1).some((from, index) => edgeKey(from, screen.regions[index + 1]) === edgeKey(a, b)));
+              const toxicKnown = !!toxicScreen && (toxicScreen.owner === viewerSide || observed.has(a) || observed.has(b));
+              return <span key={`${a}-${b}`} className={`map-edge ${smokeKnown ? `smoked smoke-${smoke.sourceSkill}` : ""} ${barrierKnown ? "barrier-edge" : ""} ${toxicKnown ? `toxic-edge ${toxicScreen.active ? "active" : "inactive"}` : ""}`} data-wall-hp={barrierKnown ? barrier.hp : undefined} title={barrierKnown ? `장벽 내구도 ${barrier.hp}/2 · 순간이동 통과 가능` : smokeKnown ? smoke.sourceSkill === "cove" ? "해만 · 시야 및 피해 차단" : smoke.sourceSkill === "high-tide" ? "만조 · 접촉 시 이동 중단" : "연막" : toxicKnown ? `독성 장막 · ${toxicScreen.active ? "가동 중" : "비가동"}` : undefined} style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
             })}
             {mapWaitCones.map((cone) => <span key={cone.id} className={`wait-cone ${cone.hostile ? "hostile" : "friendly"} ${cone.lastKnown ? "last-known" : ""}`} style={connectionStyle(cone.from, cone.to)} title={`${cone.agentName} · ${cone.to}번 구역 대기`}><i /></span>)}
             {game.lastSkillFx && (game.lastSkillFx.owner === viewerSide || observed.has(game.lastSkillFx.targetRegion)) && (() => {
@@ -8891,17 +10383,22 @@ export default function Home() {
                const remembered = visible.has(region.id);
                const memoriesHere = allowLastKnown ? game.enemyMemories.filter((memory) => memory.observer === viewerSide && memory.region === region.id) : [];
                const rememberedEnemies = memoriesHere.map((memory) => getAgent(game, memory.agentId)).filter((agent): agent is Agent => !!agent?.alive && !agent.detected && !observed.has(agent.region));
-               const shownEnemies = [...enemies.filter((agent) => {
+              const shownEnemies = [...enemies.filter((agent) => {
                  const memory = allowLastKnown ? game.enemyMemories.find((item) => item.observer === viewerSide && item.agentId === agent.id) : undefined;
                  if (memory && memory.region !== agent.region && !observedNow && !agent.detected) return false;
                  return observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id));
                }), ...rememberedEnemies.filter((agent) => !enemies.some((enemy) => enemy.id === agent.id))];
+              const deceptiveFakeouts = game.deployables.filter((item) => item.kind === "fakeout" && item.owner !== viewerSide && item.region === region.id && observedNow);
               const revealedEnemies = shownEnemies.filter((agent) => observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)));
               const isValid = !isAiControlledTurn && validTargets.has(region.id);
-              const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
+              const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === viewerSide || observedNow) && !(item.kind === "fakeout" && item.owner !== viewerSide));
               const fire = game.fires.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const stim = game.stims.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const darkZone = game.smokes.some((item) => item.sourceSkill === "dark" && item.region === region.id && (item.owner === viewerSide || observedNow));
+              const poisonZone = game.smokes.some((item) => item.sourceSkill === "poison-cloud" && item.region === region.id && (item.owner === viewerSide || observedNow));
+              const highTideZone = game.smokes.some((item) => item.sourceSkill === "high-tide" && item.region === region.id && (item.owner === viewerSide || observedNow));
+              const leerZone = game.leerZones.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
+              const gravNetZone = game.gravNets.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
                const installedSpike = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
                const carriedSpikeHere = game.spike.status === "carried" && spikeCarrier?.region === region.id;
                const droppedSpikeHere = game.spike.status === "dropped" && game.spike.region === region.id;
@@ -8915,7 +10412,7 @@ export default function Home() {
               return (
                 <button
                   key={region.id}
-                  className={`region-node ${isValid ? "valid" : ""} ${region.site ? "site-node" : ""} ${!remembered ? "unknown" : ""} ${darkZone ? "dark-zone" : ""}`}
+                  className={`region-node ${isValid ? "valid" : ""} ${region.site ? "site-node" : ""} ${!remembered ? "unknown" : ""} ${darkZone ? "dark-zone" : ""} ${poisonZone ? "poison-zone" : ""} ${highTideZone ? "high-tide-zone" : ""} ${leerZone ? "leer-zone" : ""} ${gravNetZone ? "gravnet-zone" : ""}`}
                   style={{ left: `${region.x}%`, top: `${region.y}%` }}
                   onClick={() => handleRegionClick(region.id)}
                   aria-label={`${region.id}번 ${region.name}${isValid ? ", 선택 가능" : ""}${darkZone ? ", 어둠의 장막" : ""}`}
@@ -8927,13 +10424,15 @@ export default function Home() {
                   </span>
                   <span className="unit-stack enemy-stack">
                     {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); const arriving = arrivingAgentId === agent.id; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""} ${arriving ? "movement-arriving" : ""}`} style={arriving ? movementArrivalStyle : undefined} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <AgentStatusBadges game={game} agent={agent} compact />}{lastKnown && <small>잔상</small>}</i>; })}
+                    {deceptiveFakeouts.map((item) => <i key={item.id} className={`unit-token hostile identified fakeout-token ${agentArtClass("요루")}`} title="요루 · 체력 4 · 장비 정상" aria-label="요루 지도 토큰" />)}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}
                   {floatingHere.length > 0 && <span className="floating-number-stack">
                     {floatingHere.map((item) => <i key={item.id} className={`floating-number ${item.kind}`}>{item.kind === "heal" ? "+" : "-"}{item.amount}</i>)}
                   </span>}
-                  {(devices.length > 0 || fire || stim || hasSpike || knownWeapons.length > 0) && <span className="effect-stack">
-                    {devices.map((item) => <i key={item.id} title={item.kind}>{item.kind === "trip" ? "⌁" : item.kind === "camera" ? "◉" : item.kind === "turret" ? "⌖" : "!"}</i>)}
+                  {(devices.length > 0 || fire || stim || hasSpike || knownWeapons.length > 0 || leerZone || gravNetZone || highTideZone) && <span className="effect-stack">
+                    {devices.map((item) => <i key={item.id} className={`device-${item.kind} ${isDeployableDisabled(game, item) ? "disabled" : ""}`} title={`${item.kind}${isDeployableDisabled(game, item) ? " · 제압으로 정지" : ""}${item.hp !== undefined ? ` · 내구도 ${item.hp}/${item.maxHp ?? 2}` : ""}`}>{item.kind === "trip" ? "⌁" : item.kind === "camera" ? "◉" : item.kind === "turret" ? "⌖" : item.kind === "gatecrash" ? "◎" : item.kind === "poison-emitter" ? "☣" : item.kind === "fakeout" ? "◇" : item.kind === "haunt" ? "◈" : item.kind === "rendezvous" ? "⦿" : item.kind === "barrier-mesh" ? "▦" : "!"}</i>)}
+                    {leerZone && <i className="leer-effect" title="눈총 · 모든 교전 에임 -3">◉</i>}{gravNetZone && <i className="gravnet-effect" title="중력그물 · 이동/탈주 불가">N</i>}{highTideZone && <i className="high-tide-effect" title="만조 · 접촉 시 이동 중단">≋</i>}
                     {fire && <i className="fire">▲</i>}{stim && <i className="stim">+</i>}{knownWeapons.map((item) => <i key={item.id} className="weapon-drop" title={`드롭 총기 · ${WEAPONS[item.weapon].name}`}><WeaponSilhouette weapon={item.weapon} compact /></i>)}{hasSpike && <i className="spike" title={game.spike.status === "carried" ? `스파이크 운반 · ${spikeCarrier?.name ?? "미확인"}` : "스파이크 위치"}>◆</i>}
                   </span>}
                 </button>
@@ -8996,7 +10495,7 @@ export default function Home() {
             {!isAiControlledTurn && selectedAgent && selectedCard?.used && selectedCard.committedAgentId === selectedAgent.id && <div className="committed-card-note"><span>COMMITTED</span><strong>{CARD_DATA[selectedCard.kind].name} 행동을 지도에서 완료하세요.</strong></div>}
             <div className="skills-list">
               {AGENTS[displayedAgent.name].skills.map((item) => (
-                <button key={item.id} disabled={isAiControlledTurn || displayedAgent.extraActions < 1 || (displayedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner} onClick={() => activateSkill(item)} title={item.description}>
+                <button key={item.id} disabled={isAiControlledTurn || displayedAgent.extraActions < 1 || (displayedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner || isAgentSuppressed(game, displayedAgent) || ["headhunter", "soul-harvest"].includes(item.id)} onClick={() => activateSkill(item)} title={item.description}>
                   <span className={`skill-glyph ${skillArtClass(item.id)}`} aria-label={`${item.name} 아이콘`} /><span><strong>{item.name}</strong><small>{item.description}</small></span><b>×{displayedAgent.skills[item.id] ?? 0}</b>
                 </button>
               ))}
@@ -9011,7 +10510,14 @@ export default function Home() {
                 {selectedAgent.team === "attack" && game.spike.status === "dropped" && game.spike.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike")}>◆ 스파이크 회수</button>}
                 {selectedAgent.team === "attack" && game.spike.status === "carried" && game.spike.carrierId !== selectedAgent.id && spikeCarrier?.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike-transfer")}>◆ {spikeCarrier.name}에게서 스파이크 넘겨받기</button>}
                 {cameraTargets.map((enemy) => <button key={`cam-${enemy.id}`} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => cameraDetect(enemy.id)}>◉ 스파이캠 탐지 · {enemy.region}번</button>)}
-                {nearbyEnemyDeployables.map((device) => <button key={device.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => destroyDeployable(device.id)}>⌁ {device.kind} 파괴 · {device.region}번</button>)}
+                {friendlyGatecrash && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("gatecrash", friendlyGatecrash.id)}>◎ 관문 충돌 · {friendlyGatecrash.region}번 · 우선도 2</button>}
+                {friendlyEmitter && !friendlyEmitter.armed && <button disabled={selectedAgent.extraActions < 1 || isDeployableDisabled(game, friendlyEmitter) || !!game.pendingContact} onClick={() => quickAction("poison-cloud", friendlyEmitter.id)}>☣ 독성 연기 {isDeployableDisabled(game, friendlyEmitter) ? "제압 정지" : `가동 · ${friendlyEmitter.region}번`}</button>}
+                {friendlyToxicScreen && <button disabled={selectedAgent.extraActions < 1 || friendlyToxicScreen.active || isToxicScreenDisabled(game, friendlyToxicScreen) || friendlyToxicScreen.readyOwnerTurn > game.teamTurns[selectedAgent.team] || !!game.pendingContact} onClick={() => quickAction("toxic-screen", friendlyToxicScreen.id)}>▥ 독성 장막 {isToxicScreenDisabled(game, friendlyToxicScreen) ? "제압 정지" : friendlyToxicScreen.active ? "가동 중" : friendlyToxicScreen.readyOwnerTurn > game.teamTurns[selectedAgent.team] ? "재충전 중" : "가동"}</button>}
+                {reynaSoulReady && <button disabled={selectedAgent.extraActions < 1 || isAgentSuppressed(game, selectedAgent) || game.statusEffects.some((effect) => effect.targetId === selectedAgent.id && effect.kind === "devour")} onClick={() => useReynaSoul("devour")}>✦ 포식 · 3턴 회복</button>}
+                {reynaSoulReady && <button disabled={selectedAgent.extraActions < 1 || isAgentSuppressed(game, selectedAgent)} onClick={() => useReynaSoul("dismiss")}>◇ 무시 · 안전 이동</button>}
+                {friendlyRendezvous && <button disabled={selectedAgent.extraActions < 1 || isAgentSuppressed(game, selectedAgent) || isDeployableDisabled(game, friendlyRendezvous) || (friendlyRendezvous.readyOwnerTurn ?? 0) > game.teamTurns[selectedAgent.team] || !!game.pendingContact} onClick={() => quickAction("rendezvous", friendlyRendezvous.id)}>◎ 랑데부 {isDeployableDisabled(game, friendlyRendezvous) ? "제압 정지" : (friendlyRendezvous.readyOwnerTurn ?? 0) > game.teamTurns[selectedAgent.team] ? `재사용 대기 ${(friendlyRendezvous.readyOwnerTurn ?? 0) - game.teamTurns[selectedAgent.team]}턴` : `귀환 · ${friendlyRendezvous.region}번 · 우선도 5`}</button>}
+                {adjacentBarriers.map((barrier) => <button key={barrier.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("break-barrier", barrier.id)}>▥ 장벽 파괴 · 내구도 {barrier.hp}/2</button>)}
+                {nearbyEnemyDeployables.map((device) => <button key={device.id} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => destroyDeployable(device.id)}>⌁ {device.kind} 파괴 · {device.region}번{device.hp ? ` · ${device.hp}/${device.maxHp ?? device.hp}` : ""}</button>)}
               </>}
             </div>
           </> : <div className="empty-inspector">요원을 선택하세요.</div>}
@@ -9105,8 +10611,8 @@ export default function Home() {
                 <span className={statClass(appliedStats.bodyDamageDelta)} title={`현재 거리 ${combatScene.range}`}>BODY <b>{appliedStats.bodyDamage}</b><small>거리 {combatScene.range} {deltaLabel(appliedStats.bodyDamageDelta)}</small></span>
                 <span className={statClass(appliedStats.headDamageDelta)} title={`현재 거리 ${combatScene.range}`}>HEAD <b>{appliedStats.headDamage}</b><small>거리 {combatScene.range} {deltaLabel(appliedStats.headDamageDelta)}</small></span>
               </div>}
-              <div className={`combat-roll ${!shot ? "no-shot" : shot.hit ? shot.head ? "headshot" : "hit" : "miss"}`}>
-                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : fighter.kind === "turret" ? "TURRET HIT" : "BODY HIT" : "MISS"}</strong><small>{shot.hit ? shot.head ? `헤드샷 피해 ${shot.damage}` : `몸통 피해 ${shot.damage}` : "빗나감 · 피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : fighter.kind === "turret" ? "TARGET LOCK" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : fighter.kind === "turret" ? "포탑 자동 사격 대기" : "상대 행동 대기"}</small></div>}
+              <div className={`combat-roll ${!shot ? "no-shot" : shot.hit ? shot.head ? "headshot" : "hit" : shot.blockedByCove ? "blocked" : "miss"}`}>
+                {shot ? <><span className="dice aim-die"><small>AIM</small><b>{shot.aimRoll}</b><i>D{shot.aimSize}</i></span><em>−</em><span className="dice move-die"><small>MOVE</small><b>{shot.moveRoll}</b><i>D{shot.moveSize}</i></span><div><strong>{shot.hit ? shot.head ? "HEADSHOT" : fighter.kind === "turret" ? "TURRET HIT" : "BODY HIT" : shot.blockedByCove ? "BLOCKED" : "MISS"}</strong><small>{shot.hit ? shot.head ? `헤드샷 피해 ${shot.damage}` : `몸통 피해 ${shot.damage}` : shot.blockedByCove ? "해만 차단 · 피해 없음" : "빗나감 · 피해 없음"}</small></div></> : <div><strong>{combatScene.evaded ? "EVADED" : acting ? "YOUR TURN" : fighter.kind === "turret" ? "TARGET LOCK" : "STANDING BY"}</strong><small>{combatScene.evaded ? "순풍으로 공격 회피" : acting ? "공격 또는 이탈 선택" : fighter.kind === "turret" ? "포탑 자동 사격 대기" : "상대 행동 대기"}</small></div>}
               </div>
             </article>;
           })}
@@ -9149,7 +10655,7 @@ export default function Home() {
           </div>
         </section>
         <div className="combat-result" ref={combatResultRef}><div><span>{combatScene.phase === "choice" ? "CURRENT TURN" : "RESULT"}</span><strong>{combatScene.result}</strong><p>{combatScene.kind === "turret" ? "포탑은 이 교전에서 자동으로 한 번 사격한 뒤 원래 이동과 요원 교전을 이어갑니다." : combatScene.waitClaim ? "점유한 적이 모두 제거되거나 후퇴하면 선택한 구역에 대기가 완성됩니다. 대기 시도자는 후퇴할 수 없습니다." : "누군가 제거되거나 자기 교전 차례에 이탈할 때까지 이 1대1 교전은 계속됩니다."}</p></div><div className="revealed-hold"><span>{combatScene.kind === "turret" ? "포탑 감시 구역" : "공개된 대기"}</span><b>{combatScene.waitDirections.length ? combatScene.waitDirections.map((region) => `${region}번`).join(" · ") : "대기 없음"}</b></div></div>
-        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>{combatRetreatLocked ? "첫 공격을 완료해야 이탈할 수 있습니다" : "이번 교전 차례를 선택하세요"}</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={combatAttack}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>이번 사격 · 기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>{combatScene.retreatLockedIds.includes(combatActor.id) ? "대기 구역 확보 시도 중" : combatScene.range === 0 ? "거리 0 첫 교전 사이클" : "거리 1 선택 교전의 첫 공격 전"}</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
+        {combatScene.phase === "encounter" ? <button className="combat-continue encounter-start" onClick={advanceCombat}><span>{combatScene.kind === "turret" ? "포탑 공격 확인" : "접촉 확인 · 교전 개시"}</span><small>{combatScene.kind === "turret" ? "에임 D5와 대상 무빙 주사위를 굴립니다" : "우선도와 전술 맵을 확인했습니다"}</small></button> : combatScene.phase === "tailwind" && tailwindActor ? <div ref={combatActionRef} className="combat-actions tailwind-actions"><div><span>REACTION // {tailwindActor.name}</span><strong>순풍 이동 구역을 선택하세요</strong></div><div className="retreat-actions"><span>순풍</span>{tailwindOptions.map((region) => <button key={region} onClick={() => tailwindMove(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div></div> : combatScene.phase === "choice" && combatActor ? <div ref={combatActionRef} className="combat-actions"><div><span>ACTION // {combatActor.name}</span><strong>{combatRetreatLocked ? "첫 공격을 완료해야 이탈할 수 있습니다" : "이번 교전 차례를 선택하세요"}</strong></div><button className="fight-action" disabled={combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack} onClick={() => combatAttack()}><b>교전 {combatAttackPreview ? `${combatAttackPreview.hitChance}%` : ""}</b><small>{combatActor.id === combatScene.mover.id && !combatScene.canMoverAttack ? "이 행동에서는 공격 불가" : combatAttackPreview ? `몸통 ${combatAttackPreview.bodyDamage} · 헤드 ${combatAttackPreview.headDamage} (${combatAttackPreview.headChance}%)` : `${WEAPONS[combatActor.weapon].name}으로 공격`}</small>{combatAttackPreview && <em>이번 사격 · 기대 피해 {combatAttackPreview.expectedDamage} · D{combatAttackPreview.aim} vs D{combatAttackPreview.move}</em>}</button>{combatHeadhunterReady && <button className="fight-action chamber-action" onClick={() => combatAttack({ useHeadhunter: true })}><b>헤드헌터 사격</b><small>셰리프 성능 · 에임 +1 · 잔탄 {combatActor.skills.headhunter}/8</small></button>}{combatRendezvousReady && <button className="fight-action chamber-action" onClick={() => combatAttack({ rendezvousAfterAttack: true })}><b>랑데부 예약 공격</b><small>공격 직후 귀환 · 도착 우선도 5</small></button>}{combatHeadhunterReady && combatRendezvousReady && <button className="fight-action chamber-action" onClick={() => combatAttack({ useHeadhunter: true, rendezvousAfterAttack: true })}><b>헤드헌터 + 랑데부</b><small>강화 사격 직후 귀환</small></button>}{canCombatAdvance && <button className="advance-action" onClick={combatAdvance}><b>계속 이동</b><small>공격하지 않고 남은 경로 진행</small></button>}{combatRetreatLocked || combatRetreatOptions.length === 0 ? <div className="retreat-actions retreat-locked"><span>이탈 불가</span><small>{combatRetreatLocked ? combatScene.retreatLockedIds.includes(combatActor.id) ? "대기 구역 확보 시도 중" : combatScene.range === 0 ? "거리 0 첫 교전 사이클" : "거리 1 선택 교전의 첫 공격 전" : "이동 제한 효과로 합법적인 탈주 경로가 없습니다"}</small></div> : <div className="retreat-actions"><span>이탈</span>{combatRetreatOptions.map((region) => <button key={region} onClick={() => combatRetreat(region)}><b>{region}번</b><small>{regionName(region)}</small></button>)}</div>}</div> : <button className="combat-continue" onClick={advanceCombat}><span>{combatScene.resolved ? combatScene.kind === "turret" ? "이동·교전 계속" : "교전 종료" : "다음 교전 차례"}</span><small>{combatScene.resolved ? "남은 적이 있으면 다음 1대1 또는 남은 이동을 진행합니다" : `${getAgent(game, combatScene.pendingNextActorId)?.name ?? "다음 요원"} 행동`}</small></button>}
       </section></div>}
 
       {pendingStayConfirm && <div className="modal-backdrop" onMouseDown={() => setPendingStayConfirm(null)}><div className="confirm-modal" onMouseDown={(event) => event.stopPropagation()}>

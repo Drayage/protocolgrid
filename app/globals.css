@@ -204,6 +204,12 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 
 .map-edge { position: absolute; height: 1px; background: rgba(95,246,213,.15); transform-origin: 0 50%; z-index: -1; transition: .2s ease; }
 .map-edge.smoked { height: 5px; margin-top: -2px; background: linear-gradient(90deg, rgba(171,124,255,.25), #af87ff, rgba(171,124,255,.25)); filter: blur(.5px); box-shadow: 0 0 13px #a568ff; }
+.map-edge.smoke-cove { height: 7px; margin-top: -3px; background: linear-gradient(90deg,rgba(65,206,255,.22),#8ee9ff,rgba(65,206,255,.22)); box-shadow: 0 0 16px rgba(73,211,255,.88); }
+.map-edge.smoke-high-tide { height: 6px; margin-top: -3px; background: repeating-linear-gradient(90deg,rgba(46,184,211,.2) 0 7px,#77e7ed 7px 11px); box-shadow: 0 0 14px rgba(73,218,225,.7); }
+.map-edge.barrier-edge { z-index: 2; height: 7px; margin-top: -3px; background: repeating-linear-gradient(90deg,#7bffd7 0 8px,#e4fff7 8px 11px,#3aa98d 11px 18px); border-block: 1px solid rgba(226,255,247,.85); box-shadow: 0 0 10px rgba(95,246,213,.8); filter: none; }
+.map-edge.barrier-edge::after { content: "HP " attr(data-wall-hp); position: absolute; left: 50%; top: -13px; padding: 1px 3px; color: #dffff6; background: #071614; border: 1px solid rgba(95,246,213,.55); font: 6px monospace; transform: translateX(-50%); white-space: nowrap; }
+.map-edge.toxic-edge { z-index: 1; height: 4px; margin-top: -2px; background: repeating-linear-gradient(90deg,rgba(75,255,113,.18) 0 6px,rgba(75,255,113,.75) 6px 8px); box-shadow: 0 0 8px rgba(75,255,113,.38); }
+.map-edge.toxic-edge.active { height: 8px; margin-top: -4px; background: linear-gradient(90deg,rgba(29,94,44,.45),#52f47a,rgba(29,94,44,.45)); box-shadow: 0 0 15px rgba(82,244,122,.8); }
 
 .region-node { position: absolute; transform: translate(-50%, -50%); width: 34px; height: 34px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: default; z-index: 3; }
 .node-core { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; border: 1px solid rgba(167,216,218,.42); background: rgba(7,18,22,.92); font: 700 11px var(--font-geist-mono), monospace; box-shadow: 0 6px 14px rgba(0,0,0,.34); transition: .18s ease; }
@@ -216,12 +222,15 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .node-label { position: absolute; left: 50%; top: 38px; z-index: 1; transform: translateX(-50%); width: max-content; max-width: 96px; padding: 3px 5px; color: #8ea3a8; background: rgba(3,9,11,.78); font-size: 8px; line-height: 1.25; border: 1px solid rgba(255,255,255,.04); pointer-events: none; }
 .node-label b { color: var(--amber); margin-right: 4px; }
 .region-node.dark-zone::before { content: ""; position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(circle, rgba(120,86,224,.34) 0%, rgba(120,86,224,.12) 62%, rgba(120,86,224,0) 100%); border: 1px dashed rgba(167,138,255,.5); pointer-events: none; z-index: 0; }
+.region-node.poison-zone::before { content: ""; position: absolute; left: 50%; top: 50%; width: 58px; height: 58px; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(circle, rgba(76,255,112,.34), rgba(27,103,47,.16) 60%, transparent 72%); border: 1px dashed rgba(98,255,128,.66); box-shadow: 0 0 18px rgba(70,255,105,.24); pointer-events: none; z-index: 0; }
+.region-node.high-tide-zone::before { content: ""; position: absolute; left: 50%; top: 50%; width: 58px; height: 58px; transform: translate(-50%,-50%); border-radius: 50%; background: radial-gradient(circle,rgba(82,222,238,.34),rgba(20,104,125,.15) 62%,transparent 73%); border: 1px dashed rgba(116,235,245,.66); box-shadow: 0 0 17px rgba(75,220,232,.28); pointer-events: none; z-index: 0; }
+.region-node.leer-zone .node-core { box-shadow: 0 0 0 5px rgba(195,75,255,.14),0 0 20px rgba(200,80,255,.6); border-color: #d88aff; }
+.region-node.gravnet-zone .node-core { background-image: repeating-linear-gradient(45deg,transparent 0 5px,rgba(255,198,79,.22) 5px 7px); border-color: #ffc65a; }
 
-.unit-stack { position: absolute; z-index: 9; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 2px; width: 82px; pointer-events: none; }
-.unit-stack:has(> :nth-child(4)) { width: 60px; }
-.unit-stack:has(> :nth-child(4)) .unit-token { width: 18px; height: 18px; font-size: 6px; }
+.unit-stack { --unit-token-size: 25px; position: absolute; z-index: 9; display: flex; gap: 2px; width: max-content; pointer-events: none; }
+.unit-stack:has(> :nth-child(4)) { display: grid; grid-template-columns: repeat(3, calc(var(--unit-token-size) - 7px)); grid-auto-rows: var(--unit-token-size); }
 .ally-stack { bottom: 22px; left: 14px; }.enemy-stack { top: 22px; right: 14px; flex-direction: row-reverse; justify-content: flex-end; }
-.unit-token { position: relative; z-index: 2; display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; font-style: normal; font-size: 8px; font-weight: 900; color: #07110f; background: var(--team-color); border: 2px solid #d8fffa; box-shadow: 0 2px 8px #000; pointer-events: auto; cursor: pointer; }
+.unit-token { position: relative; z-index: 2; display: grid; place-items: center; width: var(--unit-token-size); height: var(--unit-token-size); border-radius: 50%; font-style: normal; font-size: 8px; font-weight: 900; color: #07110f; background: var(--team-color); border: 2px solid #d8fffa; box-shadow: 0 2px 8px #000; pointer-events: auto; cursor: pointer; }
 .unit-token.agent-art { background-color: #0a171b !important; }
 .wait-cone { position: absolute; z-index: 1; height: 34px; transform-origin: 0 50%; clip-path: polygon(0 42%,100% 0,100% 100%,0 58%); pointer-events: none; opacity: .76; }
 .wait-cone::before { content: ""; position: absolute; inset: 5px 0; clip-path: inherit; background: linear-gradient(90deg, rgba(95,246,213,.55), rgba(95,246,213,.17) 56%, rgba(95,246,213,0)); }
@@ -235,6 +244,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 @keyframes selectedTokenPulse { 0%, 100% { box-shadow: 0 0 0 4px rgba(95,246,213,.4), 0 0 22px rgba(95,246,213,.95), 0 4px 14px rgba(0,0,0,.65); } 50% { box-shadow: 0 0 0 4px rgba(95,246,213,.22), 0 0 14px rgba(95,246,213,.6), 0 4px 14px rgba(0,0,0,.65); } }
 @keyframes selectedTokenRing { 0% { transform: scale(.7); opacity: .65; } 100% { transform: scale(1.35); opacity: 0; } }
 .unit-token.hostile { background: var(--red); border-color: #ffd4da; color: #270207; }
+.unit-token.fakeout-token { box-shadow: 0 2px 8px #000,0 0 0 1px rgba(255,82,103,.35); }
 .movement-path-fx { position: absolute; inset: 0; z-index: 17; pointer-events: none; }
 .post-combat-move-banner { position: absolute; top: 12px; left: 50%; z-index: 24; display: grid; gap: 3px; min-width: 210px; padding: 9px 14px; border: 1px solid color-mix(in srgb, var(--team-color) 70%, white 10%); background: rgba(3, 14, 18, .9); box-shadow: 0 0 24px color-mix(in srgb, var(--team-color) 28%, transparent); color: #dcebee; text-align: center; transform: translateX(-50%); pointer-events: none; animation: movementRoutePulse 760ms ease-out both; }
 .post-combat-move-banner.team-attack { --team-color: var(--red); }.post-combat-move-banner.team-defense { --team-color: var(--blue); }
@@ -250,6 +260,9 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .effect-stack { position: absolute; left: -7px; top: 25px; display: flex; gap: 2px; pointer-events: none; }
 .effect-stack i { display: grid; place-items: center; width: 14px; height: 14px; border: 1px solid #7e9da3; background: #091519; color: #b8d3d5; font: 9px monospace; font-style: normal; }
 .effect-stack i.fire { color: #ff7f44; border-color: #ff7f44; }.effect-stack i.stim { color: var(--cyan); }.effect-stack i.weapon-drop { color: var(--amber); border-color: rgba(243,183,91,.72); }.effect-stack i.spike { color: var(--red); border-color: var(--red); }
+.effect-stack i.device-gatecrash { color: #8ec5ff; border-color: #6c9fff; }.effect-stack i.device-poison-emitter { color: #61ff83; border-color: #45c864; }.effect-stack i.device-fakeout { color: #5caeff; border-color: #5caeff; }
+.effect-stack i.device-haunt { color: #cf88ff; border-color: #a65bdf; }.effect-stack i.device-rendezvous { color: #70cfff; border-color: #4c91db; }.effect-stack i.device-barrier-mesh { color: #ffc65a; border-color: #cf8b2b; }
+.effect-stack i.disabled { opacity: .4; filter: grayscale(1); text-decoration: line-through; }.effect-stack i.leer-effect { color: #df93ff; border-color: #b05bd7; }.effect-stack i.gravnet-effect { color: #ffd477; border-color: #d49b38; }.effect-stack i.high-tide-effect { color: #8eefff; border-color: #4ec9dd; }
 
 @keyframes floatingNumberRise { 0% { opacity: 0; transform: translate(-50%, 0) scale(.8); } 15% { opacity: 1; transform: translate(-50%, -6px) scale(1.05); } 100% { opacity: 0; transform: translate(-50%, -30px) scale(1); } }
 .floating-number-stack { position: absolute; left: 50%; top: -6px; display: flex; flex-direction: column; align-items: center; gap: 1px; pointer-events: none; z-index: 5; }
@@ -586,6 +599,60 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .skill-art-turret { --sprite-size-x: 593.782%; --sprite-size-y: 711.399%; --sprite-pos-x: 2.099%; --sprite-pos-y: 81.356%; }.skill-art-recon { --sprite-size-x: 593.782%; --sprite-size-y: 711.399%; --sprite-pos-x: 24.659%; --sprite-pos-y: 81.356%; }.skill-art-flash { --sprite-size-x: 593.782%; --sprite-size-y: 711.399%; --sprite-pos-x: 46.590%; --sprite-pos-y: 81.356%; }.skill-art-smoke { --sprite-size-x: 593.782%; --sprite-size-y: 711.399%; --sprite-pos-x: 70.042%; --sprite-pos-y: 81.356%; }.skill-art-dark { --sprite-size-x: 593.782%; --sprite-size-y: 711.399%; --sprite-pos-x: 95.908%; --sprite-pos-y: 81.356%; }
 .skill-art-alarm { --sprite-size-x: 550.962%; --sprite-size-y: 660.096%; --sprite-pos-x: 1.333%; --sprite-pos-y: 99.485%; }.skill-art-shock { --sprite-size-x: 575.879%; --sprite-size-y: 689.950%; --sprite-pos-x: 24.498%; --sprite-pos-y: 99.106%; }.skill-art-aftershock { --sprite-size-x: 550.962%; --sprite-size-y: 660.096%; --sprite-pos-x: 46.535%; --sprite-pos-y: 99.485%; }.skill-art-stim { --sprite-size-x: 550.962%; --sprite-size-y: 660.096%; --sprite-pos-x: 70.362%; --sprite-pos-y: 99.485%; }.skill-art-shadow { --sprite-size-x: 550.962%; --sprite-size-y: 660.096%; --sprite-pos-x: 96.642%; --sprite-pos-y: 99.485%; }
 
+/* Generated expansion atlas: four exact columns × three exact rows. */
+.agent-art-yoru, .agent-art-skye, .agent-art-sage, .agent-art-viper,
+.skill-art-fakeout, .skill-art-regrowth, .skill-art-healing-orb, .skill-art-poison-cloud,
+.skill-art-gatecrash, .skill-art-hawk, .skill-art-barrier-orb, .skill-art-toxic-screen {
+  --sprite-atlas-image: var(--expansion-atlas-image);
+  --sprite-size-x: 400%;
+  --sprite-size-y: 300%;
+}
+.agent-art-yoru, .skill-art-fakeout, .skill-art-gatecrash { --sprite-pos-x: 0%; }
+.agent-art-skye, .skill-art-regrowth, .skill-art-hawk { --sprite-pos-x: 33.333%; }
+.agent-art-sage, .skill-art-healing-orb, .skill-art-barrier-orb { --sprite-pos-x: 66.667%; }
+.agent-art-viper, .skill-art-poison-cloud, .skill-art-toxic-screen { --sprite-pos-x: 100%; }
+.agent-art-yoru, .agent-art-skye, .agent-art-sage, .agent-art-viper { --sprite-pos-y: 0%; }
+.skill-art-fakeout, .skill-art-regrowth, .skill-art-healing-orb, .skill-art-poison-cloud { --sprite-pos-y: 50%; }
+.skill-art-gatecrash, .skill-art-hawk, .skill-art-barrier-orb, .skill-art-toxic-screen { --sprite-pos-y: 100%; }
+
+/* Generated second expansion atlas: six exact columns × three exact rows. */
+.agent-art-reyna, .agent-art-fade, .agent-art-kayo, .agent-art-chamber, .agent-art-deadlock, .agent-art-harbor,
+.skill-art-leer, .skill-art-haunt, .skill-art-zero-point, .skill-art-headhunter, .skill-art-gravnet, .skill-art-cove,
+.skill-art-soul-harvest, .skill-art-prowler, .skill-art-kayo-flash, .skill-art-rendezvous, .skill-art-barrier-mesh, .skill-art-high-tide {
+  --sprite-atlas-image: var(--expansion-atlas-2-image);
+  --sprite-size-x: 600%;
+  --sprite-size-y: 300%;
+}
+.agent-art-reyna, .skill-art-leer, .skill-art-soul-harvest { --sprite-pos-x: 0%; }
+.agent-art-fade, .skill-art-haunt, .skill-art-prowler { --sprite-pos-x: 20%; }
+.agent-art-kayo, .skill-art-zero-point, .skill-art-kayo-flash { --sprite-pos-x: 40%; }
+.agent-art-chamber, .skill-art-headhunter, .skill-art-rendezvous { --sprite-pos-x: 60%; }
+.agent-art-deadlock, .skill-art-gravnet, .skill-art-barrier-mesh { --sprite-pos-x: 80%; }
+.agent-art-harbor, .skill-art-cove, .skill-art-high-tide { --sprite-pos-x: 100%; }
+.agent-art-reyna, .agent-art-fade, .agent-art-kayo, .agent-art-chamber, .agent-art-deadlock, .agent-art-harbor { --sprite-pos-y: 0%; }
+.skill-art-leer, .skill-art-haunt, .skill-art-zero-point, .skill-art-headhunter, .skill-art-gravnet, .skill-art-cove { --sprite-pos-y: 50%; }
+.skill-art-soul-harvest, .skill-art-prowler, .skill-art-kayo-flash, .skill-art-rendezvous, .skill-art-barrier-mesh, .skill-art-high-tide { --sprite-pos-y: 100%; }
+
+/* Revised character portraits keep the second expansion's ability icons intact. */
+.agent-art-reyna, .agent-art-fade, .agent-art-kayo, .agent-art-chamber, .agent-art-deadlock, .agent-art-harbor {
+  --sprite-atlas-image: var(--expansion-portraits-2-image);
+  --sprite-size-x: 600%;
+  --sprite-size-y: 100%;
+  --sprite-pos-y: 0%;
+}
+
+/* Fade's nightmare utility and Harbor's water utility use clearer bespoke icons. */
+.skill-art-haunt, .skill-art-prowler, .skill-art-cove, .skill-art-high-tide {
+  --sprite-atlas-image: var(--revised-skill-icons-image);
+  --sprite-size-x: 400%;
+  --sprite-size-y: 100%;
+  --sprite-pos-y: 0%;
+}
+.skill-art-haunt { --sprite-pos-x: 0%; }
+.skill-art-prowler { --sprite-pos-x: 33.333%; }
+.skill-art-cove { --sprite-pos-x: 66.667%; }
+.skill-art-high-tide { --sprite-pos-x: 100%; }
+
 @media (max-height: 760px) {
   .battle-layout { grid-template-columns: 220px minmax(620px, 1fr) 286px; }
   .roster-panel, .intel-panel { padding-top: 10px; }
@@ -656,7 +723,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 }
 
 @media (max-width: 800px) {
-  .unit-stack { z-index: 14; }.node-label { z-index: 1; }.unit-token { width: 27px; height: 27px; }
+  .unit-stack { --unit-token-size: 27px; z-index: 14; }.node-label { z-index: 1; }
   .map-header { padding: 0 8px; gap: 6px; font-size: 7px; letter-spacing: .04em; }.map-legend { gap: 6px; }.map-legend span { gap: 3px; white-space: nowrap; }
   .wait-cone { height: 28px; opacity: .7; }
   .encounter-intro { grid-template-columns: 66px 1fr 66px; gap: 7px; min-height: 80px; padding: 8px; }.encounter-portrait { width: 62px; height: 62px; }.encounter-intro > div:nth-child(2) strong { font-size: 15px; }.encounter-intro > div:nth-child(2) small { font-size: 6px; }.encounter-intro > div:nth-child(2) span { font-size: 6px; }
@@ -715,6 +782,9 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .agent-status-badges .status-blind { color: #fff2a3; background: #342b09; }
 .agent-status-badges .status-concussed { color: #bd9cff; background: #21123a; }
 .agent-status-badges .status-detected { color: var(--cyan); background: #062d2c; }
+.agent-status-badges .status-suppressed { color: #ffca70; background: #372208; }
+.agent-status-badges .status-devour { color: #ff72aa; background: #3b0921; }
+.agent-status-badges .status-gravnet { color: #ffd477; background: #352407; }
 .agent-status-badges .status-vulnerable { color: #ff6680; background: #390912; }
 .agent-status-badges .status-aftershock { color: #ff9b52; background: #371707; }
 .agent-status-badges .status-aim-down, .agent-status-badges .status-move-down { color: #ff8798; background: #301017; border-radius: 3px; }
