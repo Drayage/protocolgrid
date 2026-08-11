@@ -154,6 +154,13 @@ interface ActionCard {
   source: string;
   used: boolean;
   committedAgentId?: string;
+  aiSetupIntent?: AiCardSetupIntent;
+}
+
+interface AiCardSetupIntent {
+  skillId: string;
+  regions: number[];
+  createdTurnSerial: number;
 }
 
 interface TeamState {
@@ -335,6 +342,7 @@ interface AiRetreatMemory {
   createdTeamTurn: number;
   expiresTeamTurn: number;
   plan?: "regroup" | "utility" | "flank" | "trade";
+  blockerId?: string;
   blockerRegion?: number;
   blockerWaitDirs?: number[];
   flankRegion?: number;
@@ -346,6 +354,8 @@ interface AiMovementHistory {
   agentId: string;
   objectiveKey: string;
   regions: number[];
+  scoutedRegions: number[];
+  scoutReturnUsedTeamTurn: number | null;
   updatedTeamTurn: number;
   expiresTeamTurn: number;
 }
@@ -1166,11 +1176,18 @@ function createTeam(side: Side, names: string[], seed: number): TeamState {
   };
 }
 
+const SPIKE_CARRIER_ROLE_ORDER: Record<Role, number> = { controller: 0, initiator: 1, sentinel: 2, duelist: 3 };
+
 function selectSpikeCarrierId(agents: Agent[], plan: AttackPlan) {
-  const roleOrder: Record<Role, number> = { controller: 0, initiator: 1, sentinel: 2, duelist: 3 };
   const mainBody = agents.filter((agent) => agent.name !== plan.lurkerName);
   return [...(mainBody.length ? mainBody : agents)]
-    .sort((a, b) => roleOrder[a.role] - roleOrder[b.role] || agents.indexOf(a) - agents.indexOf(b))[0]?.id ?? null;
+    .sort((a, b) => SPIKE_CARRIER_ROLE_ORDER[a.role] - SPIKE_CARRIER_ROLE_ORDER[b.role] || agents.indexOf(a) - agents.indexOf(b))[0]?.id ?? null;
+}
+
+function recoveredSpikeCarrierPriority(agent: Agent) {
+  const sniperPenalty = WEAPONS[agent.weapon].type === "sniper" ? 36 : 0;
+  const durability = agent.hp + agent.armor;
+  return SPIKE_CARRIER_ROLE_ORDER[agent.role] * 12 + sniperPenalty - durability * 3;
 }
 
 function createInitialGame(
@@ -2115,6 +2132,10 @@ function ensureAiTacticalState(game: GameState) {
   game.aiRecoveryOrders ??= [];
   game.aiRetreatMemories ??= [];
   game.aiMovementHistories ??= [];
+  game.aiMovementHistories.forEach((history) => {
+    history.scoutedRegions ??= [];
+    history.scoutReturnUsedTeamTurn ??= null;
+  });
   game.aiPostplantSurveillance ??= { site: null, spikeRegion: null, lastObservedTeamTurn: -1, lastObservedCycle: -1 };
   game.lastMovementFx ??= null;
   game.postCombatMovementFxQueue ??= [];
@@ -2141,12 +2162,69 @@ function aiMovementObjectiveKey(game: GameState, agent: Agent) {
   return `defense:${threat}:${assignment}`;
 }
 
+function aiSightFromRegion(game: GameState, region: number) {
+  const visible = new Set<number>([region]);
+  (GRAPH.get(region) ?? []).forEach((adjacent) => {
+    if (!isSmokeBlocked(game, region, adjacent)) visible.add(adjacent);
+  });
+  return visible;
+}
+
+function aiObservedRegionsWithoutAgent(game: GameState, agent: Agent) {
+  const visible = new Set<number>();
+  game.teams[agent.team].agents.filter((ally) => ally.alive && ally.id !== agent.id).forEach((ally) => {
+    aiSightFromRegion(game, ally.region).forEach((region) => visible.add(region));
+  });
+  game.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && enemy.detected)
+    .forEach((enemy) => visible.add(enemy.region));
+  game.deployables.filter((item) => item.kind === "camera" && item.owner === agent.team && !isDeployableDisabled(game, item))
+    .forEach((camera) => {
+      visible.add(camera.region);
+      (GRAPH.get(camera.region) ?? []).forEach((region) => visible.add(region));
+    });
+  return visible;
+}
+
+function aiNewSightRegionsFromMove(game: GameState, agent: Agent, origin: number) {
+  const alreadyVisible = aiObservedRegionsWithoutAgent(game, agent);
+  aiSightFromRegion(game, origin).forEach((region) => alreadyVisible.add(region));
+  return [...aiSightFromRegion(game, agent.region)].filter((region) => !alreadyVisible.has(region));
+}
+
+// A quick return can be a real probe: step out, update a lane, then fall back
+// to the safer angle. Only unique team sight earns that exception, and it can
+// be spent once per team turn so it never becomes an A-B-A-B card loop.
+function aiScoutReturnHasValue(game: GameState, agent: Agent, history: AiMovementHistory | undefined) {
+  if (!history
+    || history.updatedTeamTurn !== game.teamTurns[agent.team]
+    || history.regions.at(-1) !== agent.region
+    || !history.scoutedRegions.length
+    || history.scoutReturnUsedTeamTurn === game.teamTurns[agent.team]) return false;
+  const priorRegion = history.regions.at(-2);
+  if (priorRegion === undefined) return false;
+  if (aiRecoveryOrderForAgent(game, agent) || aiTradeRelayMemoryForAgent(game, agent)) return false;
+  if (game.spike.status === "dropped" && (agent.team === "attack" || game.spikeKnownByDefense)) return false;
+  if (agent.team === "attack" && attackForcedPlantMode(game)) return false;
+  if (agent.team === "attack" && attackPostplantPressure(game).needsAction) return false;
+  if (agent.team === "defense" && defenseRetakeMustAdvance(game, agent)) return false;
+  return knownThreatScoreAtRegion(game, agent.team, priorRegion)
+    <= knownThreatScoreAtRegion(game, agent.team, agent.region) + 6;
+}
+
 function recordAiMovementHistory(game: GameState, agent: Agent, origin: number) {
   if (origin === agent.region) return;
   ensureAiTacticalState(game);
   const objectiveKey = aiMovementObjectiveKey(game, agent);
   const existing = game.aiMovementHistories.find((history) =>
-    history.agentId === agent.id && game.teamTurns[agent.team] <= history.expiresTeamTurn);
+    history.agentId === agent.id
+    && history.objectiveKey === objectiveKey
+    && game.teamTurns[agent.team] <= history.expiresTeamTurn);
+  const usedScoutReturn = !!existing
+    && existing.updatedTeamTurn === game.teamTurns[agent.team]
+    && existing.regions.at(-1) === origin
+    && existing.regions.at(-2) === agent.region
+    && existing.scoutedRegions.length > 0
+    && existing.scoutReturnUsedTeamTurn !== game.teamTurns[agent.team];
   const regions = existing
     ? [...existing.regions, agent.region].slice(-5)
     : [origin, agent.region];
@@ -2156,6 +2234,10 @@ function recordAiMovementHistory(game: GameState, agent: Agent, origin: number) 
     agentId: agent.id,
     objectiveKey,
     regions,
+    scoutedRegions: aiNewSightRegionsFromMove(game, agent, origin),
+    scoutReturnUsedTeamTurn: usedScoutReturn
+      ? game.teamTurns[agent.team]
+      : existing?.scoutReturnUsedTeamTurn ?? null,
     updatedTeamTurn: game.teamTurns[agent.team],
     expiresTeamTurn: game.teamTurns[agent.team] + 2,
   });
@@ -2163,14 +2245,47 @@ function recordAiMovementHistory(game: GameState, agent: Agent, origin: number) 
 
 function aiRecentMovementPenalty(game: GameState, agent: Agent, target: number) {
   ensureAiTacticalState(game);
+  const objectiveKey = aiMovementObjectiveKey(game, agent);
   const history = game.aiMovementHistories.find((item) =>
     item.agentId === agent.id
+    && item.objectiveKey === objectiveKey
     && game.teamTurns[agent.team] <= item.expiresTeamTurn);
   if (!history) return 0;
   const priorRegion = history.regions.at(-2);
-  if (target === priorRegion) return 120;
+  if (target === priorRegion) return aiScoutReturnHasValue(game, agent, history) ? 18 : 120;
   const olderIndex = history.regions.lastIndexOf(target);
   return olderIndex >= 0 && olderIndex < history.regions.length - 1 ? 42 : 0;
+}
+
+function aiTargetsWithoutAimlessBacktrack(game: GameState, agent: Agent, targets: number[]) {
+  ensureAiTacticalState(game);
+  const objectiveKey = aiMovementObjectiveKey(game, agent);
+  const history = game.aiMovementHistories.find((item) =>
+    item.agentId === agent.id
+    && item.objectiveKey === objectiveKey
+    && item.updatedTeamTurn === game.teamTurns[agent.team]);
+  const priorRegion = history?.regions.at(-2);
+  if (priorRegion === undefined || !targets.includes(priorRegion)) return targets;
+  const newlyConfirmedEnemy = aiEnemyIntel(game, agent.team).some((enemy) => enemy.exact && enemy.region === priorRegion);
+  const recoveryOrder = aiRecoveryOrderForAgent(game, agent);
+  const tradeMemory = aiTradeRelayMemoryForAgent(game, agent);
+  const spikeObjective = game.spike.region !== null && (
+    game.spike.status === "dropped"
+    || ["planting", "planted", "half", "defusing"].includes(game.spike.status)
+  ) ? game.spike.region : null;
+  const forcedPlantObjective = agent.team === "attack" && attackForcedPlantMode(game)
+    ? [...attackPlanWaypoints(game, agent)].sort((a, b) => distance(agent.region, a) - distance(agent.region, b))[0] ?? null
+    : null;
+  const urgentRegion = recoveryOrder?.objectiveRegion
+    ?? tradeMemory?.avoidedRegion
+    ?? spikeObjective
+    ?? forcedPlantObjective;
+  const backtrackAdvancesObjective = urgentRegion !== null
+    && distance(priorRegion, urgentRegion) < distance(agent.region, urgentRegion);
+  const scoutReturnHasValue = aiScoutReturnHasValue(game, agent, history);
+  return newlyConfirmedEnemy || backtrackAdvancesObjective || scoutReturnHasValue
+    ? targets
+    : targets.filter((target) => target !== priorRegion);
 }
 
 function rememberEnemy(game: GameState, observer: Side, enemy: Agent) {
@@ -3270,12 +3385,12 @@ function continueGroupMovement(game: GameState) {
 }
 
 function drawFive(team: TeamState, seed: number) {
-  const discarding = team.hand.map((card) => ({ ...card, used: false, committedAgentId: undefined }));
+  const discarding = team.hand.map((card) => ({ ...card, used: false, committedAgentId: undefined, aiSetupIntent: undefined }));
   team.discard.push(...discarding);
   team.hand = [];
   while (team.hand.length < 5) {
     if (!team.deck.length) {
-      team.deck = seededShuffle(team.discard.map((card) => ({ ...card, used: false, committedAgentId: undefined })), seed + team.discard.length);
+      team.deck = seededShuffle(team.discard.map((card) => ({ ...card, used: false, committedAgentId: undefined, aiSetupIntent: undefined })), seed + team.discard.length);
       team.discard = [];
     }
     const card = team.deck.shift();
@@ -3307,6 +3422,7 @@ function playCard(game: GameState, card: ActionCard, agent: Agent) {
   if (handCard) {
     handCard.used = true;
     handCard.committedAgentId = agent.id;
+    handCard.aiSetupIntent = undefined;
   }
   if (!alreadyCommitted) {
     clearTeamExtraActions(game, agent.team);
@@ -3920,9 +4036,37 @@ function attackEntryIsOpen(game: GameState, site: "A" | "B") {
     && situation.alliesNearSite.length >= 2;
 }
 
+function attackPlantDeadlineTurns(game: GameState) {
+  const aliveAttackers = game.teams.attack.agents.filter((agent) => agent.alive);
+  const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
+  const spikeRegion = carrier?.region ?? game.spike.region ?? ATTACK_SPAWN_REGION;
+  const pickupTravel = game.spike.status === "dropped" && aliveAttackers.length
+    ? Math.min(...aliveAttackers.map((agent) => distance(agent.region, spikeRegion)))
+    : 0;
+  const siteTravel = Math.min(...(["A", "B"] as const)
+    .flatMap((site) => SITE_REGIONS[site].map((region) => distance(spikeRegion, region))));
+  return Math.ceil((pickupTravel + siteTravel) / 2) + 1;
+}
+
+function attackDroppedSpikeWeaponDelayIsSafe(game: GameState) {
+  if (game.spike.status !== "dropped" || game.spike.region === null) return false;
+  const remainingCycles = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
+  const plantSlack = remainingCycles - attackPlantDeadlineTurns(game);
+  // A pickup can consume the extra action that would otherwise recover the
+  // spike this turn. Keep one full contingency turn beyond that possible cost.
+  return plantSlack >= 2;
+}
+
+function attackWeaponRecoveryMustYield(game: GameState) {
+  if (game.spike.status === "dropped") return !attackDroppedSpikeWeaponDelayIsSafe(game);
+  return attackForcedPlantMode(game);
+}
+
 function attackForcedPlantMode(game: GameState) {
+  if (["planting", "planted", "half", "defusing", "defused", "exploded"].includes(game.spike.status)) return false;
+  const remainingCycles = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
   return game.cycle >= FORCED_EXECUTE_CYCLE
-    && !["planting", "planted", "half", "defusing", "defused", "exploded"].includes(game.spike.status);
+    || remainingCycles <= attackPlantDeadlineTurns(game) + 1;
 }
 
 function enforceAttackForcedPlantPlan(game: GameState) {
@@ -3930,7 +4074,7 @@ function enforceAttackForcedPlantPlan(game: GameState) {
   const carrier = game.spike.status === "carried" ? getAgent(game, game.spike.carrierId) : null;
   const origin = carrier?.region ?? game.spike.region ?? 1;
   const currentSite = siteForRegion(origin);
-  const targetSite = currentSite ?? (["A", "B"] as const).map((site) => {
+  const evaluatedSite = (["A", "B"] as const).map((site) => {
     const situation = attackSiteSituation(game, site);
     const travel = Math.min(...SITE_REGIONS[site].map((region) => distance(origin, region)));
     const aliveAttackers = game.teams.attack.agents.filter((agent) => agent.alive).length;
@@ -3939,6 +4083,8 @@ function enforceAttackForcedPlantPlan(game: GameState) {
     const resistance = decisiveAdvantage ? situation.danger * 0.15 : situation.danger * 0.6;
     return { site, score: travel * 10 + resistance - situation.alliesNearSite.length * 3 };
   }).sort((a, b) => a.score - b.score)[0].site;
+  const targetSite = currentSite
+    ?? (game.cycle > FORCED_EXECUTE_CYCLE ? game.attackPlan.targetSite : evaluatedSite);
   const changed = game.attackPlan.targetSite !== targetSite || game.attackPlan.formation !== "five";
   game.attackPlan.targetSite = targetSite;
   game.attackPlan.adapted = true;
@@ -4013,6 +4159,7 @@ function aiClassicCanDelayObjectiveForWeapon(game: GameState, agent: Agent, item
   const maxDetourDistance = aliveCount <= 2 ? 2 : 1;
   if (pickupDistance > maxDetourDistance) return false;
   if (game.spike.status === "dropped") {
+    if (agent.team !== "attack" || !attackDroppedSpikeWeaponDelayIsSafe(game)) return false;
     const attackTurnsRemaining = Math.max(0, PRE_PLANT_CYCLE_LIMIT + 1 - game.cycle);
     return attackTurnsRemaining >= pickupDistance + (aliveCount <= 2 ? 2 : 3);
   }
@@ -4123,6 +4270,10 @@ interface AiRecoveryObjective {
 function aiRecoveryOrderIsValid(game: GameState, order: AiRecoveryOrder) {
   const agent = getAgent(game, order.agentId);
   if (!agent?.alive || agent.team !== order.side) return false;
+  const urgentDroppedSpike = order.side === "attack"
+    && game.spike.status === "dropped"
+    && (agent.region === game.spike.region || !attackDroppedSpikeWeaponDelayIsSafe(game));
+  if (urgentDroppedSpike && order.objectiveKind !== "spike") return false;
   if (order.objectiveKind === "spike") {
     return order.side === "attack"
       && game.spike.status === "dropped"
@@ -4179,6 +4330,29 @@ function aiCanReenterRetreatRegion(game: GameState, agent: Agent, memory: AiRetr
   return blockerDisrupted || tradeReady;
 }
 
+function aiRetreatMemoryBlocker(game: GameState, agent: Agent, memory: AiRetreatMemory) {
+  if (!memory.blockerId) return null;
+  return aiEnemyIntel(game, agent.team).find((enemy) =>
+    enemy.agent.id === memory.blockerId && enemy.confidence >= 0.35) ?? null;
+}
+
+function aiRetreatBlockerIntelIsFresh(game: GameState, agent: Agent, memory: AiRetreatMemory, blocker: AiEnemyIntel) {
+  if (!blocker.exact) return false;
+  if (blocker.region !== memory.blockerRegion) return true;
+  return game.aiEnemyKnowledge.some((knowledge) =>
+    knowledge.observer === agent.team
+    && knowledge.agentId === blocker.agent.id
+    && knowledge.observedTeamTurn > memory.createdTeamTurn);
+}
+
+function aiRetreatScoutReturnHasValue(game: GameState, agent: Agent) {
+  const history = game.aiMovementHistories.find((item) =>
+    item.agentId === agent.id
+    && item.objectiveKey === aiMovementObjectiveKey(game, agent)
+    && game.teamTurns[agent.team] <= item.expiresTeamTurn);
+  return aiScoutReturnHasValue(game, agent, history);
+}
+
 function aiTargetsAfterRetreatMemory(game: GameState, agent: Agent, targets: number[]) {
   pruneAiRetreatMemories(game);
   const lastChanceEntry = agent.team === "attack"
@@ -4196,10 +4370,21 @@ function aiTargetsAfterRetreatMemory(game: GameState, agent: Agent, targets: num
       .sort((a, b) => b.progress - a.progress);
     if (routeTargets.length) return [routeTargets[0].region];
   }
-  if (aiCanReenterRetreatRegion(game, agent, memory)) return targets;
-  return targets.filter((region) => {
+  const blocker = aiRetreatMemoryBlocker(game, agent, memory);
+  const preparedReentry = aiCanReenterRetreatRegion(game, agent, memory);
+  const freshBlockerIntel = blocker ? aiRetreatBlockerIntelIsFresh(game, agent, memory, blocker) : false;
+  const valuableScoutReturn = aiRetreatScoutReturnHasValue(game, agent);
+  if (preparedReentry || freshBlockerIntel || valuableScoutReturn) return targets;
+  const regionSafeTargets = targets.filter((region) => {
     const path = shortestPath(agent.region, region);
     return region !== memory.avoidedRegion && !path.slice(1).includes(memory.avoidedRegion);
+  });
+  if (!blocker) return regionSafeTargets;
+  return regionSafeTargets.filter((region) => {
+    const path = shortestPath(agent.region, region).slice(1);
+    return !path.some((step) =>
+      distance(step, blocker.region) <= 1
+      && !isWaitPathSmokeBlocked(game, step, blocker.region));
   });
 }
 
@@ -4209,10 +4394,18 @@ function aiRecoveryOrderForAgent(game: GameState, agent: Agent) {
 }
 
 function aiRecoveryObjectiveForAgent(game: GameState, agent: Agent): AiRecoveryObjective | null {
+  const droppedSpikeRegion = agent.team === "attack" && game.spike.status === "dropped"
+    ? game.spike.region
+    : null;
+  const urgentDroppedSpike = droppedSpikeRegion !== null
+    && (agent.region === droppedSpikeRegion || !attackDroppedSpikeWeaponDelayIsSafe(game));
+  if (urgentDroppedSpike) {
+    return { kind: "spike", id: "spike", region: droppedSpikeRegion };
+  }
   const existing = aiRecoveryOrderForAgent(game, agent);
   if (existing) return { kind: existing.objectiveKind, id: existing.objectiveId, region: existing.objectiveRegion };
-  if (agent.team === "attack" && game.spike.status === "dropped" && game.spike.region !== null) {
-    return { kind: "spike", id: "spike", region: game.spike.region };
+  if (droppedSpikeRegion !== null) {
+    return { kind: "spike", id: "spike", region: droppedSpikeRegion };
   }
   if (agent.team === "defense" && game.spike.region !== null && defenseRetakePair(game)?.leader.id === agent.id) {
     return { kind: "retake", id: "retake", region: game.spike.region };
@@ -4298,8 +4491,15 @@ function aiRecoveryDeadlineTurns(game: GameState, agent: Agent, kind: AiRecovery
   return null;
 }
 
-function aiRecoveryInteractionTurns(game: GameState, kind: AiRecoveryOrder["objectiveKind"]): number {
-  return kind === "retake" ? (game.spike.status === "planted" ? 2 : 1) : 0;
+function aiRecoveryInteractionTurns(game: GameState, kind: AiRecoveryOrder["objectiveKind"], objectiveRegion: number): number {
+  if (kind === "retake") return game.spike.status === "planted" ? 2 : 1;
+  if (kind === "spike") {
+    const siteTravelTurns = Math.min(
+      ...(["A", "B"] as const).flatMap((site) => SITE_REGIONS[site].map((region) => distance(objectiveRegion, region))),
+    );
+    return siteTravelTurns + 1;
+  }
+  return 0;
 }
 
 // A flank route only lands the agent next to the blocker it routes around, not
@@ -4322,7 +4522,7 @@ function aiFlankFitsDeadline(deadline: number | null, flankTurns: number, intera
 function createAiRecoveryOrder(game: GameState, agent: Agent, objective: AiRecoveryObjective, blockers: AiEnemyIntel[]) {
   const assaultScore = aiRecoveryAssaultScore(game, agent, objective.region, blockers);
   const deadline = aiRecoveryDeadlineTurns(game, agent, objective.kind);
-  const interactionTurns = aiRecoveryInteractionTurns(game, objective.kind);
+  const interactionTurns = aiRecoveryInteractionTurns(game, objective.kind, objective.region);
   const flankRoute = assaultScore < 0 ? aiRecoveryFlankRoute(game, agent, objective.region, blockers) : [];
   const flankTurns = aiRecoveryFlankTurns(objective.region, flankRoute);
   const flankViable = flankRoute.length > 1 && aiFlankFitsDeadline(deadline, flankTurns, interactionTurns);
@@ -4369,7 +4569,7 @@ function refreshAiRecoveryOrder(game: GameState, agent: Agent, order: AiRecovery
   if (game.teamTurns[agent.team] <= order.committedUntilTeamTurn) return;
   const nextScore = aiRecoveryAssaultScore(game, agent, order.objectiveRegion, blockers);
   const deadline = aiRecoveryDeadlineTurns(game, agent, order.objectiveKind);
-  const interactionTurns = aiRecoveryInteractionTurns(game, order.objectiveKind);
+  const interactionTurns = aiRecoveryInteractionTurns(game, order.objectiveKind, order.objectiveRegion);
   const shouldBreach = nextScore >= 6;
   const shouldFlank = nextScore <= -6;
   if (order.mode === "breach" && shouldFlank) {
@@ -4420,7 +4620,8 @@ function aiRecoveryOrderDestination(game: GameState, agent: Agent, objective: Ai
   }
   const nextWaypoint = order.route[order.progress + 1];
   if (nextWaypoint === undefined) return { order, destination: null };
-  const rejoin = [...targets].sort((a, b) =>
+  const currentRejoinDistance = distance(agent.region, nextWaypoint);
+  const rejoin = targets.filter((target) => distance(target, nextWaypoint) < currentRejoinDistance).sort((a, b) =>
     distance(a, nextWaypoint) + knownThreatScoreAtRegion(game, agent.team, a)
     - (distance(b, nextWaypoint) + knownThreatScoreAtRegion(game, agent.team, b)))[0];
   return { order, destination: rejoin ?? null };
@@ -4437,6 +4638,23 @@ function aiWeaponDestination(game: GameState, agent: Agent, targets: number[]) {
   return destination;
 }
 
+function aiLastActionWeaponBeforeSpikeIsSafe(game: GameState, agent: Agent) {
+  if (agent.team !== "attack"
+    || game.spike.status !== "dropped"
+    || game.spike.region !== agent.region
+    || agent.extraActions < 1
+    || game.actionsUsed < 3) return false;
+  const committedCardPending = game.teams.attack.hand.some((card) =>
+    card.id === game.selectedCardId && card.used && card.committedAgentId === agent.id);
+  if (committedCardPending) return false;
+  const siteDistance = Math.min(...(["A", "B"] as const)
+    .flatMap((site) => SITE_REGIONS[site].map((region) => distance(agent.region, region))));
+  // If the next card cannot reach a site, using its extra action to recover the
+  // spike before moving costs no plant tempo. With two turns of spare time, a
+  // one-turn delay is also an acceptable price for a meaningful weapon upgrade.
+  return siteDistance > 2 || attackDroppedSpikeWeaponDelayIsSafe(game);
+}
+
 function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
   const criticalObjective = hasCriticalSpikeObjective(game, side);
   const candidates = game.teams[side].agents
@@ -4446,7 +4664,10 @@ function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
         && game.spike.status === "carried"
         && game.spike.carrierId === agent.id
         && aiPlantAssessment(game, agent).shouldPlant;
-      return !shouldPlantNow;
+      const standingOnDroppedSpike = side === "attack"
+        && game.spike.status === "dropped"
+        && game.spike.region === agent.region;
+      return !shouldPlantNow && (!standingOnDroppedSpike || aiLastActionWeaponBeforeSpikeIsSafe(game, agent));
     })
     .flatMap((agent) => game.droppedWeapons
       .filter((item) =>
@@ -4455,11 +4676,13 @@ function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
         && weaponUpgradeValue(agent, item.weapon) > 0
         && (!criticalObjective
           || defenseRetakeWeaponPickupIsSafe(game, agent, item)
-          || aiClassicCanDelayObjectiveForWeapon(game, agent, item)))
+          || aiClassicCanDelayObjectiveForWeapon(game, agent, item)
+          || aiLastActionWeaponBeforeSpikeIsSafe(game, agent)))
       .map((item) => ({ agent, item, upgrade: weaponUpgradeValue(agent, item.weapon) })))
     .sort((a, b) => (b.agent.weapon === "classic" ? 1 : 0) - (a.agent.weapon === "classic" ? 1 : 0) || b.upgrade - a.upgrade)[0];
   if (!candidates) return false;
   const { agent, item } = candidates;
+  const armedBeforeSpike = aiLastActionWeaponBeforeSpikeIsSafe(game, agent);
   const priorWeapon = agent.weapon;
   game.droppedWeapons = game.droppedWeapons.filter((dropped) => dropped.id !== item.id);
   game.aiRecoveryOrders = game.aiRecoveryOrders.filter((order) => order.objectiveId !== item.id);
@@ -4468,7 +4691,7 @@ function aiPickupWeaponAtCurrentRegion(game: GameState, side: Side) {
   }
   agent.weapon = item.weapon;
   agent.extraActions -= 1;
-  addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}이 확인된 ${WEAPONS[item.weapon].name}을 주워 ${WEAPONS[priorWeapon].name}과 교체했습니다.`);
+  addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}이 확인된 ${WEAPONS[item.weapon].name}을 주워 ${WEAPONS[priorWeapon].name}과 교체했습니다${armedBeforeSpike ? " · 마지막 행동이라 설치 시점을 늦추지 않고 다음 턴에 스파이크를 회수합니다" : ""}.`);
   addAnalyticsEvent(game, side, "objective", `${agent.name} 총기 회수 · ${WEAPONS[item.weapon].name}`);
   return true;
 }
@@ -4608,6 +4831,20 @@ function aiVisibleAdjacentEnemies(game: GameState, agent: Agent) {
     if (!enemy.alive || distance(agent.region, enemy.region) !== 1) return false;
     return !isWaitPathSmokeBlocked(game, agent.region, enemy.region) || agent.detected || enemy.detected;
   });
+}
+
+function aiWaitDirectionsMatch(current: number[], next: number[]) {
+  return current.length === next.length && current.every((region) => next.includes(region));
+}
+
+function aiStationaryBasicWaitIsRedundant(game: GameState, agent: Agent, destination: number) {
+  if (destination !== agent.region || !agent.waitDirs.length) return false;
+  const visibleAdjacentEnemies = aiVisibleAdjacentEnemies(game, agent);
+  if (visibleAdjacentEnemies.length && visibleAdjacentEnemies.every((enemy) => agent.waitDirs.includes(enemy.region))) return true;
+  const preferred = aiPostplantWaitDirection(game, agent)
+    ?? aiSafeStrategicWaitDirections(game, agent)[0]
+    ?? aiStrategicWaitDirections(game, agent, 1)[0];
+  return preferred !== undefined && agent.waitDirs.includes(preferred);
 }
 
 function aiPostplantWaitDirection(game: GameState, agent: Agent) {
@@ -5143,6 +5380,7 @@ function updateAttackLurkerPlan(game: GameState) {
 function adaptAttackPlan(game: GameState) {
   const plan = game.attackPlan;
   if (attackPlanPhase(game) === "postplant") return;
+  if (attackForcedPlantMode(game)) return;
   if (attackOperatorBreachActive(game)) return;
   const occupiedSite = (["A", "B"] as const).find((site) => attackSiteSituation(game, site).alliesOnSite.length > 0);
   if (occupiedSite) {
@@ -5258,6 +5496,30 @@ function aiAttackDestination(game: GameState, agent: Agent, targets: number[]) {
   if (destination === null) return null;
   if (phase !== "execute" && phase !== "postplant" && routeDistance(destination) > routeDistance(agent.region)) return null;
   return destination;
+}
+
+function aiForcedPlantCarrierDestination(game: GameState, agent: Agent, targets: number[]) {
+  const forcedCarrier = agent.team === "attack"
+    && game.spike.status === "carried"
+    && game.spike.carrierId === agent.id
+    && attackForcedPlantMode(game);
+  if (!forcedCarrier || !targets.length) return null;
+
+  const siteRegions = SITE_REGIONS[game.attackPlan.targetSite];
+  const siteDistance = (region: number) => Math.min(...siteRegions.map((siteRegion) => distance(region, siteRegion)));
+  const currentDistance = siteDistance(agent.region);
+  if (currentDistance === 0) return targets.includes(agent.region) ? agent.region : null;
+
+  const destination = targets
+    .filter((region) => siteDistance(region) < currentDistance)
+    .map((region) => ({
+      region,
+      distance: siteDistance(region),
+      danger: knownThreatScoreAtRegion(game, agent.team, region),
+      occupied: game.teams.attack.agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === region).length,
+    }))
+    .sort((a, b) => a.distance - b.distance || a.danger - b.danger || a.occupied - b.occupied)[0];
+  return destination?.region ?? null;
 }
 
 function aiRetreatDestination(game: GameState, agent: Agent, options: number[]) {
@@ -5868,6 +6130,54 @@ function aiShortDurationUtilityHasFollowup(game: GameState, side: Side, effectRe
   });
 }
 
+function aiSkillSetupRegions(skillId: string, targetRegion: number) {
+  if (["zero-point", "recon"].includes(skillId)) return [targetRegion, ...(GRAPH.get(targetRegion) ?? [])];
+  if (["leer", "prowler", "kayo-flash", "gravnet", "hawk", "curve", "relay", "flash"].includes(skillId)) return [targetRegion];
+  return [];
+}
+
+function rememberAiSkillSetupIntent(game: GameState, agent: Agent, skillId: string, targetRegion: number) {
+  const card = game.teams[agent.team].hand.find((item) =>
+    item.id === game.selectedCardId
+    && item.used
+    && item.committedAgentId === agent.id);
+  if (!card) return;
+  const regions = [...new Set(aiSkillSetupRegions(skillId, targetRegion))];
+  if (!regions.length) return;
+  card.aiSetupIntent = { skillId, regions, createdTurnSerial: game.turnSerial };
+}
+
+function aiSetupFollowupDestination(game: GameState, agent: Agent, card: ActionCard, targets: number[]) {
+  const intent = card.aiSetupIntent;
+  if (!intent
+    || intent.createdTurnSerial !== game.turnSerial
+    || card.committedAgentId !== agent.id
+    || !targets.length) return null;
+  const objective = aiObjectiveRegion(game, agent.team, agent.region, aiEnemyIntel(game, agent.team));
+  const currentObjectiveDistance = distance(agent.region, objective);
+  const urgentObjective = aiRetreatReentryIsUrgent(game, agent);
+  const destination = targets
+    .filter((region) => region !== agent.region)
+    .filter((region) => {
+      const objectiveDistance = distance(region, objective);
+      if (urgentObjective) return objectiveDistance <= currentObjectiveDistance;
+      return objectiveDistance <= currentObjectiveDistance + 1;
+    })
+    .map((region) => {
+      const setupDistance = Math.min(...intent.regions.map((setupRegion) => distance(region, setupRegion)));
+      const objectiveProgress = currentObjectiveDistance - distance(region, objective);
+      const occupied = game.teams[agent.team].agents.filter((ally) => ally.alive && ally.id !== agent.id && ally.region === region).length;
+      return {
+        region,
+        setupDistance,
+        score: setupDistance * 24 + knownThreatScoreAtRegion(game, agent.team, region) - objectiveProgress * 8 + occupied * 6,
+      };
+    })
+    .filter((candidate) => candidate.setupDistance <= 1)
+    .sort((a, b) => a.score - b.score)[0];
+  return destination?.region ?? null;
+}
+
 function aiPhoenixShouldHoldOwnFire(game: GameState, agent: Agent) {
   return agent.name === "피닉스"
     && agent.hp < AGENT_MAX_HP
@@ -5943,6 +6253,42 @@ function edgeMatches(edge: [number, number], candidates: [number, number][]) {
   return candidates.some(([a, b]) => edgeKey(a, b) === key);
 }
 
+function pathUsesEdge(from: number, to: number, a: number, b: number) {
+  const key = edgeKey(a, b);
+  const path = shortestPath(from, to);
+  return path.slice(0, -1).some((region, index) => edgeKey(region, path[index + 1]) === key);
+}
+
+function pathUsesRegion(from: number, to: number, region: number) {
+  return shortestPath(from, to).slice(1).includes(region);
+}
+
+function aiSmokeEdgeFriendlySightPenalty(game: GameState, agent: Agent, a: number, b: number, objective: number) {
+  const allies = game.teams[agent.team].agents.filter((ally) => ally.alive && ally.id !== agent.id);
+  const waitSightLoss = allies.reduce((total, ally) =>
+    total + ally.waitDirs.filter((waitRegion) => pathUsesEdge(ally.region, waitRegion, a, b)).length, 0);
+  const teamRouteLoss = allies.filter((ally) => pathUsesEdge(ally.region, objective, a, b)).length;
+  const postplantSightLoss = agent.team === "attack"
+    && game.spike.region !== null
+    && ["planted", "half", "defusing"].includes(game.spike.status)
+    ? allies.filter((ally) => pathUsesEdge(ally.region, game.spike.region!, a, b)).length
+    : 0;
+  return waitSightLoss * 10 + teamRouteLoss * 4 + postplantSightLoss * 18;
+}
+
+function aiSmokeRegionFriendlySightPenalty(game: GameState, agent: Agent, region: number, objective: number) {
+  const allies = game.teams[agent.team].agents.filter((ally) => ally.alive && ally.id !== agent.id);
+  const waitSightLoss = allies.reduce((total, ally) =>
+    total + ally.waitDirs.filter((waitRegion) => pathUsesRegion(ally.region, waitRegion, region)).length, 0);
+  const teamRouteLoss = allies.filter((ally) => pathUsesRegion(ally.region, objective, region)).length;
+  const postplantSightLoss = agent.team === "attack"
+    && game.spike.region !== null
+    && ["planted", "half", "defusing"].includes(game.spike.status)
+    ? allies.filter((ally) => pathUsesRegion(ally.region, game.spike.region!, region)).length
+    : 0;
+  return waitSightLoss * 10 + teamRouteLoss * 4 + postplantSightLoss * 18;
+}
+
 // dark blacks out an entire region rather than a connection, so a known
 // blocker's own region is the natural target: it hides them completely and
 // turns their position into an ambush the moment anyone walks in on them.
@@ -5986,11 +6332,12 @@ function aiDarkRegion(game: GameState, agent: Agent, intel: AiEnemyIntel[]): num
         if (enemy.region === region.id) score += 14;
         if (enemy.confidence >= 0.5 && enemy.waitDirs.includes(region.id)) score += 10;
       }
+      score -= aiSmokeRegionFriendlySightPenalty(game, agent, region.id, objective);
       return { region: region.id, score };
     })
     .sort((a, b) => b.score - a.score);
   const best = candidates[0];
-  if (!best || (!intel.length && best.score <= 0)) return null;
+  if (!best || best.score <= 0) return null;
   return best.region;
 }
 
@@ -6061,11 +6408,12 @@ function aiSmokeEdge(game: GameState, agent: Agent, intel: AiEnemyIntel[], unlim
         }
       }
       if (ownPathEdges.has(edgeKey(a, b))) score -= agent.team === "attack" ? 18 : 3;
+      score -= aiSmokeEdgeFriendlySightPenalty(game, agent, a, b, objective);
       return { a, b, score };
     })
     .sort((a, b) => b.score - a.score);
   const best = candidates[0];
-  if (!best || (!intel.length && best.score <= 0)) return null;
+  if (!best || best.score <= 0) return null;
   if (distance(agent.region, best.a) > distance(agent.region, best.b)) return [best.b, best.a];
   return [best.a, best.b];
 }
@@ -6105,6 +6453,7 @@ function aiEntryUtilityRegion(game: GameState, agent: Agent, candidates: number[
 
 function completeAiSkill(game: GameState, agent: Agent, definition: SkillDefinition, fromRegion: number, targetRegion: number) {
   showSkillFx(game, agent, definition.id, definition.name, fromRegion, targetRegion);
+  rememberAiSkillSetupIntent(game, agent, definition.id, targetRegion);
   agent.extraActions = Math.max(0, agent.extraActions - 1);
   agent.skills[definition.id] = Math.max(0, (agent.skills[definition.id] ?? 0) - 1);
   game.analytics[agent.team].skillsUsed += 1;
@@ -6172,12 +6521,13 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
   const plantingReserveCarrierId = side === "attack" && game.spike.status === "carried"
     ? game.spike.carrierId
     : null;
-  for (const agent of game.teams[side].agents.filter((item) => {
-    const reservingPlantAction = item.id === plantingReserveCarrierId
-      && item.extraActions === 1
-      && !!REGIONS.find((region) => region.id === item.region)?.site;
-    return item.alive && item.extraActions > 0 && !isChanneling(game, item) && !isAgentSuppressed(game, item) && !reservingPlantAction;
-  })) {
+  const skillAgents = game.teams[side].agents.filter((item) => {
+      const reservingPlantAction = item.id === plantingReserveCarrierId
+        && item.extraActions === 1
+        && !!REGIONS.find((region) => region.id === item.region)?.site;
+      return item.alive && item.extraActions > 0 && !isChanneling(game, item) && !isAgentSuppressed(game, item) && !reservingPlantAction;
+    });
+  for (const agent of skillAgents) {
     retrieveViperEmitter(game, agent);
     const agentObjective = aiObjectiveRegion(game, side, agent.region, intel);
     const staticObjectivePath = shortestPath(agent.region, agentObjective);
@@ -6303,6 +6653,42 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
     if (soul && (agent.skills["soul-harvest"] ?? 0) > 0) {
       const devourActive = game.statusEffects.some((effect) => effect.targetId === agent.id && effect.kind === "devour");
       const durabilityCap = AGENT_MAX_HP + MAX_ARMOR - agent.armor;
+      const currentThreat = knownThreatScoreAtRegion(game, side, agent.region);
+      const currentObjectiveDistance = distance(agent.region, agentObjective);
+      const dismissTarget = (GRAPH.get(agent.region) ?? [])
+        .filter((region) => canAgentTraverseEdge(game, agent, agent.region, region))
+        .map((region) => {
+          const threat = knownThreatScoreAtRegion(game, side, region);
+          const objectiveDistance = distance(region, agentObjective);
+          return { region, threat, objectiveDistance, score: threat + objectiveDistance * 2 };
+        })
+        .sort((a, b) => a.score - b.score)[0];
+      const immediateDanger = agent.hp + agent.armor <= 2
+        || intel.some((enemy) => enemy.exact && distance(enemy.region, agent.region) <= 1);
+      const urgentObjective = aiRetreatReentryIsUrgent(game, agent);
+      const dismissPreservesObjective = !!dismissTarget
+        && (!urgentObjective || dismissTarget.objectiveDistance <= currentObjectiveDistance);
+      const dismissSafetyGain = dismissTarget ? currentThreat - dismissTarget.threat : -Infinity;
+      const shouldDismissBeforeDevour = dismissPreservesObjective
+        && (dismissSafetyGain >= 8 || immediateDanger && dismissSafetyGain >= 3);
+      const useDismiss = (reason: string) => {
+        if (!applyActionStartFire(game, agent)) return true;
+        const from = agent.region;
+        clearWait(agent);
+        cancelProgress(game, agent);
+        agent.region = dismissTarget!.region;
+        clearTradeTargetOnMovement(game, agent, from, agent.region);
+        showMovementFx(game, agent, [from, agent.region]);
+        game.reynaSoulWindows = game.reynaSoulWindows.filter((window) => window.id !== soul.id);
+        agent.skills["soul-harvest"] = Math.max(0, (agent.skills["soul-harvest"] ?? 0) - 1);
+        agent.extraActions = Math.max(0, agent.extraActions - 1);
+        showSkillFx(game, agent, "soul-harvest", "무시", from, agent.region);
+        game.analytics[side].skillsUsed += 1;
+        addAnalyticsEvent(game, side, "skill", `${agent.name} · 무시`);
+        addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}가 ${reason} 무시로 ${regionName(agent.region)}에 이동했습니다.`);
+        return true;
+      };
+      if (dismissTarget && shouldDismissBeforeDevour) return useDismiss("즉시 위협을 피하려고");
       if (!devourActive && agent.hp < durabilityCap) {
         if (!applyActionStartFire(game, agent)) return true;
         game.reynaSoulWindows = game.reynaSoulWindows.filter((window) => window.id !== soul.id);
@@ -6316,27 +6702,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}가 포식을 시작했습니다.`);
         return true;
       }
-      const dismissTarget = (GRAPH.get(agent.region) ?? [])
-        .filter((region) => canAgentTraverseEdge(game, agent, agent.region, region))
-        .map((region) => ({ region, score: knownThreatScoreAtRegion(game, side, region) + distance(region, agentObjective) * 2 }))
-        .sort((a, b) => a.score - b.score)[0];
-      if (dismissTarget && knownThreatScoreAtRegion(game, side, agent.region) > dismissTarget.score + 4) {
-        if (!applyActionStartFire(game, agent)) return true;
-        const from = agent.region;
-        clearWait(agent);
-        cancelProgress(game, agent);
-        agent.region = dismissTarget.region;
-        clearTradeTargetOnMovement(game, agent, from, agent.region);
-        showMovementFx(game, agent, [from, agent.region]);
-        game.reynaSoulWindows = game.reynaSoulWindows.filter((window) => window.id !== soul.id);
-        agent.skills["soul-harvest"] = Math.max(0, (agent.skills["soul-harvest"] ?? 0) - 1);
-        agent.extraActions = Math.max(0, agent.extraActions - 1);
-        showSkillFx(game, agent, "soul-harvest", "무시", from, agent.region);
-        game.analytics[side].skillsUsed += 1;
-        addAnalyticsEvent(game, side, "skill", `${agent.name} · 무시`);
-        addLog(game, `${SIDE_LABEL[side]} AI · ${agent.name}가 무시로 ${regionName(agent.region)}에 안전하게 이동했습니다.`);
-        return true;
-      }
+      if (dismissTarget && dismissPreservesObjective && dismissSafetyGain > 4) return useDismiss("더 안전한 각을 잡으려고");
     }
 
     const rendezvous = agent.name === "체임버"
@@ -6695,8 +7061,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           finish(destination);
           return true;
         }
+        const priorRegion = aiLastMovementOrigin(game, agent);
         const destination = REGIONS
-          .filter((region) => distance(agent.region, region.id) === 1)
+          .filter((region) => distance(agent.region, region.id) === 1 && region.id !== priorRegion)
           .sort((a, b) => distance(a.id, objective) - distance(b.id, objective))[0]?.id;
         if (destination === undefined || distance(destination, objective) >= distance(agent.region, objective)) continue;
         if (!begin()) return true;
@@ -6997,6 +7364,26 @@ function aiShouldReserveCardExtraForDestination(game: GameState, card: ActionCar
     && game.spike.explosion > (game.spike.status === "planted" ? 2 : 1);
 }
 
+function aiPreCardResolutionPreservesProgress(game: GameState, card: ActionCard, agent: Agent) {
+  const forcedPlantCarrier = agent.team === "attack"
+    && game.spike.status === "carried"
+    && game.spike.carrierId === agent.id
+    && attackForcedPlantMode(game);
+  if (card.kind === "control") {
+    return !forcedPlantCarrier || siteForRegion(agent.region) === game.attackPlan.targetSite;
+  }
+  const legalTargets = cardTargets(game, agent, card)
+    .filter((region) => aiMovementDestinationAcceptable(game, agent, region, card.kind));
+  const targets = aiTargetsWithoutAimlessBacktrack(game, agent, legalTargets);
+  if (forcedPlantCarrier) return aiForcedPlantCarrierDestination(game, agent, targets) !== null;
+  if (card.kind === "basic" && targets.includes(agent.region)) return true;
+  if (!targets.length) return false;
+  if (aiSetupFollowupDestination(game, agent, card, targets) !== null) return true;
+  const objective = aiObjectiveRegion(game, agent.team, agent.region, aiEnemyIntel(game, agent.team));
+  const currentDistance = distance(agent.region, objective);
+  return targets.some((target) => distance(target, objective) <= currentDistance);
+}
+
 function aiPreCardActionPlan(game: GameState, side: Side): AiPreCardActionPlan | null {
   if (game.actionsUsed >= 3
     || game.teams[side].agents.some((agent) => agent.extraActions > 0)
@@ -7008,7 +7395,14 @@ function aiPreCardActionPlan(game: GameState, side: Side): AiPreCardActionPlan |
     for (const agent of game.teams[side].agents) {
       if (!aiCardHasLegalResolution(game, card, agent)) continue;
 
-      const currentWeapon = urgentAttackPostplant ? null : aiCurrentWeaponPickup(game, agent);
+      if (side === "attack" && game.spike.status === "dropped" && game.spike.region === agent.region) {
+        plans.push({ cardId: card.id, agentId: agent.id, kind: "spike", score: 260 });
+        continue;
+      }
+
+      const currentWeapon = urgentAttackPostplant || side === "attack" && attackWeaponRecoveryMustYield(game)
+        ? null
+        : aiCurrentWeaponPickup(game, agent);
       if (currentWeapon) {
         plans.push({
           cardId: card.id,
@@ -7016,11 +7410,6 @@ function aiPreCardActionPlan(game: GameState, side: Side): AiPreCardActionPlan |
           kind: "weapon",
           score: 180 + weaponUpgradeValue(agent, currentWeapon.weapon) * 8 + (agent.weapon === "classic" ? 80 : 0),
         });
-        continue;
-      }
-
-      if (side === "attack" && game.spike.status === "dropped" && game.spike.region === agent.region) {
-        plans.push({ cardId: card.id, agentId: agent.id, kind: "spike", score: 260 });
         continue;
       }
 
@@ -7035,6 +7424,7 @@ function aiPreCardActionPlan(game: GameState, side: Side): AiPreCardActionPlan |
       if (!tryUseAiSkill(simulation, side)) continue;
       const usedSkill = simulation.analytics[side].skillsUsed > skillCountBefore || simulatedAgent.extraActions < extraBefore;
       if (!usedSkill) continue;
+      if (!aiPreCardResolutionPreservesProgress(simulation, simulatedCard, simulatedAgent)) continue;
       const skillId = simulation.lastSkillFx?.skillId;
       const setupBonus = skillId && ["tailwind", "updraft", "gear", "curve", "relay", "flash", "recon", "smoke", "dark", "stim", "fakeout", "hawk", "gatecrash", "poison-cloud", "toxic-screen", "barrier-orb", "leer", "haunt", "prowler", "zero-point", "kayo-flash", "gravnet", "cove", "high-tide"].includes(skillId) ? 35 : 0;
       plans.push({
@@ -9425,6 +9815,7 @@ export default function Home() {
       createdTeamTurn: draft.teamTurns[agent.team],
       expiresTeamTurn: draft.teamTurns[agent.team] + 2,
       plan: tacticalPlan?.tradeFollowup.stronger ? "trade" : tacticalPlan?.flankPlan ? "flank" : tacticalPlan?.utilityDisruption ? "utility" : "regroup",
+      blockerId: opponent?.id,
       blockerRegion: opponent?.region,
       blockerWaitDirs: opponent ? [...opponent.waitDirs] : [],
       flankRegion: tacticalPlan?.flankPlan?.region,
@@ -9841,12 +10232,24 @@ export default function Home() {
     const resolvingCommittedAiCard = !!committedAiCard && !!committedAiAgent?.alive;
     const activeDefenseRetake = side === "defense" && defenseRetakeIsActive(draft);
     const urgentAttackPostplant = side === "attack" && attackPostplantPressure(draft).needsAction;
-    if (!activeDefenseRetake && !(side === "attack" && attackForcedPlantMode(draft)) && !urgentAttackPostplant && aiPickupWeaponAtCurrentRegion(draft, side)) return;
+    const attackWeaponRecoveryBlocked = side === "attack" && attackWeaponRecoveryMustYield(draft);
+    const safeLastActionWeaponBeforeSpike = side === "attack" && draft.teams.attack.agents.some((agent) =>
+      aiLastActionWeaponBeforeSpikeIsSafe(draft, agent)
+      && draft.droppedWeapons.some((item) =>
+        item.region === agent.region
+        && item.knownBy.includes("attack")
+        && weaponUpgradeValue(agent, item.weapon) > 0));
+    if (!activeDefenseRetake
+      && (!attackWeaponRecoveryBlocked || safeLastActionWeaponBeforeSpike)
+      && !urgentAttackPostplant
+      && aiPickupWeaponAtCurrentRegion(draft, side)) return;
     if (side === "defense" && ["planted", "half"].includes(draft.spike.status) && draft.spike.region !== null) {
-      const defuser = draft.teams.defense.agents.find((agent) =>
-        agent.alive
-        && agent.region === draft.spike.region
-        && agent.extraActions > 0);
+      const defuser = draft.teams.defense.agents
+        .filter((agent) => agent.alive && agent.region === draft.spike.region && agent.extraActions > 0)
+        .sort((a, b) =>
+          b.hp + b.armor - (a.hp + a.armor)
+          || weaponTacticalValue(a.weapon) - weaponTacticalValue(b.weapon)
+          || a.id.localeCompare(b.id))[0];
       if (defuser && draft.spike.status === "planted") {
         defuser.extraActions -= 1;
         draft.spike.status = "half";
@@ -9867,11 +10270,12 @@ export default function Home() {
     }
     if (activeDefenseRetake && aiPickupWeaponAtCurrentRegion(draft, side)) return;
     if (side === "attack" && draft.spike.status === "dropped") {
-      const retriever = draft.teams.attack.agents.find((agent) =>
-        agent.alive
-        && agent.region === draft.spike.region
-        && agent.extraActions > 0
-        && !aiCurrentWeaponPickup(draft, agent));
+      const retriever = draft.teams.attack.agents
+        .filter((agent) =>
+          agent.alive
+          && agent.region === draft.spike.region
+          && agent.extraActions > 0)
+        .sort((a, b) => recoveredSpikeCarrierPriority(a) - recoveredSpikeCarrierPriority(b) || a.id.localeCompare(b.id))[0];
       if (retriever) {
         retriever.extraActions -= 1;
         draft.spike.status = "carried";
@@ -9958,7 +10362,7 @@ export default function Home() {
       : { control: 0, basic: 1, follow: 2, peek: 3, entry: 4 };
     const recoveryFrontliners = attackPostplant ? [] : team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && isAiRecoveryFrontlineLeader(draft, agent));
-    const classicWeaponClaimants = forcedPlant || attackPostplant ? [] : team.agents.filter((agent) =>
+    const classicWeaponClaimants = attackWeaponRecoveryBlocked || attackPostplant ? [] : team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && agent.weapon === "classic" && !!aiWeaponPickupObjective(draft, agent));
     const holdSetupAgents = team.agents.filter((agent) =>
       agent.alive && !isChanneling(draft, agent) && (aiSniperNeedsWait(draft, agent) || aiPostplantNeedsWait(draft, agent)));
@@ -10065,9 +10469,16 @@ export default function Home() {
           const holdingPlantSite = agent.id === reservedPlantCarrierId
             && agent.extraActions > 0
             && !!REGIONS.find((region) => region.id === agent.region)?.site;
+          const forcedPlantCarrierNeedsMovement = forcedPlant
+            && agent.id === reservedPlantCarrierId
+            && siteForRegion(agent.region) !== draft.attackPlan.targetSite;
           const holdingOwnFireForHealing = aiPhoenixShouldHoldOwnFire(draft, agent);
           const protectingAftershock = card.kind !== "control" && aiProtectingAftershockChannel(draft, agent);
-          return agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent) && !holdingPlantSite && !holdingOwnFireForHealing && !protectingAftershock;
+          return agent.alive && !isChanneling(draft, agent) && canUseCard(card, agent)
+            && !holdingPlantSite
+            && !(card.kind === "control" && forcedPlantCarrierNeedsMovement)
+            && !holdingOwnFireForHealing
+            && !protectingAftershock;
         })
         .sort((a, b) => cardsUsedByAgent(a) * 20 + rotationRank(a) + strategicBias(a) - (cardsUsedByAgent(b) * 20 + rotationRank(b) + strategicBias(b)));
       for (const agent of candidates) {
@@ -10075,6 +10486,7 @@ export default function Home() {
           if (agent.waitDirs.length >= 2 && aiWaitShouldBePreserved(draft, agent)) continue;
           const directions = aiStrategicWaitDirections(draft, agent, 2);
           if (directions.length < 2) continue;
+          if (aiWaitDirectionsMatch(agent.waitDirs, directions)) continue;
           setWait(draft, agent, directions);
           draft.selectedAgentId = agent.id;
           playCard(draft, card, agent);
@@ -10085,10 +10497,17 @@ export default function Home() {
         const rawTargets = committedAiCard && !safeTargets.length
           ? [...legalTargets].sort((a, b) => knownThreatScoreAtRegion(draft, agent.team, a) - knownThreatScoreAtRegion(draft, agent.team, b))
           : safeTargets;
-        const targets = aiTargetsAfterRetreatMemory(draft, agent, rawTargets);
+        const targets = aiTargetsWithoutAimlessBacktrack(draft, agent, aiTargetsAfterRetreatMemory(draft, agent, rawTargets));
         if (!targets.length) continue;
         const operatorBreach = side === "attack" && attackOperatorBreachActive(draft);
         const contestingPostplant = side === "attack" && attackPostplantMustContest(draft, agent);
+        const forcedPlantCarrier = forcedPlant
+          && draft.spike.status === "carried"
+          && draft.spike.carrierId === agent.id;
+        const forcedPlantCarrierDestination = forcedPlantCarrier
+          ? aiForcedPlantCarrierDestination(draft, agent, targets)
+          : null;
+        if (forcedPlantCarrier && forcedPlantCarrierDestination === null) continue;
         const postplantContestDestination = contestingPostplant
           ? attackPostplantContestDestination(draft, agent, targets)
           : null;
@@ -10099,20 +10518,33 @@ export default function Home() {
           ? aiRecoveryOrderDestination(draft, agent, recoveryObjective, targets)
           : null;
         const tradeDestination = aiTradeFollowupDestination(draft, agent, targets);
+        const setupFollowupDestination = aiSetupFollowupDestination(draft, agent, card, targets);
         const sniperWaitDestination = card.kind === "basic" ? aiSniperWaitDestination(draft, agent, targets) : null;
         const postplantWaitDestination = card.kind === "basic" && !contestingPostplant && aiPostplantNeedsWait(draft, agent) ? agent.region : null;
         if (recoveryDecision?.order && recoveryDecision.destination === null && tradeDestination === null) continue;
         const escortDestination = side === "attack" ? aiSpikeEscortDestination(draft, agent, targets) : null;
-        const weaponDestination = forcedPlant || operatorBreach || contestingPostplant || attackPostplant ? null : aiWeaponDestination(draft, agent, targets);
-        const recoveryEscortDestination = forcedPlant || operatorBreach || contestingPostplant || attackPostplant ? null : aiRecoveryEscortDestination(draft, agent, targets);
+        const weaponDestination = attackWeaponRecoveryBlocked || operatorBreach || contestingPostplant || attackPostplant ? null : aiWeaponDestination(draft, agent, targets);
+        const recoveryEscortDestination = attackWeaponRecoveryBlocked || operatorBreach || contestingPostplant || attackPostplant ? null : aiRecoveryEscortDestination(draft, agent, targets);
         const priorityDestination = agent.weapon === "classic"
           ? weaponDestination ?? escortDestination
           : escortDestination ?? weaponDestination;
-        const safePriorityDestination = postplantContestDestination ?? tradeDestination ?? recoveryDecision?.destination ?? postplantWaitDestination ?? sniperWaitDestination ?? priorityDestination;
+        const safePriorityDestination = postplantContestDestination ?? forcedPlantCarrierDestination ?? tradeDestination ?? recoveryDecision?.destination ?? postplantWaitDestination ?? sniperWaitDestination ?? setupFollowupDestination ?? priorityDestination;
         const tacticalDestination = safePriorityDestination ?? recoveryEscortDestination ?? (side === "attack"
           ? aiAttackDestination(draft, agent, targets)
           : aiDefenseDestination(draft, agent, targets));
         if (tacticalDestination === null || tacticalDestination === undefined) continue;
+        const movementHistory = draft.aiMovementHistories.find((history) =>
+          history.agentId === agent.id && history.objectiveKey === aiMovementObjectiveKey(draft, agent));
+        const scoutReturn = movementHistory?.regions.at(-2) === tacticalDestination
+          && aiScoutReturnHasValue(draft, agent, movementHistory);
+        if (card.kind === "basic" && aiStationaryBasicWaitIsRedundant(draft, agent, tacticalDestination)) {
+          if (!committedAiCard || committedAiCard.id !== card.id) continue;
+          draft.selectedAgentId = agent.id;
+          playCard(draft, card, agent);
+          if (!applyActionStartFire(draft, agent)) return;
+          addLog(draft, `${agent.name}이 선행 추가행동 뒤 기존 대기 방향을 유지합니다.`);
+          return;
+        }
         if (postplantContestDestination !== null && postplantPressure) {
           const reason = postplantPressure.urgency === "final-defuse" ? "최종 해체 차단"
             : postplantPressure.urgency === "half-defuse" ? "반 해체 대응"
@@ -10120,6 +10552,14 @@ export default function Home() {
                 : "스파이크 감시 공백 확인";
           addLog(draft, `공격팀 AI · ${agent.name} ${reason} · ${regionName(tacticalDestination)} 방향으로 확인 및 차단에 나섭니다.`);
           addAnalyticsEvent(draft, "attack", "objective", `${agent.name} · ${reason}`);
+        }
+        if (setupFollowupDestination !== null && tacticalDestination === setupFollowupDestination) {
+          addLog(draft, `${SIDE_LABEL[side]} AI · ${agent.name}가 선행 ${card.aiSetupIntent?.skillId ?? "스킬"} 효과 구역으로 후속 진입합니다.`);
+          addAnalyticsEvent(draft, side, "skill", `${agent.name} · 선행 스킬 후속 진입`);
+        }
+        if (scoutReturn && movementHistory) {
+          addLog(draft, `${SIDE_LABEL[side]} AI · ${agent.name}가 ${movementHistory.scoutedRegions.length}개 구역의 새 시야를 확인하고 ${regionName(tacticalDestination)} 안전 각으로 복귀합니다.`);
+          addAnalyticsEvent(draft, side, "objective", `${agent.name} · 시야 확인 후 안전 복귀`);
         }
         if (recoveryDecision?.order) {
           const order = recoveryDecision.order;
@@ -10239,7 +10679,6 @@ export default function Home() {
   );
   const movementArrivalDelay = movementFx ? Math.max(360, (movementFx.path.length - 2) * 240 + 360) : 0;
   const movementArrivalStyle = { "--move-arrival-delay": `${movementArrivalDelay}ms` } as CSSProperties;
-
   return (
     <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""}`}>
       <AiController game={game} sides={controlledAiSides} paused={spectatorMode && spectatorPaused} speed={spectatorMode ? spectatorSpeed : 1} stepSignal={spectatorStep} presentationLocked={combatApproachActive || combatIntroActive || currentCombatPhase === "outro"} onStep={runAiStep} onEndTurn={endTurn} onCombatAttack={combatAttack} onCombatRetreat={combatRetreat} onCombatAdvance={combatAdvance} onCombatContinue={advanceCombat} onTailwind={tailwindMove} />

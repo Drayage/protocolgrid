@@ -238,7 +238,7 @@ test("Phoenix holds healing fire while Omen teleports only into a covered empty 
   assert.match(page, /function aiPhoenixShouldHoldOwnFire/);
   assert.match(page, /agent\.hp < AGENT_MAX_HP/);
   assert.match(page, /holdingOwnFireForHealing = aiPhoenixShouldHoldOwnFire/);
-  assert.match(page, /!holdingPlantSite && !holdingOwnFireForHealing/);
+  assert.match(page, /!holdingPlantSite[\s\S]{0,180}!holdingOwnFireForHealing/);
   assert.match(page, /const canHoldForHealing = agent\.hp < AGENT_MAX_HP && !aiRetreatReentryIsUrgent/);
   assert.match(page, /function aiShadowStepDestination/);
   assert.match(page, /const exposedEnemies = exactIntel\.filter/);
@@ -428,18 +428,28 @@ test("mid-round AI replans, plants secured sites, and uses utility for entry and
 
 test("attack AI abandons scouting and forces site clear, carrier entry, plant, and cover with two cycles left", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function attackPlantDeadlineTurns/);
+  assert.match(page, /Math\.ceil\(\(pickupTravel \+ siteTravel\) \/ 2\) \+ 1/);
+  assert.match(page, /function attackDroppedSpikeWeaponDelayIsSafe/);
+  assert.match(page, /const plantSlack = remainingCycles - attackPlantDeadlineTurns\(game\)/);
+  assert.match(page, /return plantSlack >= 2/);
+  assert.match(page, /function attackWeaponRecoveryMustYield/);
+  assert.match(page, /game\.spike\.status === "dropped"\) return !attackDroppedSpikeWeaponDelayIsSafe\(game\)/);
   assert.match(page, /function attackForcedPlantMode/);
   assert.match(page, /game\.cycle >= FORCED_EXECUTE_CYCLE/);
+  assert.match(page, /remainingCycles <= attackPlantDeadlineTurns\(game\) \+ 1/);
   assert.match(page, /function enforceAttackForcedPlantPlan/);
+  assert.match(page, /game\.cycle > FORCED_EXECUTE_CYCLE \? game\.attackPlan\.targetSite : evaluatedSite/);
+  assert.match(page, /if \(attackForcedPlantMode\(game\)\) return/);
   assert.match(page, /game\.attackPlan\.formation = "five"/);
   assert.match(page, /사이트 강제 실행 · 사이트 정리 → 운반자 진입 → 즉시 설치 → 설치 보호/);
   assert.match(page, /enforceAttackForcedPlantPlan\(draft\)/);
   assert.match(page, /const urgentAttackPostplant = side === "attack" && attackPostplantPressure\(draft\)\.needsAction/);
-  assert.match(page, /!urgentAttackPostplant && aiPickupWeaponAtCurrentRegion/);
+  assert.match(page, /!urgentAttackPostplant[\s\S]{0,80}aiPickupWeaponAtCurrentRegion/);
   assert.match(page, /sameRegionEnemy && queueCurrentEncounter\(draft, carrier, 3, true, 0, true, "turn-start"\)/);
   assert.match(page, /if \(siteContested && agent\.role === "duelist"/);
   assert.match(page, /if \(agent\.id === carrier\?\.id\) return -100/);
-  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \|\| contestingPostplant \|\| attackPostplant \? null : aiWeaponDestination/);
+  assert.match(page, /const weaponDestination = attackWeaponRecoveryBlocked \|\| operatorBreach \|\| contestingPostplant \|\| attackPostplant \? null : aiWeaponDestination/);
   assert.match(page, /\(forcedPlant && draft\.spike\.status === "carried"\) \|\| operatorBreach/);
 });
 
@@ -447,7 +457,12 @@ test("AI protects spike transport, recovers drops, and converts defense to spike
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /function selectSpikeCarrierId/);
   assert.match(page, /agent\.name !== plan\.lurkerName/);
-  assert.match(page, /roleOrder: Record<Role, number> = \{ controller: 0, initiator: 1, sentinel: 2, duelist: 3 \}/);
+  assert.match(page, /SPIKE_CARRIER_ROLE_ORDER: Record<Role, number> = \{ controller: 0, initiator: 1, sentinel: 2, duelist: 3 \}/);
+  assert.match(page, /function recoveredSpikeCarrierPriority/);
+  assert.match(page, /const sniperPenalty = WEAPONS\[agent\.weapon\]\.type === "sniper" \? 36 : 0/);
+  assert.match(page, /recoveredSpikeCarrierPriority\(a\) - recoveredSpikeCarrierPriority\(b\)/);
+  assert.match(page, /function aiRecoveryInteractionTurns\(game: GameState, kind: AiRecoveryOrder\["objectiveKind"\], objectiveRegion: number\)/);
+  assert.match(page, /siteTravelTurns \+ 1/);
   assert.match(page, /game\.spike\.carrierId === agent\.id\) return attackCoreWaypoints/);
   assert.match(page, /function attackCarrierProtectionActive/);
   assert.match(page, /game\.teams\.attack\.agents\.filter\(\(ally\) => ally\.alive\)\.length >= 3/);
@@ -461,6 +476,10 @@ test("AI protects spike transport, recovers drops, and converts defense to spike
   assert.match(page, /function aiSpikeEscortDestination/);
   assert.match(page, /const escortDestination = side === "attack" \? aiSpikeEscortDestination/);
   assert.match(page, /side === "attack" && draft\.spike\.status === "dropped"/);
+  assert.match(page, /const urgentDroppedSpike = order\.side === "attack"[\s\S]{0,220}!attackDroppedSpikeWeaponDelayIsSafe\(game\)/);
+  assert.match(page, /if \(urgentDroppedSpike && order\.objectiveKind !== "spike"\) return false/);
+  assert.match(page, /function aiRecoveryObjectiveForAgent[\s\S]{0,500}const urgentDroppedSpike[\s\S]{0,260}const existing = aiRecoveryOrderForAgent[\s\S]{0,220}if \(droppedSpikeRegion !== null\)/);
+  assert.match(page, /agent\.region === draft\.spike\.region[\s\S]{0,80}agent\.extraActions > 0\)/);
   assert.match(page, /-40 \+ distance\(agent\.region, draft\.spike\.region\) \* 5/);
   assert.match(page, /draft\.spike\.status !== "dropped" && draft\.cycle <= 2/);
   assert.match(page, /const protectCarrier = draft\.teams\.attack\.agents\.filter\(\(agent\) => agent\.alive\)\.length >= 3/);
@@ -473,8 +492,9 @@ test("AI protects spike transport, recovers drops, and converts defense to spike
   assert.match(page, /guardingDroppedSpike/);
   assert.match(page, /if \(!agent\.alive \|\| agent\.extraActions < 1 \|\| isChanneling\(game, agent\)\) return false/);
   assert.match(page, /item\.alive && item\.extraActions > 0 && !isChanneling\(game, item\)/);
-  assert.match(page, /canUseCard\(card, agent\) && !holdingPlantSite && !holdingOwnFireForHealing/);
+  assert.match(page, /canUseCard\(card, agent\)[\s\S]{0,220}!holdingPlantSite[\s\S]{0,220}!holdingOwnFireForHealing/);
   assert.match(page, /agent\.alive && !isChanneling\(draft, agent\)/);
+  assert.match(page, /b\.hp \+ b\.armor - \(a\.hp \+ a\.armor\)/);
 });
 
 test("AI remembers visible weapon drops and prioritizes upgrades for classic users", async () => {
@@ -497,10 +517,21 @@ test("AI remembers visible weapon drops and prioritizes upgrades for classic use
   assert.match(page, /agent\.weapon === "classic" \? 4 : 7/);
   assert.match(page, /game\.spike\.carrierId === agent\.id/);
   assert.match(page, /function aiPickupWeaponAtCurrentRegion/);
-  assert.match(page, /!urgentAttackPostplant && aiPickupWeaponAtCurrentRegion\(draft, side\)/);
-  assert.match(page, /&& !aiCurrentWeaponPickup\(draft, agent\)/);
-  assert.match(page, /const weaponDestination = forcedPlant \|\| operatorBreach \|\| contestingPostplant \|\| attackPostplant \? null : aiWeaponDestination/);
-  assert.match(page, /const classicWeaponClaimants = forcedPlant \|\| attackPostplant \? \[\] : team\.agents\.filter/);
+  assert.match(page, /!urgentAttackPostplant[\s\S]{0,80}aiPickupWeaponAtCurrentRegion\(draft, side\)/);
+  assert.match(page, /function aiLastActionWeaponBeforeSpikeIsSafe/);
+  assert.match(page, /game\.spike\.region !== agent\.region[\s\S]{0,100}agent\.extraActions < 1[\s\S]{0,80}game\.actionsUsed < 3/);
+  assert.match(page, /const committedCardPending = game\.teams\.attack\.hand\.some/);
+  assert.match(page, /return siteDistance > 2 \|\| attackDroppedSpikeWeaponDelayIsSafe\(game\)/);
+  assert.match(page, /const standingOnDroppedSpike = side === "attack"/);
+  assert.match(page, /!standingOnDroppedSpike \|\| aiLastActionWeaponBeforeSpikeIsSafe\(game, agent\)/);
+  assert.match(page, /const safeLastActionWeaponBeforeSpike = side === "attack"/);
+  assert.match(page, /!attackWeaponRecoveryBlocked \|\| safeLastActionWeaponBeforeSpike/);
+  assert.match(page, /마지막 행동이라 설치 시점을 늦추지 않고 다음 턴에 스파이크를 회수합니다/);
+  assert.match(page, /agent\.team !== "attack" \|\| !attackDroppedSpikeWeaponDelayIsSafe\(game\)/);
+  assert.match(page, /const attackWeaponRecoveryBlocked = side === "attack" && attackWeaponRecoveryMustYield\(draft\)/);
+  assert.doesNotMatch(page, /agent\.extraActions > 0\s*&& !aiCurrentWeaponPickup\(draft, agent\)/);
+  assert.match(page, /const weaponDestination = attackWeaponRecoveryBlocked \|\| operatorBreach \|\| contestingPostplant \|\| attackPostplant \? null : aiWeaponDestination/);
+  assert.match(page, /const classicWeaponClaimants = attackWeaponRecoveryBlocked \|\| attackPostplant \? \[\] : team\.agents\.filter/);
   assert.match(page, /if \(weaponObjective && agent\.weapon === "classic"\) return -48/);
   assert.match(page, /const priorityDestination = agent\.weapon === "classic"/);
   assert.match(page, /className="weapon-drop"/);
@@ -639,9 +670,18 @@ test("AI remembers a conceded entry and only re-enters after applied disruption 
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /interface AiRetreatMemory/);
   assert.match(page, /avoidedRegion: from/);
+  assert.match(page, /blockerId: opponent\?\.id/);
   assert.match(page, /expiresTeamTurn: draft\.teamTurns\[agent\.team\] \+ 2/);
   assert.match(page, /function aiTargetsAfterRetreatMemory/);
   assert.match(page, /!path\.slice\(1\)\.includes\(memory\.avoidedRegion\)/);
+  assert.match(page, /function aiRetreatMemoryBlocker/);
+  assert.match(page, /enemy\.agent\.id === memory\.blockerId && enemy\.confidence >= 0\.35/);
+  assert.match(page, /function aiRetreatBlockerIntelIsFresh/);
+  assert.match(page, /blocker\.region !== memory\.blockerRegion/);
+  assert.match(page, /knowledge\.observedTeamTurn > memory\.createdTeamTurn/);
+  assert.match(page, /function aiRetreatScoutReturnHasValue/);
+  assert.match(page, /preparedReentry \|\| freshBlockerIntel \|\| valuableScoutReturn/);
+  assert.match(page, /distance\(step, blocker\.region\) <= 1[\s\S]{0,100}!isWaitPathSmokeBlocked/);
   assert.match(page, /const blockerDisrupted =/);
   assert.match(page, /const tradeReady = support\.length > blockers\.length && game\.actionsUsed < 3/);
   assert.match(page, /return blockerDisrupted \|\| tradeReady/);
@@ -649,7 +689,7 @@ test("AI remembers a conceded entry and only re-enters after applied disruption 
   assert.match(page, /function aiTradeRelayMemoryForAgent/);
   assert.match(page, /function aiTradeFollowupDestination/);
   assert.match(page, /if \(aiTradeRelayMemoryForAgent\(draft, agent\)\) return -140/);
-  assert.match(page, /const safePriorityDestination = postplantContestDestination \?\? tradeDestination \?\? recoveryDecision\?\.destination/);
+  assert.match(page, /const safePriorityDestination = postplantContestDestination \?\? forcedPlantCarrierDestination \?\? tradeDestination \?\? recoveryDecision\?\.destination/);
   assert.match(page, /if \(aiRetreatReentryIsUrgent\(game, agent\)\) return false/);
   assert.match(page, /shouldAiRetreat\(game, actor, retreatRegion\)/);
 });
@@ -1055,11 +1095,38 @@ test("AI preserves movement intent and aims holds at predicted approach lanes", 
   assert.match(page, /aiMovementHistories: AiMovementHistory\[\]/);
   assert.match(page, /function aiMovementObjectiveKey/);
   assert.match(page, /expiresTeamTurn: game\.teamTurns\[agent\.team\] \+ 2/);
-  assert.match(page, /if \(target === priorRegion\) return 120/);
+  assert.match(page, /history\.objectiveKey === objectiveKey/);
+  assert.match(page, /scoutedRegions: number\[\]/);
+  assert.match(page, /scoutReturnUsedTeamTurn: number \| null/);
+  assert.match(page, /function aiNewSightRegionsFromMove/);
+  assert.match(page, /function aiObservedRegionsWithoutAgent/);
+  assert.match(page, /function aiScoutReturnHasValue/);
+  assert.match(page, /history\.scoutReturnUsedTeamTurn === game\.teamTurns\[agent\.team\]/);
+  assert.match(page, /existing\.scoutReturnUsedTeamTurn !== game\.teamTurns\[agent\.team\]/);
+  assert.match(page, /if \(aiRecoveryOrderForAgent\(game, agent\) \|\| aiTradeRelayMemoryForAgent\(game, agent\)\) return false/);
+  assert.match(page, /agent\.team === "attack" && attackForcedPlantMode\(game\)/);
+  assert.match(page, /agent\.team === "attack" && attackPostplantPressure\(game\)\.needsAction/);
+  assert.match(page, /agent\.team === "defense" && defenseRetakeMustAdvance\(game, agent\)/);
+  assert.match(page, /knownThreatScoreAtRegion\(game, agent\.team, priorRegion\)[\s\S]{0,120}knownThreatScoreAtRegion\(game, agent\.team, agent\.region\) \+ 6/);
+  assert.match(page, /if \(target === priorRegion\) return aiScoutReturnHasValue\(game, agent, history\) \? 18 : 120/);
   assert.match(page, /recordAiMovementHistory\(game, agent, origin\)/);
+  assert.match(page, /function aiTargetsWithoutAimlessBacktrack/);
+  assert.match(page, /item\.updatedTeamTurn === game\.teamTurns\[agent\.team\]/);
+  assert.match(page, /const backtrackAdvancesObjective = urgentRegion !== null/);
+  assert.match(page, /distance\(priorRegion, urgentRegion\) < distance\(agent\.region, urgentRegion\)/);
+  assert.match(page, /newlyConfirmedEnemy \|\| backtrackAdvancesObjective \|\| scoutReturnHasValue/);
+  assert.match(page, /시야를 확인하고 \$\{regionName\(tacticalDestination\)\} 안전 각으로 복귀합니다/);
+  assert.match(page, /targets\.filter\(\(target\) => distance\(target, nextWaypoint\) < currentRejoinDistance\)/);
+  assert.match(page, /aiTargetsWithoutAimlessBacktrack\(draft, agent, aiTargetsAfterRetreatMemory/);
   assert.match(page, /function aiEnemyApproachScore/);
   assert.match(page, /route\.at\(-2\) === region/);
   assert.match(page, /cameFrom && approachScore < 45/);
+  assert.match(page, /function aiStationaryBasicWaitIsRedundant/);
+  assert.match(page, /visibleAdjacentEnemies\.every\(\(enemy\) => agent\.waitDirs\.includes\(enemy\.region\)\)/);
+  assert.match(page, /if \(aiWaitDirectionsMatch\(agent\.waitDirs, directions\)\) continue/);
+  assert.match(page, /card\.kind === "basic" && aiStationaryBasicWaitIsRedundant\(draft, agent, tacticalDestination\)/);
+  assert.match(page, /if \(!committedAiCard \|\| committedAiCard\.id !== card\.id\) continue/);
+  assert.match(page, /선행 추가행동 뒤 기존 대기 방향을 유지합니다/);
   assert.match(page, /if \(aiWaitShouldBePreserved\(draft, agent\)\) return 92/);
   assert.match(page, /aiRecentMovementPenalty\(game, agent, a\)/);
 });
@@ -1103,11 +1170,12 @@ test("postplant AI backs off, watches the objective, and rejects inward idle hol
   assert.match(page, /function attackPostplantMustContest/);
   assert.match(page, /function attackPostplantContestDestination/);
   assert.match(page, /if \(attackPostplantPressure\(game\)\.needsAction\) return null/);
-  assert.match(page, /postplantContestDestination \?\? tradeDestination/);
+  assert.match(page, /postplantContestDestination \?\? forcedPlantCarrierDestination \?\? tradeDestination/);
   assert.match(page, /const recoveryFrontliners = attackPostplant \? \[\] : team\.agents\.filter/);
-  assert.match(page, /const currentWeapon = urgentAttackPostplant \? null : aiCurrentWeaponPickup/);
+  assert.match(page, /const currentWeapon = urgentAttackPostplant \|\| side === "attack" && attackWeaponRecoveryMustYield\(game\)/);
+  assert.match(page, /game\.spike\.status === "dropped" && game\.spike\.region === agent\.region[\s\S]{0,160}kind: "spike"[\s\S]{0,180}const currentWeapon/);
   assert.match(page, /contestingPostplant \|\| attackPostplant[\s\S]{0,60}\? null[\s\S]{0,60}aiRecoveryObjectiveForAgent/);
-  assert.match(page, /const recoveryEscortDestination = forcedPlant \|\| operatorBreach \|\| contestingPostplant \|\| attackPostplant \? null/);
+  assert.match(page, /const recoveryEscortDestination = attackWeaponRecoveryBlocked \|\| operatorBreach \|\| contestingPostplant \|\| attackPostplant \? null/);
   assert.match(page, /retakeLaneCoverage\.length >= Math\.min\(1, alive\.length\)/);
   assert.match(page, /const protectedSpikeRegion = agent\.team === "attack"[\s\S]{0,160}\? game\.spike\.region[\s\S]{0,40}: null/);
   assert.match(page, /region\.id !== protectedSpikeRegion/);
@@ -1133,7 +1201,10 @@ test("basic actions can hold position while AI establishes safe sniper waits and
   assert.match(page, /enemy\.confidence >= 0\.35/);
   assert.match(page, /const blockerDisrupted =/);
   assert.match(page, /const tradeReady = support\.length > blockers\.length && game\.actionsUsed < 3/);
-  assert.doesNotMatch(page, /item\.objectiveKey === aiMovementObjectiveKey\(game, agent\)/);
+  const recentMovementPenaltySource = page.match(
+    /function aiRecentMovementPenalty[\s\S]*?(?=\nfunction aiTargetsWithoutAimlessBacktrack)/,
+  )?.[0] ?? "";
+  assert.doesNotMatch(recentMovementPenaltySource, /item\.objectiveKey === aiMovementObjectiveKey\(game, agent\)/);
   assert.match(css, /\.stationary-basic-action/);
 });
 
@@ -1360,6 +1431,10 @@ test("Reyna Leer persists through every fight in its region while souls enable D
   assert.match(page, /const cap = AGENT_MAX_HP \+ MAX_ARMOR - agent\.armor/);
   assert.match(page, /endDevour\(game, defender, "피해를 받아 회복이 중단됨"\)/);
   assert.match(page, /무시로 .*피해·교전 없이 이동/);
+  assert.match(page, /const shouldDismissBeforeDevour = dismissPreservesObjective/);
+  assert.match(page, /dismissSafetyGain >= 8 \|\| immediateDanger && dismissSafetyGain >= 3/);
+  assert.match(page, /dismissTarget && shouldDismissBeforeDevour\) return useDismiss/);
+  assert.match(page, /!urgentObjective \|\| dismissTarget\.objectiveDistance <= currentObjectiveDistance/);
 });
 
 test("Fade Haunt and Prowler search the first region before applying information priority and clear stale empty intel", async () => {
@@ -1444,4 +1519,39 @@ test("AI has explicit branches for all short expansion utility and requires same
   assert.match(page, /device\.kind === "barrier-mesh" && device\.region === agent\.region/);
   assert.match(page, /const soul = agent\.name === "레이나"/);
   assert.match(page, /const rendezvous = agent\.name === "체임버"/);
+  assert.match(page, /definition\.id === "blast"[\s\S]{0,900}const priorRegion = aiLastMovementOrigin\(game, agent\)/);
+  assert.match(page, /distance\(agent\.region, region\.id\) === 1 && region\.id !== priorRegion/);
+});
+
+test("AI softly follows its committed utility while smoke scoring preserves allied sightlines", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /interface AiCardSetupIntent/);
+  assert.match(page, /function rememberAiSkillSetupIntent/);
+  assert.match(page, /card\.aiSetupIntent = \{ skillId, regions, createdTurnSerial: game\.turnSerial \}/);
+  assert.match(page, /function aiSetupFollowupDestination/);
+  assert.match(page, /if \(urgentObjective\) return objectiveDistance <= currentObjectiveDistance/);
+  assert.match(page, /sniperWaitDestination \?\? setupFollowupDestination \?\? priorityDestination/);
+  assert.match(page, /function aiPreCardResolutionPreservesProgress/);
+  assert.match(page, /if \(card\.kind === "basic" && targets\.includes\(agent\.region\)\) return true/);
+  assert.match(page, /if \(aiSetupFollowupDestination\(game, agent, card, targets\) !== null\) return true/);
+  assert.match(page, /if \(!aiPreCardResolutionPreservesProgress\(simulation, simulatedCard, simulatedAgent\)\) continue/);
+  assert.match(page, /handCard\.aiSetupIntent = undefined/);
+  assert.match(page, /function aiSmokeEdgeFriendlySightPenalty/);
+  assert.match(page, /function aiSmokeRegionFriendlySightPenalty/);
+  assert.match(page, /waitSightLoss \* 10 \+ teamRouteLoss \* 4 \+ postplantSightLoss \* 18/);
+  assert.match(page, /score -= aiSmokeEdgeFriendlySightPenalty/);
+  assert.match(page, /score -= aiSmokeRegionFriendlySightPenalty/);
+  assert.equal((page.match(/if \(!best \|\| best\.score <= 0\) return null;/g) ?? []).length >= 2, true);
+});
+
+test("forced plant carriers ignore utility follow-ups that do not advance onto the site", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function aiForcedPlantCarrierDestination/);
+  assert.match(page, /game\.spike\.carrierId === agent\.id[\s\S]{0,100}attackForcedPlantMode\(game\)/);
+  assert.match(page, /\.filter\(\(region\) => siteDistance\(region\) < currentDistance\)/);
+  assert.match(page, /return !forcedPlantCarrier \|\| siteForRegion\(agent\.region\) === game\.attackPlan\.targetSite/);
+  assert.match(page, /!\(card\.kind === "control" && forcedPlantCarrierNeedsMovement\)/);
+  assert.match(page, /if \(forcedPlantCarrier\) return aiForcedPlantCarrierDestination\(game, agent, targets\) !== null/);
+  assert.match(page, /if \(forcedPlantCarrier && forcedPlantCarrierDestination === null\) continue/);
+  assert.match(page, /postplantContestDestination \?\? forcedPlantCarrierDestination \?\? tradeDestination/);
 });
