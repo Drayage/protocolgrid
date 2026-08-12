@@ -873,6 +873,7 @@ body:not(:has(.title-screen)) .pwa-install-button { display: none; }
 .agent-status-badges .status-gravnet { color: #ffd477; background: #352407; }
 .agent-status-badges .status-vulnerable { color: #ff6680; background: #390912; }
 .agent-status-badges .status-aftershock { color: #ff9b52; background: #371707; }
+.agent-status-badges .status-opening-protected { color: #b9f7ff; background: #0a2932; }
 .agent-status-badges .status-aim-down, .agent-status-badges .status-move-down { color: #ff8798; background: #301017; border-radius: 3px; }
 .unit-token > .agent-status-badges { right: -7px !important; bottom: -7px !important; max-width: 42px; }
 .unit-token > .skill-result-pop { position: absolute; z-index: 20; left: 50%; bottom: calc(100% + 5px); display: flex; gap: 2px; transform: translateX(-50%); pointer-events: none; opacity: 0; animation: skillResultPop 1.15s ease-out var(--skill-result-delay,0ms) both; }

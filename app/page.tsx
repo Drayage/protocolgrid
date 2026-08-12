@@ -2432,13 +2432,16 @@ function finalStats(game: GameState, agent: Agent, ignoreConsumedAttackEffects =
   const base = ROLE_STATS[agent.role];
   const weapon = WEAPONS[agent.weapon];
   const aftershockCharging = game.aftershocks.some((channel) => channel.ownerAgentId === agent.id);
-  const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id && (!ignoreConsumedAttackEffects || !effect.consumeOnAttack));
+  const openingProtected = attackOpeningSkillProtectionActive(game) && agent.team === "attack";
+  const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id
+    && (!openingProtected || effect.owner === agent.team)
+    && (!ignoreConsumedAttackEffects || !effect.consumeOnAttack));
   const timedAimPenalty = timed.reduce((sum, effect) => sum + (effect.aimPenalty ?? 0), 0);
   const timedPriorityPenalty = timed.reduce((sum, effect) => sum + (effect.priorityPenalty ?? 0), 0);
   const timedMovePenalty = timed.reduce((sum, effect) => sum + (effect.movePenalty ?? 0), 0);
   const timedAimBonus = timed.reduce((sum, effect) => sum + (effect.aimBonus ?? 0), 0);
   const timedMoveBonus = timed.reduce((sum, effect) => sum + (effect.moveBonus ?? 0), 0);
-  const leerPenalty = game.leerZones.some((zone) => zone.owner !== agent.team
+  const leerPenalty = !openingProtected && game.leerZones.some((zone) => zone.owner !== agent.team
     && (zone.region === agent.region || agent.waitDirs.includes(zone.region))) ? 3 : 0;
   return {
     aim: Math.max(1, base.aim + weapon.aim - agent.status.aimPenalty - timedAimPenalty - leerPenalty + timedAimBonus),
@@ -2640,23 +2643,40 @@ function cancelProgress(game: GameState, agent: Agent) {
   }
 }
 
+function attackOpeningSkillProtectionActive(game: GameState) {
+  return game.teamTurns.attack < 1;
+}
+
+function hostileOpeningSkillEffectBlocked(game: GameState, owner: Side, target: Agent) {
+  return attackOpeningSkillProtectionActive(game) && owner === "defense" && target.team === "attack";
+}
+
+function addTimedStatusEffect(game: GameState, effect: TimedStatusEffect) {
+  const target = getAgent(game, effect.targetId);
+  if (target && hostileOpeningSkillEffectBlocked(game, effect.owner, target)) return false;
+  game.statusEffects.push(effect);
+  return true;
+}
+
 // Marks an agent detected until their own next team-turn ends, and refreshes
 // (non-stacking) the move-1 debuff that lasts through their first combat
 // after being (re)detected.
 function applyDetection(game: GameState, agent: Agent) {
+  if (hostileOpeningSkillEffectBlocked(game, otherSide(agent.team), agent)) return;
   agent.detected = true;
   agent.detectedExpiresTeamTurn = game.teamTurns[agent.team] + 1;
   game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === "exposed"));
-  game.statusEffects.push({ id: `exposed-${game.turnSerial}-${agent.id}`, owner: otherSide(agent.team), targetId: agent.id, kind: "exposed", movePenalty: 1, consumeOnDefend: true });
+  addTimedStatusEffect(game, { id: `exposed-${game.turnSerial}-${agent.id}`, owner: otherSide(agent.team), targetId: agent.id, kind: "exposed", movePenalty: 1, consumeOnDefend: true });
 }
 
 function applySimpleReveal(game: GameState, agent: Agent, owner: Side, kind: "haunt-reveal" | undefined = undefined) {
+  if (hostileOpeningSkillEffectBlocked(game, owner, agent)) return;
   agent.detected = true;
   const revealExpiry = game.teamTurns[agent.team] + (kind === "haunt-reveal" ? 0 : 1);
   agent.detectedExpiresTeamTurn = Math.max(agent.detectedExpiresTeamTurn ?? 0, revealExpiry);
   if (!kind) return;
   game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === kind));
-  game.statusEffects.push({
+  addTimedStatusEffect(game, {
     id: `${kind}-${game.turnSerial}-${agent.id}`,
     owner,
     targetId: agent.id,
@@ -2677,9 +2697,10 @@ function refreshHauntDetection(game: GameState) {
 }
 
 function applyGravNetDebuff(game: GameState, net: GravNetEffect, agent: Agent) {
+  if (hostileOpeningSkillEffectBlocked(game, net.owner, agent)) return;
   clearWait(agent);
   game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === agent.id && effect.kind === "gravnet"));
-  game.statusEffects.push({
+  addTimedStatusEffect(game, {
     id: `gravnet-${net.id}-${agent.id}`,
     owner: net.owner,
     targetId: agent.id,
@@ -2736,6 +2757,10 @@ function applyDevourHeal(game: GameState, agent: Agent) {
 }
 
 function applyRangedSkillDamage(game: GameState, attacker: Agent, defender: Agent, damage: number, label: string) {
+  if (hostileOpeningSkillEffectBlocked(game, attacker.team, defender)) {
+    addLog(game, `${defender.name} 공격 준비 보호 · ${label} 무효.`);
+    return;
+  }
   if (coveBlocksDamageBetween(game, attacker.region, defender.region)) {
     addLog(game, `${label} — 해만이 ${attacker.name}의 피해를 차단했습니다.`);
     return;
@@ -3667,7 +3692,9 @@ function waitConeViews(game: GameState, context: VisibilityContext): WaitConeVie
 
 function reconArrowWatcher(game: GameState, scanningSide: Side, targetRegion: number) {
   return game.teams[otherSide(scanningSide)].agents
-    .filter((enemy) => enemy.alive && enemy.waitDirs.includes(targetRegion))
+    .filter((enemy) => enemy.alive
+      && !hostileOpeningSkillEffectBlocked(game, scanningSide, enemy)
+      && enemy.waitDirs.includes(targetRegion))
     .sort((a, b) => (a.waitOrders[targetRegion] ?? a.waitStamp) - (b.waitOrders[targetRegion] ?? b.waitStamp))[0] ?? null;
 }
 
@@ -5317,7 +5344,9 @@ function defensePlanWaypoints(game: GameState, agent: Agent) {
 function resolveProwlerSweep(game: GameState, caster: Agent, regions: [number, number]) {
   const memories = game.enemyMemories.filter((memory) => memory.observer === caster.team);
   const candidates = game.teams[otherSide(caster.team)].agents
-    .filter((enemy) => enemy.alive && regions.includes(enemy.region))
+    .filter((enemy) => enemy.alive
+      && !hostileOpeningSkillEffectBlocked(game, caster.team, enemy)
+      && regions.includes(enemy.region))
     .map((enemy) => ({
       enemy,
       informationRank: enemy.detected ? 0 : memories.some((memory) => memory.agentId === enemy.id && regions.includes(memory.region)) ? 1 : 2,
@@ -5341,10 +5370,12 @@ function resolveProwlerSweep(game: GameState, caster: Agent, regions: [number, n
 function applyZeroPoint(game: GameState, caster: Agent, targetRegion: number) {
   const affected = new Set([targetRegion, ...(GRAPH.get(targetRegion) ?? [])]);
   const enemySide = otherSide(caster.team);
-  const targets = game.teams[enemySide].agents.filter((enemy) => enemy.alive && affected.has(enemy.region));
+  const targets = game.teams[enemySide].agents.filter((enemy) => enemy.alive
+    && !hostileOpeningSkillEffectBlocked(game, caster.team, enemy)
+    && affected.has(enemy.region));
   targets.forEach((enemy) => {
     game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === enemy.id && effect.kind === "suppressed"));
-    game.statusEffects.push({
+    addTimedStatusEffect(game, {
       id: `suppressed-${game.turnSerial}-${enemy.id}`,
       owner: caster.team,
       targetId: enemy.id,
@@ -6245,6 +6276,21 @@ function aiSkillRegions(agent: Agent, target: SkillTarget) {
     .map((region) => region.id);
 }
 
+const DEFENSE_OPENING_SETUP_SKILLS = new Set([
+  "trip", "camera", "turret", "alarm", "haunt", "rendezvous",
+  "poison-cloud", "toxic-screen", "barrier-mesh", "barrier-orb", "gatecrash",
+  "smoke", "dark", "cove", "high-tide",
+  "updraft", "gear", "blast", "shadow",
+]);
+
+function defenseOpeningPreparationActive(game: GameState, side: Side = game.turnSide) {
+  return side === "defense" && attackOpeningSkillProtectionActive(game);
+}
+
+function skillAllowedDuringDefenseOpening(game: GameState, side: Side, skillId: string) {
+  return !defenseOpeningPreparationActive(game, side) || DEFENSE_OPENING_SETUP_SKILLS.has(skillId);
+}
+
 interface AiInformationGain {
   score: number;
   newRegions: number;
@@ -7042,7 +7088,10 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
     }
 
     const camera = agent.name === "사이퍼" ? game.deployables.find((item) => item.kind === "camera" && item.owner === side && item.ownerAgentId === agent.id && !isDeployableDisabled(game, item)) : null;
-    const cameraTarget = camera ? game.teams[otherSide(side)].agents.find((enemy) => enemy.alive && !enemy.detected && [camera.region, ...(GRAPH.get(camera.region) ?? [])].includes(enemy.region)) : null;
+    const cameraTarget = camera ? game.teams[otherSide(side)].agents.find((enemy) => enemy.alive
+      && !enemy.detected
+      && !hostileOpeningSkillEffectBlocked(game, side, enemy)
+      && [camera.region, ...(GRAPH.get(camera.region) ?? [])].includes(enemy.region)) : null;
     if (cameraTarget) {
       if (!applyActionStartFire(game, agent)) return true;
       applyDetection(game, cameraTarget);
@@ -7132,6 +7181,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       .filter((definition) => (agent.skills[definition.id] ?? 0) > 0)
       .sort((a, b) => aiSkillPriority(game, side, a.id) - aiSkillPriority(game, side, b.id));
     for (const definition of definitions) {
+      if (!skillAllowedDuringDefenseOpening(game, side, definition.id)) continue;
       if (!attackAiSkillWindowOpen(game, agent, definition.id, intel, recoveryBlockerIds)) continue;
       const needsFollowupTeamAction = ["tailwind", "updraft", "gear", "curve", "relay", "flash", "recon", "smoke", "dark", "stim", "fakeout", "hawk", "gatecrash", "poison-cloud", "toxic-screen", "barrier-orb", "leer", "prowler", "kayo-flash", "zero-point", "gravnet", "cove", "high-tide"].includes(definition.id);
       const hasCommittedFollowup = game.teams[side].hand.some((card) =>
@@ -7252,7 +7302,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.teams[otherSide(side)].agents
           .filter((enemy) => enemy.alive && (enemy.region === target.region || enemy.waitDirs.includes(target.region)))
-          .forEach((enemy) => game.statusEffects.push({ id: `ai-kayo-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 }));
+          .forEach((enemy) => addTimedStatusEffect(game, { id: `ai-kayo-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 }));
         finish(target.region);
         return true;
       }
@@ -7428,8 +7478,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         } else {
           game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && [first, second].includes(enemy.region)).forEach((enemy) => {
             game.statusEffects = game.statusEffects.filter((effect) => !(effect.targetId === enemy.id && effect.kind === "hawk-blind"));
-            game.statusEffects.push({ id: `ai-hawk-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "hawk-blind", aimPenalty: 3 });
-            enemy.detected = true;
+            if (addTimedStatusEffect(game, { id: `ai-hawk-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "hawk-blind", aimPenalty: 3 })) enemy.detected = true;
           });
         }
         const reached = firstWatcher ? [first] : [first, second];
@@ -7512,6 +7561,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!target?.score) continue;
         if (!begin()) return true;
         game.teams[otherSide(side)].agents.filter((enemy) => enemy.alive && enemy.region === target.region).forEach((enemy) => {
+          if (hostileOpeningSkillEffectBlocked(game, side, enemy)) return;
           clearWait(enemy);
           applyRangedSkillDamage(game, agent, enemy, SKILL_DAMAGE.paint, "페인트탄");
         });
@@ -7521,7 +7571,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "blast") {
-        const targetIntel = exactIntel.find((item) => item.agent.detected && currentAndAdjacent.includes(item.region));
+        const targetIntel = exactIntel.find((item) => item.agent.detected
+          && !hostileOpeningSkillEffectBlocked(game, side, item.agent)
+          && currentAndAdjacent.includes(item.region));
         if (targetIntel) {
           const destination = [...(GRAPH.get(targetIntel.agent.region) ?? [])].sort((a, b) => distance(b, objective) - distance(a, objective))[0];
           if (destination === undefined) continue;
@@ -7555,7 +7607,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.teams[otherSide(side)].agents
           .filter((enemy) => enemy.alive && (enemy.region === target.region || enemy.waitDirs.includes(target.region)))
-          .forEach((enemy) => game.statusEffects.push({ id: `ai-curve-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 }));
+          .forEach((enemy) => addTimedStatusEffect(game, { id: `ai-curve-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 }));
         finish(target.region);
         return true;
       }
@@ -7587,7 +7639,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!target || !target.targets.length) continue;
         if (!begin()) return true;
         target.targets.forEach(({ agent: enemy }) => {
-          if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) game.statusEffects.push({ id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "concussed", priorityPenalty: 1, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 });
+          if (!game.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) addTimedStatusEffect(game, { id: `ai-relay-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "concussed", priorityPenalty: 1, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 1 });
         });
         finish(target.region);
         return true;
@@ -7626,7 +7678,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (!begin()) return true;
         game.teams[otherSide(side)].agents
           .filter((enemy) => enemy.alive && enemy.region === target.region)
-          .forEach((enemy) => game.statusEffects.push({ id: `ai-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
+          .forEach((enemy) => addTimedStatusEffect(game, { id: `ai-flash-${game.turnSerial}-${enemy.id}`, owner: side, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
         finish(target.region);
         return true;
       }
@@ -7751,14 +7803,32 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         const objective = aiObjectiveRegion(game, side, agent.region, intel);
         const target = aiSkillRegions(agent, "adjacent")
           .filter((region) => !game.stims.some((stim) => stim.owner === side && stim.region === region))
-          .map((region) => ({
-            region,
-            alliesHere: game.teams[side].agents.filter((ally) => ally.alive && ally.region === region).length,
-            nearEnemy: intel.some((item) => distance(region, item.region) <= 1),
-            progress: distance(agent.region, objective) - distance(region, objective),
-          }))
-          .filter((candidate) => candidate.alliesHere >= 2 || candidate.nearEnemy)
-          .sort((a, b) => (b.alliesHere * 3 + (b.nearEnemy ? 2 : 0) + b.progress) - (a.alliesHere * 3 + (a.nearEnemy ? 2 : 0) + a.progress))[0];
+          .map((region) => {
+            const allies = game.teams[side].agents.filter((ally) => ally.alive && ally.region === region);
+            const nearEnemy = intel.some((item) => item.confidence >= 0.5 && distance(region, item.region) <= 1);
+            const forwardDepth = side === "defense" ? Math.min(4, distance(region, DEFENSE_SPAWN_REGION)) : 0;
+            const forwardApproach = side === "defense" && ([...SITE_APPROACH_REGIONS.A, ...SITE_APPROACH_REGIONS.B] as number[]).includes(region);
+            const activeHold = side === "defense" ? allies.filter((ally) => ally.waitDirs.length > 0).length : 0;
+            const threatenedForward = side === "defense" && !!credibleDefenseControlThreatSite(game)
+              && tacticalRegionsForSite(credibleDefenseControlThreatSite(game)!).has(region);
+            const contactScore = (nearEnemy ? 14 : 0)
+              + forwardDepth * 3
+              + (forwardApproach ? 8 : 0)
+              + activeHold * 5
+              + (threatenedForward ? 8 : 0)
+              + (region === DEFENSE_SPAWN_REGION ? -30 : 0);
+            return {
+              region,
+              alliesHere: allies.length,
+              nearEnemy,
+              contactScore,
+              progress: distance(agent.region, objective) - distance(region, objective),
+            };
+          })
+          .filter((candidate) => side === "defense"
+            ? candidate.alliesHere > 0 && candidate.contactScore >= 8
+            : candidate.alliesHere >= 2 || candidate.nearEnemy)
+          .sort((a, b) => (b.alliesHere * 3 + b.contactScore + b.progress) - (a.alliesHere * 3 + a.contactScore + a.progress))[0];
         if (!target) continue;
         if (!begin()) return true;
         game.stims.push({ id: `ai-stim-${game.turnSerial}-${target.region}`, owner: side, region: target.region, expiresOwnerTurn: game.teamTurns[side] + 2, expiresOn: "owner-start" });
@@ -8140,6 +8210,7 @@ function AgentStatusBadges({ game, agent, compact = false }: { game: GameState; 
   const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id);
   const leerAffected = game.leerZones.some((zone) => zone.owner !== agent.team && (zone.region === agent.region || agent.waitDirs.includes(zone.region)));
   const badges = [
+    attackOpeningSkillProtectionActive(game) && agent.team === "attack" ? { key: "opening-protected", icon: "◇", label: "공격 준비 보호 · 적대 스킬 효과 무효" } : null,
     timed.some((effect) => effect.kind === "blind" || (effect.aimPenalty ?? 0) >= 3) || leerAffected ? { key: "blind", icon: "✦", label: leerAffected ? "눈총 · 구역 내 모든 공격 에임 -3" : "실명 · 다음 공격 에임 감소" } : null,
     timed.some((effect) => effect.kind === "concussed" || (effect.priorityPenalty ?? 0) > 0) ? { key: "concussed", icon: "⌁", label: "충격 · 공격 우선도 지연" } : null,
     agent.detected ? { key: "detected", icon: "◎", label: "탐지됨" } : null,
@@ -9580,8 +9651,10 @@ export default function Home() {
           applyZeroPoint(draft, agent, region);
           break;
         case "kayo-flash": {
-          const targets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && (enemy.region === region || enemy.waitDirs.includes(region)));
-          targets.forEach((enemy) => draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 }));
+          const targets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive
+            && !hostileOpeningSkillEffectBlocked(draft, agent.team, enemy)
+            && (enemy.region === region || enemy.waitDirs.includes(region)));
+          targets.forEach((enemy) => addTimedStatusEffect(draft, { id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 }));
           addLog(draft, `플래시/드라이브가 ${regionName(region)} 내부와 해당 구역 대기 적 ${targets.length}명에게 적용됐습니다.`);
           break;
         }
@@ -9615,14 +9688,17 @@ export default function Home() {
           break;
         }
         case "paint":
-          enemies.forEach((enemy) => { clearWait(enemy); applyRangedSkillDamage(draft, agent, enemy, SKILL_DAMAGE.paint, "페인트탄"); });
+          enemies.filter((enemy) => !hostileOpeningSkillEffectBlocked(draft, agent.team, enemy))
+            .forEach((enemy) => { clearWait(enemy); applyRangedSkillDamage(draft, agent, enemy, SKILL_DAMAGE.paint, "페인트탄"); });
           draft.deployables = draft.deployables.filter((item) => item.region !== region || item.owner === agent.team || item.kind === "poison-emitter");
           break;
         case "blast": {
           if (!targeting.targetAgentId) {
             const candidates = [
               ...draft.teams[agent.team].agents.filter((candidate) => candidate.alive && candidate.region === region),
-              ...draft.teams[otherSide(agent.team)].agents.filter((candidate) => candidate.alive && candidate.region === region && candidate.detected),
+              ...draft.teams[otherSide(agent.team)].agents.filter((candidate) => candidate.alive
+                && !hostileOpeningSkillEffectBlocked(draft, agent.team, candidate)
+                && candidate.region === region && candidate.detected),
             ];
             if (!candidates.length) return;
             if (candidates.length === 1) targeting.targetAgentId = candidates[0].id;
@@ -9638,13 +9714,15 @@ export default function Home() {
           break;
         }
         case "curve": {
-          const curveTargets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && (enemy.region === region || enemy.waitDirs.includes(region)));
-          curveTargets.forEach((enemy) => draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 }));
+          const curveTargets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive
+            && !hostileOpeningSkillEffectBlocked(draft, agent.team, enemy)
+            && (enemy.region === region || enemy.waitDirs.includes(region)));
+          curveTargets.forEach((enemy) => addTimedStatusEffect(draft, { id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 }));
           addLog(draft, `커브볼이 ${regionName(region)} 내부와 해당 구역을 대기 중인 적 ${curveTargets.length}명에게 적용됐습니다.`);
           break;
         }
         case "flash":
-          enemies.forEach((enemy) => draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
+          enemies.forEach((enemy) => addTimedStatusEffect(draft, { id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "blind", aimPenalty: 3, consumeOnAttack: true }));
           break;
         case "hot":
           draft.fires.push({ id: deployableId(), owner: agent.team, ownerAgentId: agent.id, region, expiresOwnerTurn: draft.teamTurns[agent.team] + 1, expiresOn: "owner-start" });
@@ -9660,7 +9738,7 @@ export default function Home() {
         }
         case "relay":
           enemies.forEach((enemy) => {
-            if (!draft.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "concussed", priorityPenalty: 1, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 });
+            if (!draft.statusEffects.some((effect) => effect.targetId === enemy.id && effect.priorityPenalty)) addTimedStatusEffect(draft, { id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "concussed", priorityPenalty: 1, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 1 });
           });
           break;
         case "trip":
@@ -9695,11 +9773,12 @@ export default function Home() {
             addLog(draft, `${waitingEnemy.name}이 인도하는 매를 파괴했습니다. 위치 ${regionName(waitingEnemy.region)} / 총기 ${WEAPONS[waitingEnemy.weapon].name} 확인.`);
           } else {
             const swept = new Set([first, region]);
-            const targets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive && swept.has(enemy.region));
+            const targets = draft.teams[otherSide(agent.team)].agents.filter((enemy) => enemy.alive
+              && !hostileOpeningSkillEffectBlocked(draft, agent.team, enemy)
+              && swept.has(enemy.region));
             targets.forEach((enemy) => {
               draft.statusEffects = draft.statusEffects.filter((effect) => !(effect.targetId === enemy.id && effect.kind === "hawk-blind"));
-              draft.statusEffects.push({ id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "hawk-blind", aimPenalty: 3 });
-              enemy.detected = true;
+              if (addTimedStatusEffect(draft, { id: `${deployableId()}-${enemy.id}`, owner: agent.team, targetId: enemy.id, kind: "hawk-blind", aimPenalty: 3 })) enemy.detected = true;
             });
             addLog(draft, `인도하는 매가 ${regionName(first)}와 ${regionName(region)}의 적 ${targets.length}명을 턴 종료까지 탐지·에임 -3으로 만들었습니다.`);
           }
@@ -9794,6 +9873,7 @@ export default function Home() {
   const activateSkill = (definition: SkillDefinition) => {
     if (!selectedAgent?.alive || selectedAgent.extraActions < 1 || (selectedAgent.skills[definition.id] ?? 0) < 1 || game.pendingContact || game.winner || isAgentSuppressed(game, selectedAgent)) return;
     if (["headhunter", "soul-harvest"].includes(definition.id)) return;
+    if (!skillAllowedDuringDefenseOpening(game, selectedAgent.team, definition.id)) return;
     if (definition.target !== "self") {
       mutate((draft) => {
         const agent = getAgent(draft, selectedAgent.id);
@@ -9867,6 +9947,7 @@ export default function Home() {
     const agent = getAgent(draft, selectedAgent?.id);
     const enemy = getAgent(draft, enemyId);
     if (!agent || agent.name !== "사이퍼" || agent.extraActions < 1 || !enemy?.alive || isAgentSuppressed(draft, agent)) return;
+    if (hostileOpeningSkillEffectBlocked(draft, agent.team, enemy)) return;
     const camera = draft.deployables.find((item) => item.kind === "camera" && item.owner === agent.team);
     if (!camera || isDeployableDisabled(draft, camera) || !new Set([camera.region, ...(GRAPH.get(camera.region) ?? [])]).has(enemy.region)) return;
     if (!applyActionStartFire(draft, agent)) return;
@@ -10058,18 +10139,18 @@ export default function Home() {
         agent.extraActions -= 1;
         showSkillFx(draft, agent, "gatecrash", "관문 충돌", from, agent.region);
         addLog(draft, `${agent.name}이 장벽과 경로를 무시하고 관문으로 순간이동했습니다. 교전 우선도 2.`);
-      }
-      if (type === "poison-cloud") {
-        const emitter = draft.deployables.find((item) => item.id === targetId && item.kind === "poison-emitter" && item.ownerAgentId === agent.id && !item.armed && !isDeployableDisabled(draft, item));
+        }
+        if (type === "poison-cloud") {
+          const emitter = draft.deployables.find((item) => item.id === targetId && item.kind === "poison-emitter" && item.ownerAgentId === agent.id && !item.armed && !isDeployableDisabled(draft, item));
         if (!emitter) return;
         emitter.armed = true;
         draft.smokes.push({ key: `poison-${emitter.id}`, region: emitter.region, owner: agent.team, expiresEnemyTurn: draft.teamTurns[otherSide(agent.team)] + 2, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "poison-cloud" });
         agent.extraActions -= 1;
         showSkillFx(draft, agent, "poison-cloud", "독성 연기", agent.region, emitter.region);
         addLog(draft, `${agent.name}이 ${regionName(emitter.region)}의 독성 연기를 2턴 동안 가동했습니다.`);
-      }
-      if (type === "toxic-screen") {
-        const screen = draft.toxicScreens.find((item) => item.id === targetId && item.ownerAgentId === agent.id && !item.active && !isToxicScreenDisabled(draft, item) && item.readyOwnerTurn <= draft.teamTurns[agent.team]);
+        }
+        if (type === "toxic-screen") {
+          const screen = draft.toxicScreens.find((item) => item.id === targetId && item.ownerAgentId === agent.id && !item.active && !isToxicScreenDisabled(draft, item) && item.readyOwnerTurn <= draft.teamTurns[agent.team]);
         if (!screen) return;
         screen.active = true;
         screen.expiresEnemyTurn = draft.teamTurns[otherSide(agent.team)] + 1;
@@ -10618,7 +10699,7 @@ export default function Home() {
         .filter((ally) => ally.alive && ally.region === attacker.region)
         .forEach((target) => {
           draft.statusEffects = draft.statusEffects.filter((effect) => !(effect.targetId === target.id && effect.kind === "fakeout-blind"));
-          draft.statusEffects.push({ id: `fakeout-blind-${draft.turnSerial}-${target.id}`, owner: attacker.team, targetId: target.id, kind: "fakeout-blind", aimPenalty: 3, consumeOnAttack: true });
+          addTimedStatusEffect(draft, { id: `fakeout-blind-${draft.turnSerial}-${target.id}`, owner: fakeout.owner, targetId: target.id, kind: "fakeout-blind", aimPenalty: 3, consumeOnAttack: true });
         });
       scene.mover.shot = shot;
       scene.moverShotsFired = 1;
@@ -11695,7 +11776,7 @@ export default function Home() {
             {!isAiControlledTurn && selectedAgent && selectedCard?.used && selectedCard.committedAgentId === selectedAgent.id && <div className="committed-card-note"><span>COMMITTED</span><strong>{CARD_DATA[selectedCard.kind].name} 행동을 지도에서 완료하세요.</strong></div>}
             <div className="skills-list">
               {AGENTS[displayedAgent.name].skills.map((item) => (
-                <button key={item.id} disabled={isAiControlledTurn || displayedAgent.extraActions < 1 || (displayedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner || isAgentSuppressed(game, displayedAgent) || ["headhunter", "soul-harvest"].includes(item.id)} onClick={() => activateSkill(item)} title={item.description}>
+                <button key={item.id} disabled={isAiControlledTurn || displayedAgent.extraActions < 1 || (displayedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner || isAgentSuppressed(game, displayedAgent) || !skillAllowedDuringDefenseOpening(game, displayedAgent.team, item.id) || ["headhunter", "soul-harvest"].includes(item.id)} onClick={() => activateSkill(item)} title={!skillAllowedDuringDefenseOpening(game, displayedAgent.team, item.id) ? "수비 준비 턴에는 설치·배치 스킬만 사용할 수 있습니다." : item.description}>
                   <span className={`skill-glyph ${skillArtClass(item.id)}`} aria-label={`${item.name} 아이콘`} /><span><strong>{item.name}</strong><small>{item.description}</small></span><b>×{displayedAgent.skills[item.id] ?? 0}</b>
                 </button>
               ))}
@@ -11709,10 +11790,10 @@ export default function Home() {
                 {selectedAgent.weapon !== "classic" && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("drop")}>{WEAPONS[selectedAgent.weapon].name} 버리기</button>}
                 {selectedAgent.team === "attack" && game.spike.status === "dropped" && game.spike.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike")}>◆ 스파이크 회수</button>}
                 {selectedAgent.team === "attack" && game.spike.status === "carried" && game.spike.carrierId !== selectedAgent.id && spikeCarrier?.region === selectedAgent.region && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("spike-transfer")}>◆ {spikeCarrier.name}에게서 스파이크 넘겨받기</button>}
-                {cameraTargets.map((enemy) => <button key={`cam-${enemy.id}`} disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => cameraDetect(enemy.id)}>◉ 스파이캠 탐지 · {enemy.region}번</button>)}
+                {cameraTargets.map((enemy) => <button key={`cam-${enemy.id}`} disabled={selectedAgent.extraActions < 1 || hostileOpeningSkillEffectBlocked(game, selectedAgent.team, enemy) || !!game.pendingContact} onClick={() => cameraDetect(enemy.id)}>◉ 스파이캠 탐지 · {enemy.region}번</button>)}
                 {friendlyGatecrash && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("gatecrash", friendlyGatecrash.id)}>◎ 관문 충돌 · {friendlyGatecrash.region}번 · 우선도 2</button>}
                 {friendlyEmitter && !friendlyEmitter.armed && <button disabled={selectedAgent.extraActions < 1 || isDeployableDisabled(game, friendlyEmitter) || !!game.pendingContact} onClick={() => quickAction("poison-cloud", friendlyEmitter.id)}>☣ 독성 연기 {isDeployableDisabled(game, friendlyEmitter) ? "제압 정지" : `가동 · ${friendlyEmitter.region}번`}</button>}
-                {friendlyToxicScreen && <button disabled={selectedAgent.extraActions < 1 || friendlyToxicScreen.active || isToxicScreenDisabled(game, friendlyToxicScreen) || friendlyToxicScreen.readyOwnerTurn > game.teamTurns[selectedAgent.team] || !!game.pendingContact} onClick={() => quickAction("toxic-screen", friendlyToxicScreen.id)}>▥ 독성 장막 {isToxicScreenDisabled(game, friendlyToxicScreen) ? "제압 정지" : friendlyToxicScreen.active ? "가동 중" : friendlyToxicScreen.readyOwnerTurn > game.teamTurns[selectedAgent.team] ? "재충전 중" : "가동"}</button>}
+                {friendlyToxicScreen && <button disabled={selectedAgent.extraActions < 1 || friendlyToxicScreen.active || isToxicScreenDisabled(game, friendlyToxicScreen) || friendlyToxicScreen.readyOwnerTurn > game.teamTurns[selectedAgent.team] || !!game.pendingContact} onClick={() => quickAction("toxic-screen", friendlyToxicScreen.id)}>▥ 독성 장막 {isToxicScreenDisabled(game, friendlyToxicScreen) ? "제압 정지" : friendlyToxicScreen.active ? "가동 중" : friendlyToxicScreen.readyOwnerTurn > game.teamTurns[selectedAgent.team] ? `재충전 중 ${friendlyToxicScreen.readyOwnerTurn - game.teamTurns[selectedAgent.team]}턴` : "가동"}</button>}
                 {reynaSoulReady && <button disabled={selectedAgent.extraActions < 1 || isAgentSuppressed(game, selectedAgent) || game.statusEffects.some((effect) => effect.targetId === selectedAgent.id && effect.kind === "devour")} onClick={() => useReynaSoul("devour")}>✦ 포식 · 3턴 회복</button>}
                 {reynaSoulReady && <button disabled={selectedAgent.extraActions < 1 || isAgentSuppressed(game, selectedAgent)} onClick={() => useReynaSoul("dismiss")}>◇ 무시 · 안전 이동</button>}
                 {friendlyRendezvous && <button disabled={selectedAgent.extraActions < 1 || isAgentSuppressed(game, selectedAgent) || isDeployableDisabled(game, friendlyRendezvous) || (friendlyRendezvous.readyOwnerTurn ?? 0) > game.teamTurns[selectedAgent.team] || !!game.pendingContact} onClick={() => quickAction("rendezvous", friendlyRendezvous.id)}>◎ 랑데부 {isDeployableDisabled(game, friendlyRendezvous) ? "제압 정지" : (friendlyRendezvous.readyOwnerTurn ?? 0) > game.teamTurns[selectedAgent.team] ? `재사용 대기 ${(friendlyRendezvous.readyOwnerTurn ?? 0) - game.teamTurns[selectedAgent.team]}턴` : `귀환 · ${friendlyRendezvous.region}번 · 우선도 5`}</button>}

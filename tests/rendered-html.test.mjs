@@ -1029,7 +1029,7 @@ test("revised utility rules resolve tailwind before gunfire and use current sigh
   assert.match(page, /첫 총격 전에 순풍 이동 구역을 선택합니다/);
   assert.match(page, /상대 턴이 끝날 때까지 선택 구역의 적과 그 구역을 대기 중인 적/);
   assert.match(page, /function reconArrowWatcher/);
-  assert.match(page, /enemy\.alive && enemy\.waitDirs\.includes\(targetRegion\)/);
+  assert.match(page, /enemy\.alive[\s\S]{0,160}enemy\.waitDirs\.includes\(targetRegion\)/);
   assert.match(page, /addTrade\(draft, \{ enemyId: waitingEnemy\.id, team: agent\.team, sourceId: agent\.id \}\);[\s\S]{0,100}rememberEnemy\(draft, agent\.team, waitingEnemy\)/);
   assert.match(page, /case "shock":[\s\S]{0,160}enemies\.forEach\(\(enemy\) => applyRangedSkillDamage\(draft, agent, enemy, SKILL_DAMAGE\.shock \+ \(enemy\.detected \? 1 : 0\), "충격 화살"\)\)/);
   assert.match(page, /draft\.deployables = draft\.deployables\.filter\(\(item\) => item\.region !== region \|\| item\.owner === agent\.team \|\| item\.kind === "poison-emitter"\);/);
@@ -1665,7 +1665,7 @@ test("Harbor edge water blocks ranged damage while High Tide interrupts a whole 
   ]);
   assert.match(page, /function coveBlocksDamageBetween/);
   assert.match(page, /sourceSkill === "cove"/);
-  assert.match(page, /function applyRangedSkillDamage[\s\S]{0,180}coveBlocksDamageBetween/);
+  assert.match(page, /function applyRangedSkillDamage[\s\S]{0,420}coveBlocksDamageBetween/);
   assert.match(page, /blockedByCove\?: boolean/);
   assert.match(page, /const highTide = game\.smokes\.some/);
   assert.match(page, /if \(!agent\.status\.highTideSlowed\)/);
@@ -1710,6 +1710,36 @@ test("AI information utility scans beyond allied sight and maximizes the whole f
   assert.match(page, /const scanned = new Set\(\[region, \.\.\.\(GRAPH\.get\(region\) \?\? \[\]\)\]\)/);
   assert.match(page, /const affected = new Set\(\[region, \.\.\.\(GRAPH\.get\(region\) \?\? \[\]\)\]\)/);
   assert.match(page, /const swept = \[first, second\] as \[number, number\]/);
+});
+
+test("opening defense is a setup phase while attackers ignore hostile skill effects until their first turn", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /function attackOpeningSkillProtectionActive[\s\S]{0,120}game\.teamTurns\.attack < 1/);
+  assert.match(page, /function hostileOpeningSkillEffectBlocked[\s\S]{0,180}owner === "defense" && target\.team === "attack"/);
+  assert.match(page, /function addTimedStatusEffect[\s\S]{0,220}hostileOpeningSkillEffectBlocked/);
+  assert.match(page, /function applyRangedSkillDamage[\s\S]{0,180}hostileOpeningSkillEffectBlocked/);
+  assert.match(page, /function applyDetection[\s\S]{0,140}hostileOpeningSkillEffectBlocked/);
+  assert.match(page, /const DEFENSE_OPENING_SETUP_SKILLS = new Set/);
+  for (const skillId of ["trip", "camera", "turret", "alarm", "haunt", "rendezvous", "poison-cloud", "toxic-screen", "barrier-mesh", "barrier-orb", "gatecrash", "smoke", "dark", "cove", "high-tide"]) {
+    assert.match(page, new RegExp(`DEFENSE_OPENING_SETUP_SKILLS[\\s\\S]{0,420}"${skillId}"`), `${skillId} should remain usable for setup`);
+  }
+  assert.match(page, /for \(const definition of definitions\) \{[\s\S]{0,160}skillAllowedDuringDefenseOpening/);
+  assert.match(page, /공격 준비 보호 · 적대 스킬 효과 무효/);
+  assert.match(css, /\.agent-status-badges \.status-opening-protected/);
+  assert.doesNotMatch(page, /type === "poison-cloud"[\s\S]{0,100}defenseOpeningPreparationActive/);
+  assert.doesNotMatch(page, /type === "toxic-screen"[\s\S]{0,100}defenseOpeningPreparationActive/);
+});
+
+test("early defense combat buffs favor advanced allies instead of the base stack", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /definition\.id === "stim"[\s\S]{0,1300}forwardDepth/);
+  assert.match(page, /forwardApproach \? 8 : 0/);
+  assert.match(page, /activeHold \* 5/);
+  assert.match(page, /region === DEFENSE_SPAWN_REGION \? -30 : 0/);
+  assert.match(page, /candidate\.alliesHere > 0 && candidate\.contactScore >= 8/);
 });
 
 test("AI softly follows its committed utility while smoke scoring preserves allied sightlines", async () => {
