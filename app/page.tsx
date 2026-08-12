@@ -6245,6 +6245,76 @@ function aiSkillRegions(agent: Agent, target: SkillTarget) {
     .map((region) => region.id);
 }
 
+interface AiInformationGain {
+  score: number;
+  newRegions: number;
+  staleIntelRegions: number;
+  singlyCoveredRegions: number;
+  redundantlyCoveredRegions: number;
+}
+
+function aiTeamSightCoverage(game: GameState, side: Side, region: number) {
+  const agentCoverage = game.teams[side].agents.filter((ally) =>
+    ally.alive
+    && (ally.region === region
+      || (GRAPH.get(ally.region) ?? []).includes(region) && !isSightBlocked(game, ally.region, region))).length;
+  const cameraCoverage = game.deployables.filter((item) =>
+    item.kind === "camera"
+    && item.owner === side
+    && !isDeployableDisabled(game, item)
+    && (item.region === region
+      || (GRAPH.get(item.region) ?? []).includes(region) && !isSightBlocked(game, item.region, region))).length;
+  return agentCoverage + cameraCoverage;
+}
+
+// Information utility is valuable for the area it reveals beyond the team's
+// existing sight, not for repeating a view several allies already hold.
+function aiInformationGain(game: GameState, side: Side, regions: number[], intel: AiEnemyIntel[]): AiInformationGain {
+  const footprint = [...new Set(regions)];
+  const observed = observedRegions(game, side);
+  const coverage = footprint.map((region) => ({
+    region,
+    known: observed.has(region),
+    viewers: aiTeamSightCoverage(game, side, region),
+  }));
+  const newRegions = coverage.filter((item) => !item.known).length;
+  const singlyCoveredRegions = coverage.filter((item) => item.known && item.viewers === 1).length;
+  const redundantlyCoveredRegions = coverage.filter((item) => item.known && item.viewers >= 2).length;
+  const detectedOnlyRegions = coverage.filter((item) => item.known && item.viewers === 0).length;
+  const staleIntelRegions = new Set(intel
+    .filter((enemy) => !enemy.exact && footprint.includes(enemy.region))
+    .map((enemy) => enemy.region)).size;
+  return {
+    newRegions,
+    staleIntelRegions,
+    singlyCoveredRegions,
+    redundantlyCoveredRegions,
+    score: newRegions * 8
+      + staleIntelRegions * 5
+      - singlyCoveredRegions
+      - redundantlyCoveredRegions * 3
+      - detectedOnlyRegions * 2,
+  };
+}
+
+function aiInformationCastWorthwhile(gain: AiInformationGain, tacticalPayoff = 0) {
+  if (tacticalPayoff >= 8) return true;
+  if (!gain.newRegions && !gain.staleIntelRegions) return false;
+  return gain.score + tacticalPayoff >= 4;
+}
+
+function compareAiInformationCandidates(
+  a: { information: AiInformationGain; tacticalPayoff: number; score: number },
+  b: { information: AiInformationGain; tacticalPayoff: number; score: number },
+) {
+  const tacticalBand = Number(b.tacticalPayoff >= 8) - Number(a.tacticalPayoff >= 8);
+  if (tacticalBand) return tacticalBand;
+  return b.information.score - a.information.score
+    || b.information.newRegions - a.information.newRegions
+    || b.tacticalPayoff - a.tacticalPayoff
+    || b.score - a.score;
+}
+
 function aiSkillPriority(game: GameState, side: Side, skillId: string) {
   const spikeActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
   const attackBreach = ["zero-point", "haunt", "prowler", "hawk", "recon", "high-tide", "cove", "toxic-screen", "poison-cloud", "smoke", "dark", "leer", "kayo-flash", "fakeout", "curve", "flash", "gatecrash", "rendezvous", "gravnet", "aftershock", "paint", "shock", "relay", "healing-orb", "regrowth", "tailwind", "updraft", "gear", "blast", "stim", "barrier-mesh", "barrier-orb", "trip", "camera", "turret", "alarm", "hot", "shadow"];
@@ -7107,11 +7177,14 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         if (game.deployables.some((item) => item.kind === "haunt" && item.ownerAgentId === agent.id)) continue;
         const target = aiSkillRegions(agent, "range2").map((region) => {
           const watched = new Set([region, ...(GRAPH.get(region) ?? [])]);
-          const score = intel.filter((enemy) => watched.has(enemy.region)).reduce((sum, enemy) => sum + Math.round(enemy.confidence * 9), 0)
+          const information = aiInformationGain(game, side, [...watched], intel);
+          const hypothesisScore = intel.filter((enemy) => !enemy.exact && watched.has(enemy.region))
+            .reduce((sum, enemy) => sum + Math.round(enemy.confidence * 4), 0);
+          const score = information.score + hypothesisScore
             + Math.max(0, 4 - distance(region, objective));
-          return { region, score };
-        }).sort((a, b) => b.score - a.score)[0];
-        if (!target || target.score <= 1) continue;
+          return { region, information, tacticalPayoff: 0, score };
+        }).sort(compareAiInformationCandidates)[0];
+        if (!target || target.score <= 1 || !aiInformationCastWorthwhile(target.information)) continue;
         if (!begin()) return true;
         game.deployables.push({ id: `ai-haunt-${game.turnSerial}-${agent.id}`, kind: "haunt", owner: side, ownerAgentId: agent.id, region: target.region, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 2 });
         refreshHauntDetection(game);
@@ -7124,12 +7197,19 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           (GRAPH.get(first) ?? []).filter((second) => second !== agent.region).map((second) => {
             const swept = [first, second] as [number, number];
             const targets = intel.filter((enemy) => swept.includes(enemy.region));
-            const score = targets.reduce((sum, enemy) => sum + (enemy.exact ? 10 : Math.round(enemy.confidence * 7)) + (enemy.region === first ? 2 : 0), 0)
+            const information = aiInformationGain(game, side, swept, intel);
+            const tacticalPayoff = targets.reduce((sum, enemy) => sum
+              + (enemy.exact && enemy.waitDirs.length ? 8 : enemy.exact ? 2 : 0)
+              + (recoveryBlockerIds.has(enemy.agent.id) ? 8 : 0), 0);
+            const hypothesisScore = targets.filter((enemy) => !enemy.exact)
+              .reduce((sum, enemy) => sum + Math.round(enemy.confidence * 5) + (enemy.region === first ? 1 : 0), 0);
+            const score = information.score + tacticalPayoff + hypothesisScore
               + Math.max(0, 4 - distance(second, objective));
-            return { swept, score };
+            return { swept, information, tacticalPayoff, score };
           }));
-        const target = routes.sort((a, b) => b.score - a.score)[0];
-        if (!target || target.score <= 1 || !aiShortDurationUtilityHasFollowup(game, side, target.swept)) continue;
+        const target = routes.sort(compareAiInformationCandidates)[0];
+        if (!target || target.score <= 1 || !aiInformationCastWorthwhile(target.information, target.tacticalPayoff)
+          || !aiShortDurationUtilityHasFollowup(game, side, target.swept)) continue;
         if (!begin()) return true;
         const found = resolveProwlerSweep(game, agent, target.swept);
         const reached = found?.region === target.swept[0] ? [target.swept[0]] : target.swept;
@@ -7145,11 +7225,16 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       if (definition.id === "zero-point") {
         const target = aiSkillRegions(agent, "range2").map((region) => {
           const affected = new Set([region, ...(GRAPH.get(region) ?? [])]);
-          const agentScore = intel.filter((enemy) => affected.has(enemy.region)).reduce((sum, enemy) => sum + Math.round(enemy.confidence * 10), 0);
-          const deviceScore = enemyDeployables.filter((item) => affected.has(item.region) && !isDeployableDisabled(game, item)).length * 4;
-          return { region, score: agentScore + deviceScore + Math.max(0, 3 - distance(region, objective)) };
-        }).sort((a, b) => b.score - a.score)[0];
-        if (!target || target.score <= 2 || !aiShortDurationUtilityHasFollowup(game, side, [target.region, ...(GRAPH.get(target.region) ?? [])])) continue;
+          const information = aiInformationGain(game, side, [...affected], intel);
+          const exactTargets = intel.filter((enemy) => enemy.exact && affected.has(enemy.region));
+          const deviceTargets = enemyDeployables.filter((item) => affected.has(item.region) && !isDeployableDisabled(game, item));
+          const tacticalPayoff = exactTargets.length * 10 + deviceTargets.length * 6;
+          const hypothesisScore = intel.filter((enemy) => !enemy.exact && affected.has(enemy.region))
+            .reduce((sum, enemy) => sum + Math.round(enemy.confidence * 4), 0);
+          return { region, information, tacticalPayoff, score: information.score + tacticalPayoff + hypothesisScore + Math.max(0, 3 - distance(region, objective)) };
+        }).sort(compareAiInformationCandidates)[0];
+        if (!target || target.score <= 2 || !aiInformationCastWorthwhile(target.information, target.tacticalPayoff)
+          || !aiShortDurationUtilityHasFollowup(game, side, [target.region, ...(GRAPH.get(target.region) ?? [])])) continue;
         if (!begin()) return true;
         applyZeroPoint(game, agent, target.region);
         finish(target.region);
@@ -7320,15 +7405,20 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "hawk") {
-        const route = shortestPath(agent.region, objective);
-        const first = route[1] ?? (GRAPH.get(agent.region) ?? [])[0];
-        const second = route[2] ?? (first === undefined ? undefined : (GRAPH.get(first) ?? []).find((region) => region !== agent.region));
-        if (first === undefined || second === undefined) continue;
-        const useful = exactIntel.some((enemy) => [first, second].includes(enemy.region) || enemy.agent.waitDirs.some((region) => [first, second].includes(region)))
-          || side === "attack" && attackPlanPhase(game) === "execute"
-          || side === "defense" && defenseRetakeIsActive(game);
-        if (!useful) continue;
-        if (!aiShortDurationUtilityHasFollowup(game, side, [first, second])) continue;
+        const routes = (GRAPH.get(agent.region) ?? []).flatMap((first) =>
+          (GRAPH.get(first) ?? []).filter((second) => second !== agent.region).map((second) => {
+            const swept = [first, second] as [number, number];
+            const information = aiInformationGain(game, side, swept, intel);
+            const blindedTargets = exactIntel.filter((enemy) => swept.includes(enemy.region)).length;
+            const waitingHolds = exactIntel.filter((enemy) => enemy.agent.waitDirs.some((region) => swept.includes(region))).length;
+            const tacticalPayoff = blindedTargets * 8 + waitingHolds * 5;
+            const objectiveProgress = distance(agent.region, objective) - distance(second, objective);
+            return { first, second, swept, information, tacticalPayoff, score: information.score + tacticalPayoff + objectiveProgress * 3 };
+          }));
+        const route = routes.sort(compareAiInformationCandidates)[0];
+        if (!route || !aiInformationCastWorthwhile(route.information, route.tacticalPayoff)
+          || !aiShortDurationUtilityHasFollowup(game, side, route.swept)) continue;
+        const { first, second } = route;
         if (!begin()) return true;
         const firstWatcher = reconArrowWatcher(game, side, first);
         const waitingEnemy = firstWatcher ?? reconArrowWatcher(game, side, second);
@@ -7576,12 +7666,20 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       if (definition.id === "recon") {
         const target = aiSkillRegions(agent, "range2").map((region) => {
           const scanned = new Set([region, ...(GRAPH.get(region) ?? [])]);
-          const score = intel.filter((item) => scanned.has(item.region)).length * 8
-            + intel.filter((item) => scanned.has(item.region) && recoveryBlockerIds.has(item.agent.id)).length * 10
+          const information = aiInformationGain(game, side, [...scanned], intel);
+          const exactTargets = intel.filter((item) => item.exact && scanned.has(item.region));
+          const tacticalPayoff = exactTargets.reduce((score, enemy) => score
+            + (enemy.agent.detected ? 0 : 3)
+            + (enemy.waitDirs.length ? 6 : 0)
+            + (recoveryBlockerIds.has(enemy.agent.id) ? 10 : 0), 0);
+          const hypothesisScore = intel.filter((item) => !item.exact && scanned.has(item.region))
+            .reduce((score, enemy) => score + Math.round(enemy.confidence * 4), 0);
+          const score = information.score + tacticalPayoff + hypothesisScore
             + Math.max(0, 4 - distance(region, objective));
-          return { region, score };
-        }).sort((a, b) => b.score - a.score)[0];
-        if (!target) continue;
+          return { region, information, tacticalPayoff, score };
+        }).sort(compareAiInformationCandidates)[0];
+        if (!target || !aiInformationCastWorthwhile(target.information, target.tacticalPayoff)
+          || side === "attack" && !aiShortDurationUtilityHasFollowup(game, side, [target.region, ...(GRAPH.get(target.region) ?? [])])) continue;
         if (!begin()) return true;
         const waitingEnemy = reconArrowWatcher(game, side, target.region);
         if (waitingEnemy) {

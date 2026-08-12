@@ -1412,7 +1412,7 @@ test("Skye heals nearby allies and sends a two-region hawk with short blind and 
   assert.match(page, /committedCard\?\.committedAgentId/);
   assert.match(page, /else if \(game\.actionsUsed < 3\)/);
   assert.match(page, /destination !== agent\.region/);
-  assert.match(page, /aiShortDurationUtilityHasFollowup\(game, side, \[first, second\]\)/);
+  assert.match(page, /aiShortDurationUtilityHasFollowup\(game, side, route\.swept\)/);
   assert.match(page, /definition\.id === "flash"[\s\S]{0,700}aiShortDurationUtilityHasFollowup\(game, side, \[target\.region\]\)/);
 });
 
@@ -1693,6 +1693,23 @@ test("AI has explicit branches for all short expansion utility and requires same
   assert.match(page, /const rendezvous = agent\.name === "체임버"/);
   assert.match(page, /definition\.id === "blast"[\s\S]{0,900}const priorRegion = aiLastMovementOrigin\(game, agent\)/);
   assert.match(page, /distance\(agent\.region, region\.id\) === 1 && region\.id !== priorRegion/);
+});
+
+test("AI information utility scans beyond allied sight and maximizes the whole footprint even for tactical casts", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function aiTeamSightCoverage/);
+  assert.match(page, /function aiInformationGain/);
+  assert.match(page, /score: newRegions \* 8[\s\S]{0,180}redundantlyCoveredRegions \* 3/);
+  assert.match(page, /function aiInformationCastWorthwhile[\s\S]{0,180}if \(!gain\.newRegions && !gain\.staleIntelRegions\) return false/);
+  assert.match(page, /function compareAiInformationCandidates/);
+  assert.match(page, /const tacticalBand = Number\(b\.tacticalPayoff >= 8\)[\s\S]{0,220}b\.information\.score - a\.information\.score/);
+  for (const skillId of ["haunt", "prowler", "zero-point", "hawk", "recon"]) {
+    assert.match(page, new RegExp(`definition\\.id === "${skillId}"[\\s\\S]{0,1700}aiInformationGain`), `${skillId} must score new information`);
+    assert.match(page, new RegExp(`definition\\.id === "${skillId}"[\\s\\S]{0,2200}compareAiInformationCandidates`), `${skillId} must maximize coverage among valid casts`);
+  }
+  assert.match(page, /const scanned = new Set\(\[region, \.\.\.\(GRAPH\.get\(region\) \?\? \[\]\)\]\)/);
+  assert.match(page, /const affected = new Set\(\[region, \.\.\.\(GRAPH\.get\(region\) \?\? \[\]\)\]\)/);
+  assert.match(page, /const swept = \[first, second\] as \[number, number\]/);
 });
 
 test("AI softly follows its committed utility while smoke scoring preserves allied sightlines", async () => {
