@@ -38,7 +38,8 @@ test("PWA manifest, install prompt, and offline shell honor the deployed base pa
   assert.equal(icon512.readUInt32BE(20), 512);
   assert.match(sourceHtml, /rel="manifest" href="%BASE_URL%manifest\.webmanifest"/);
   assert.match(sourceHtml, /rel="apple-touch-icon" href="%BASE_URL%pwa-icon-192\.png"/);
-  assert.match(html, /rel="manifest" href="\/manifest\.webmanifest"/);
+  const manifestHref = html.match(/rel="manifest" href="([^"]+)"/)?.[1];
+  assert.equal(manifestHref, `${process.env.BASE_PATH ?? "/"}manifest.webmanifest`);
   assert.match(main, /navigator\.serviceWorker\.register\(`\$\{baseUrl\}sw\.js`, \{ scope: baseUrl \}\)/);
   assert.match(main, /beforeinstallprompt/);
   assert.match(main, /className="pwa-install-button"/);
