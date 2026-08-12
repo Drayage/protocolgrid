@@ -731,6 +731,7 @@ const ROLE_LABEL: Record<Role, string> = {
   controller: "전략가",
   sentinel: "감시자",
 };
+const ROLE_ORDER: Role[] = ["duelist", "initiator", "controller", "sentinel"];
 
 const emptyTeamAnalytics = (): TeamAnalytics => ({
   shots: 0,
@@ -7749,6 +7750,31 @@ function deckComposition(names: string[]) {
   return counts;
 }
 
+function shuffledAgents(names: string[]) {
+  const shuffled = [...names];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function createBalancedRandomLineups(): Record<Side, string[]> {
+  const pool = Object.keys(AGENTS);
+  const draw = (role?: Role) => {
+    const candidates = pool.filter((name) => role === undefined || AGENTS[name].role === role);
+    const selected = candidates[Math.floor(Math.random() * candidates.length)];
+    if (!selected) throw new Error(`${role ? ROLE_LABEL[role] : "자유 역할"} 랜덤 후보가 부족합니다.`);
+    pool.splice(pool.indexOf(selected), 1);
+    return selected;
+  };
+  const attack = ROLE_ORDER.map((role) => draw(role));
+  const defense = ROLE_ORDER.map((role) => draw(role));
+  attack.push(draw());
+  defense.push(draw());
+  return { attack: shuffledAgents(attack), defense: shuffledAgents(defense) };
+}
+
 function TitleScreen({ onStart }: { onStart: () => void }) {
   return (
     <main className="setup-screen title-screen">
@@ -8052,6 +8078,7 @@ interface SelectionScreenProps {
   onPickingSide: (side: Side) => void;
   onToggle: (name: string) => void;
   onRecommended: () => void;
+  onBalancedRandom: () => void;
   onBack: () => void;
   onConfirm: () => void;
   playMode: PlayMode;
@@ -8064,10 +8091,11 @@ function SelectionScreen(props: SelectionScreenProps) {
   const current = props.pickingSide === "attack" ? props.attackPick : props.defensePick;
   const attackDeck = deckComposition(props.attackPick);
   const defenseDeck = deckComposition(props.defensePick);
+  const agentNumber = new Map(Object.keys(AGENTS).map((name, index) => [name, index + 1]));
   const deckLine = (counts: Record<CardKind, number>) => (Object.keys(counts) as CardKind[]).filter((kind) => counts[kind] > 0);
   return (
     <main className="setup-screen selection-screen">
-      <header className="setup-topbar"><button onClick={props.onBack}>← 타이틀</button><div><span>STEP 01</span><strong>요원 선택 · 덱 구성</strong></div><button onClick={props.onRecommended}>추천 조합</button></header>
+      <header className="setup-topbar"><button onClick={props.onBack}>← 타이틀</button><div><span>STEP 01</span><strong>요원 선택 · 덱 구성</strong></div><span className="setup-topbar-actions"><button onClick={props.onRecommended}>추천 조합</button><button className="balanced-random" onClick={props.onBalancedRandom}>균형 랜덤</button></span></header>
       <section className="selection-body">
         <div className="selection-main">
           <div className="side-tabs">
@@ -8076,17 +8104,24 @@ function SelectionScreen(props: SelectionScreenProps) {
               return <button key={side} className={`${props.pickingSide === side ? "active" : ""} tab-${side}`} onClick={() => props.onPickingSide(side)}><span>{side === "attack" ? "ATK" : "DEF"}</span><strong>{SIDE_LABEL[side]}</strong><b>{picks.length}/5</b></button>;
             })}
           </div>
-          <div className="selection-heading"><div><span className="eyebrow">SELECT YOUR AGENTS</span><h2>{SIDE_LABEL[props.pickingSide]} 조합</h2></div><p>같은 팀 안에서는 요원이 중복될 수 없습니다. 요원 한 명이 역할에 맞는 행동카드 3장을 제공합니다.</p></div>
-          <div className="agent-select-grid">
-            {Object.values(AGENTS).map((agent, index) => {
-              const picked = current.includes(agent.name);
-              const attackIndex = props.attackPick.indexOf(agent.name);
-              const defenseIndex = props.defensePick.indexOf(agent.name);
-              return <button key={agent.name} className={`select-agent-card role-${agent.role} ${picked ? "picked" : ""}`} onClick={() => props.onToggle(agent.name)}>
-                <span className="select-number">{String(index + 1).padStart(2, "0")}</span><span className={`select-avatar ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} />
-                <span className="select-agent-copy"><small>{ROLE_LABEL[agent.role]}</small><strong>{agent.name}</strong><em>{roleCards(agent.role).map((kind) => CARD_DATA[kind].name).join(" · ")}</em></span>
-                <span className="pick-badges">{attackIndex >= 0 && <i className="atk">A{attackIndex + 1}</i>}{defenseIndex >= 0 && <i className="def">D{defenseIndex + 1}</i>}</span>
-              </button>;
+          <div className="selection-heading"><div><span className="eyebrow">SELECT YOUR AGENTS</span><h2>{SIDE_LABEL[props.pickingSide]} 조합</h2></div><p>수동 선택은 양 진영에 같은 요원을 고를 수 있습니다. 균형 랜덤은 역할군별 1명과 자유 역할 1명으로 구성하며 양 진영이 겹치지 않습니다.</p></div>
+          <div className="agent-role-groups">
+            {ROLE_ORDER.map((role) => {
+              const roleAgents = Object.values(AGENTS).filter((agent) => agent.role === role);
+              const pickedCount = current.filter((name) => AGENTS[name].role === role).length;
+              return <section key={role} className={`agent-role-group role-${role}`}>
+                <header><div><span>{role.toUpperCase()}</span><h3>{ROLE_LABEL[role]}</h3></div><b>{pickedCount}명 선택</b></header>
+                <div className="agent-select-grid">{roleAgents.map((agent) => {
+                  const picked = current.includes(agent.name);
+                  const attackIndex = props.attackPick.indexOf(agent.name);
+                  const defenseIndex = props.defensePick.indexOf(agent.name);
+                  return <button key={agent.name} className={`select-agent-card role-${agent.role} ${picked ? "picked" : ""}`} onClick={() => props.onToggle(agent.name)}>
+                    <span className="select-number">{String(agentNumber.get(agent.name) ?? 0).padStart(2, "0")}</span><span className={`select-avatar ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} />
+                    <span className="select-agent-copy"><small>{ROLE_LABEL[agent.role]}</small><strong>{agent.name}</strong><em>{roleCards(agent.role).map((kind) => CARD_DATA[kind].name).join(" · ")}</em></span>
+                    <span className="pick-badges">{attackIndex >= 0 && <i className="atk">A{attackIndex + 1}</i>}{defenseIndex >= 0 && <i className="def">D{defenseIndex + 1}</i>}</span>
+                  </button>;
+                })}</div>
+              </section>;
             })}
           </div>
         </div>
@@ -8967,6 +9002,12 @@ export default function Home() {
     setDefensePick(["피닉스", "네온", "세이지", "킬조이", "오멘"]);
   };
 
+  const balancedRandomLineups = () => {
+    const lineups = createBalancedRandomLineups();
+    setAttackPick(lineups.attack);
+    setDefensePick(lineups.defense);
+  };
+
   const confirmLineups = () => {
     if (attackPick.length !== 5 || defensePick.length !== 5) return;
     const next = createInitialGame(attackPick, defensePick, Date.now());
@@ -9137,7 +9178,7 @@ export default function Home() {
   };
 
   if (stage === "title") return <TitleScreen onStart={() => setStage("select")} />;
-  if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} playMode={playMode} onPlayMode={setPlayMode} humanSide={humanSide} onHumanSide={setHumanSide} />;
+  if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBalancedRandom={balancedRandomLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} playMode={playMode} onPlayMode={setPlayMode} humanSide={humanSide} onHumanSide={setHumanSide} />;
   if (stage === "buy_defense") return <PurchaseScreen game={game} side="defense" selectedId={setupAgentId} step="STEP 02" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("defense", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("defense", weapon)} onArmor={(type, price, value) => setupBuyArmor("defense", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("defense", type, price, value)} onSkill={(item) => setupBuySkill("defense", item)} onAllSkills={(scope) => setupBuyAllSkills("defense", scope)} onBack={() => { if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); }} onContinue={() => { setDeploymentAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("deploy"); }} />;
   if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => { setSetupAgentId(game.teams.defense.agents[0]?.id ?? null); setStage("buy_defense"); }} onStart={() => { if (aiSide === "attack") autoBuyAttackAndStart(); else { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("buy_attack"); } }} />;
   if (stage === "buy_attack") return <PurchaseScreen game={game} side="attack" selectedId={setupAgentId} step="STEP 04" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("attack", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("attack", weapon)} onArmor={(type, price, value) => setupBuyArmor("attack", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("attack", type, price, value)} onSkill={(item) => setupBuySkill("attack", item)} onAllSkills={(scope) => setupBuyAllSkills("attack", scope)} onBack={() => { if (aiSide === "defense") { if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); } else setStage("deploy"); }} onContinue={() => { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); setStage("setup_attack_wait"); }} />;

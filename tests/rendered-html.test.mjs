@@ -1651,3 +1651,25 @@ test("forced plant carriers ignore utility follow-ups that do not advance onto t
   assert.match(page, /if \(forcedPlantCarrier && forcedPlantCarrierDestination === null\) continue/);
   assert.match(page, /postplantContestDestination \?\? forcedPlantCarrierDestination \?\? tradeDestination/);
 });
+
+test("agent selection is grouped by role and balanced random lineups alone avoid cross-team duplicates", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /const ROLE_ORDER: Role\[\] = \["duelist", "initiator", "controller", "sentinel"\]/);
+  assert.match(page, /ROLE_ORDER\.map\(\(role\) => \{[\s\S]{0,300}agent\.role === role/);
+  assert.match(page, /className="agent-role-groups"/);
+  assert.match(css, /\.agent-role-groups/);
+  assert.match(page, /function createBalancedRandomLineups/);
+  assert.match(page, /const pool = Object\.keys\(AGENTS\)/);
+  assert.match(page, /const attack = ROLE_ORDER\.map\(\(role\) => draw\(role\)\)/);
+  assert.match(page, /const defense = ROLE_ORDER\.map\(\(role\) => draw\(role\)\)/);
+  assert.match(page, /pool\.splice\(pool\.indexOf\(selected\), 1\)/);
+  assert.match(page, /attack\.push\(draw\(\)\)/);
+  assert.match(page, /defense\.push\(draw\(\)\)/);
+  assert.match(page, />균형 랜덤</);
+  const manualToggle = page.slice(page.indexOf("const toggleLineupAgent"), page.indexOf("const recommendedLineups"));
+  assert.match(manualToggle, /const current = pickingSide === "attack" \? attackPick : defensePick/);
+  assert.doesNotMatch(manualToggle, /otherSide|opposing|상대/);
+});
