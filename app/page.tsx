@@ -390,6 +390,8 @@ interface SkillFx {
   affectedRegions?: number[];
   affectedEdges?: [number, number][];
   travelEdges?: [number, number][];
+  edgeAnimation?: "sequence" | "simultaneous" | "toxic-toggle";
+  resultAgentIds?: string[];
   areaLabel?: string;
   blocked?: boolean;
   blockedReason?: string;
@@ -399,6 +401,8 @@ interface SkillFxFootprint {
   affectedRegions?: number[];
   affectedEdges?: [number, number][];
   travelEdges?: [number, number][];
+  edgeAnimation?: "sequence" | "simultaneous" | "toxic-toggle";
+  resultAgentIds?: string[];
   areaLabel?: string;
   blocked?: boolean;
   blockedReason?: string;
@@ -3723,6 +3727,8 @@ function showSkillFx(game: GameState, agent: Agent, skillId: string, label: stri
     affectedRegions,
     affectedEdges,
     travelEdges,
+    edgeAnimation: footprint.edgeAnimation,
+    resultAgentIds: footprint.resultAgentIds,
     areaLabel,
     blocked: footprint.blocked,
     blockedReason: footprint.blockedReason,
@@ -3740,11 +3746,13 @@ function resolvedSkillFootprint(skillId: string, origin: number, target: number,
   if (skillId === "high-tide") return {
     affectedRegions: selectedPath,
     affectedEdges: route.slice(0, -1).map((region, index) => [region, route[index + 1]] as [number, number]),
+    edgeAnimation: "sequence",
     areaLabel: "만조 장막 경로",
   };
   if (skillId === "toxic-screen") return {
     affectedRegions: route,
     affectedEdges: route.slice(0, -1).map((region, index) => [region, route[index + 1]] as [number, number]),
+    edgeAnimation: "simultaneous",
     areaLabel: "독성 장막 경로",
   };
   if (["smoke", "cove"].includes(skillId) && selectedPath.length >= 2) return {
@@ -6881,7 +6889,11 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       screen.readyOwnerTurn = game.teamTurns[side] + 2;
       toxicScreenEdges(screen).forEach(([from, to]) => game.smokes.push({ key: edgeKey(from, to), owner: side, expiresEnemyTurn: screen.expiresEnemyTurn!, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "toxic-screen" }));
       agent.extraActions = Math.max(0, agent.extraActions - 1);
-      showSkillFx(game, agent, "toxic-screen", "독성 장막", agent.region, screen.regions[3]);
+      showSkillFx(game, agent, "toxic-screen", "독성 장막", agent.region, screen.regions[3], {
+        affectedRegions: screen.regions,
+        affectedEdges: toxicScreenEdges(screen),
+        edgeAnimation: "toxic-toggle",
+      });
       addLog(game, `${SIDE_LABEL[side]} AI · 독성 장막 1턴 가동.`);
       return true;
     }
@@ -7051,6 +7063,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         finish(reached.at(-1)!, {
           affectedRegions: reached,
           affectedEdges: [[from, reached[0]], ...reached.slice(0, -1).map((region, index) => [region, reached[index + 1]] as [number, number])],
+          resultAgentIds: found ? [found.id] : [],
           areaLabel: "추적 경로",
         });
         return true;
@@ -7155,6 +7168,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         finish(path.second, {
           affectedRegions: [path.first, path.second],
           affectedEdges: [[from, path.first], [path.first, path.second]],
+          edgeAnimation: "sequence",
           areaLabel: "만조 장막 경로",
         });
         return true;
@@ -7309,6 +7323,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         finish(path[3], {
           affectedRegions: path,
           affectedEdges: path.slice(0, -1).map((region, index) => [region, path[index + 1]] as [number, number]),
+          edgeAnimation: "simultaneous",
           areaLabel: "독성 장막 경로",
         });
         return true;
@@ -7960,6 +7975,46 @@ function AgentStatusBadges({ game, agent, compact = false }: { game: GameState; 
   if (!badges.length) return null;
   return <span className={`agent-status-badges ${compact ? "compact" : ""}`} aria-label={badges.map((badge) => badge.label).join(", ")}>
     {badges.map((badge) => <i key={badge.key} className={`status-${badge.key}`} title={badge.label}>{badge.icon}</i>)}
+  </span>;
+}
+
+function skillFxResultBadges(game: GameState, fx: SkillFx, agent: Agent) {
+  if (fx.resultAgentIds && !fx.resultAgentIds.includes(agent.id)) return [];
+  const affectedRegions = new Set(fx.affectedRegions ?? [fx.targetRegion]);
+  const affected = affectedRegions.has(agent.region) || agent.waitDirs.some((region) => affectedRegions.has(region));
+  if (!affected) return [];
+  const timed = game.statusEffects.filter((effect) => effect.targetId === agent.id);
+  const results: { key: string; label: string; tone: "debuff" | "reveal" | "buff" }[] = [];
+  const add = (key: string, label: string, tone: "debuff" | "reveal" | "buff") => {
+    if (!results.some((result) => result.key === key)) results.push({ key, label, tone });
+  };
+  const blindSkill = ["curve", "flash", "kayo-flash", "hawk", "fakeout", "leer"].includes(fx.skillId);
+  const blinded = timed.some((effect) => ["blind", "hawk-blind", "fakeout-blind"].includes(effect.kind ?? "") || (effect.aimPenalty ?? 0) >= 3)
+    || game.leerZones.some((zone) => zone.owner !== agent.team && (zone.region === agent.region || agent.waitDirs.includes(zone.region)));
+  if (blindSkill && blinded) add("blind", "실명", "debuff");
+  if (["recon", "hawk", "haunt", "prowler"].includes(fx.skillId) && agent.detected) add("detected", "발각", "reveal");
+  if (fx.skillId === "zero-point" && timed.some((effect) => effect.kind === "suppressed")) add("suppressed", "제압", "debuff");
+  if (fx.skillId === "relay" && timed.some((effect) => effect.kind === "concussed" || (effect.priorityPenalty ?? 0) > 0)) add("concussed", "충격", "debuff");
+  if (fx.skillId === "gravnet" && timed.some((effect) => effect.kind === "gravnet")) add("gravnet", "이동 불가", "debuff");
+  if (fx.skillId === "barrier-mesh" && agent.team !== fx.owner) add("barrier-mesh", "봉쇄", "debuff");
+  if (["regrowth", "healing-orb"].includes(fx.skillId) && game.floatingNumbers.some((item) => item.agentId === agent.id && item.kind === "heal")) add("heal", "회복", "buff");
+  return results;
+}
+
+function SkillResultPop({ game, agent }: { game: GameState; agent: Agent }) {
+  const fx = game.lastSkillFx;
+  if (!fx || fx.blocked) return null;
+  const results = skillFxResultBadges(game, fx, agent);
+  if (!results.length) return null;
+  const affectedEdges = fx.affectedEdges ?? [];
+  const movingPathSkill = ["hawk", "prowler", "fakeout"].includes(fx.skillId);
+  const travelSteps = fx.travelEdges?.length
+    ?? (movingPathSkill && affectedEdges.length ? affectedEdges.length : fx.fromRegion !== fx.targetRegion && affectedEdges.length === 0 ? 1 : 0);
+  const travelDelay = travelSteps ? (travelSteps - 1) * 520 + 620 : 0;
+  const spreadDistance = distance(fx.targetRegion, agent.region);
+  const delay = travelDelay + (spreadDistance === 0 ? 100 : spreadDistance === 1 ? 270 : 420);
+  return <span className="skill-result-pop" style={{ "--skill-result-delay": `${delay}ms` } as CSSProperties} aria-label={results.map((result) => result.label).join(", ")}>
+    {results.map((result) => <b key={result.key} className={result.tone}>{result.label}</b>)}
   </span>;
 }
 
@@ -9337,6 +9392,7 @@ export default function Home() {
           resolvedFootprint = {
             affectedRegions: reached,
             affectedEdges: [[skillOrigin, reached[0]], ...reached.slice(0, -1).map((step, index) => [step, reached[index + 1]] as [number, number])],
+            resultAgentIds: found ? [found.id] : [],
             areaLabel: "추적 경로",
           };
           break;
@@ -9844,7 +9900,11 @@ export default function Home() {
           draft.smokes.push({ key: edgeKey(from, to), owner: agent.team, expiresEnemyTurn: screen.expiresEnemyTurn!, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "toxic-screen" });
         });
         agent.extraActions -= 1;
-        showSkillFx(draft, agent, "toxic-screen", "독성 장막", agent.region, screen.regions[3]);
+        showSkillFx(draft, agent, "toxic-screen", "독성 장막", agent.region, screen.regions[3], {
+          affectedRegions: screen.regions,
+          affectedEdges: toxicScreenEdges(screen),
+          edgeAnimation: "toxic-toggle",
+        });
         addLog(draft, `${agent.name}이 독성 장막을 1턴 동안 가동했습니다.`);
       }
       if (type === "rendezvous") {
@@ -11241,11 +11301,14 @@ export default function Home() {
               const angle = Math.atan2(dy, dx) * 180 / Math.PI;
               const smoke = game.smokes.find((item) => item.key === edgeKey(a, b));
               const smokeKnown = !!smoke && (smoke.owner === viewerSide || observed.has(a) || observed.has(b));
+              const smokeSequenceIndex = smoke?.sourceSkill === "high-tide"
+                ? game.smokes.filter((item) => item.sourceSkill === "high-tide" && item.sourceAgentId === smoke.sourceAgentId).findIndex((item) => item.key === smoke.key)
+                : 0;
               const barrier = game.barriers.find((item) => edgeKey(item.from, item.to) === edgeKey(a, b));
               const barrierKnown = !!barrier && (barrier.owner === viewerSide || observed.has(a) || observed.has(b));
               const toxicScreen = game.toxicScreens.find((screen) => screen.regions.slice(0, -1).some((from, index) => edgeKey(from, screen.regions[index + 1]) === edgeKey(a, b)));
               const toxicKnown = !!toxicScreen && (toxicScreen.owner === viewerSide || observed.has(a) || observed.has(b));
-              return <span key={`${a}-${b}`} className={`map-edge ${smokeKnown ? `smoked smoke-${smoke.sourceSkill}` : ""} ${barrierKnown ? "barrier-edge" : ""} ${toxicKnown ? `toxic-edge ${toxicScreen.active ? "active" : "inactive"}` : ""}`} data-wall-hp={barrierKnown ? barrier.hp : undefined} title={barrierKnown ? `장벽 내구도 ${barrier.hp}/2 · 순간이동 통과 가능` : smokeKnown ? smoke.sourceSkill === "cove" ? "해만 · 시야 및 피해 차단" : smoke.sourceSkill === "high-tide" ? "만조 · 접촉 시 이동 중단" : "연막" : toxicKnown ? `독성 장막 · ${toxicScreen.active ? "가동 중" : "비가동"}` : undefined} style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
+              return <span key={`${a}-${b}`} className={`map-edge ${smokeKnown ? `smoked smoke-${smoke.sourceSkill}` : ""} ${barrierKnown ? "barrier-edge" : ""} ${toxicKnown ? `toxic-edge ${toxicScreen.active ? "active" : "inactive"}` : ""}`} data-wall-hp={barrierKnown ? barrier.hp : undefined} title={barrierKnown ? `장벽 내구도 ${barrier.hp}/2 · 순간이동 통과 가능` : smokeKnown ? smoke.sourceSkill === "cove" ? "해만 · 시야 및 피해 차단" : smoke.sourceSkill === "high-tide" ? "만조 · 접촉 시 이동 중단" : "연막" : toxicKnown ? `독성 장막 · ${toxicScreen.active ? "가동 중" : "비가동"}` : undefined} style={{ left: `${start.x}%`, top: `${start.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)`, "--smoke-sequence-delay": `${Math.max(0, smokeSequenceIndex) * 140}ms` } as CSSProperties} />;
             })}
             {knownDirectionalDevices.map((device) => <span
               key={`device-coverage-${device.id}`}
@@ -11266,26 +11329,35 @@ export default function Home() {
               const target = REGIONS.find((region) => region.id === fx.targetRegion)!;
               const affectedRegions = fx.affectedRegions ?? [fx.targetRegion];
               const affectedEdges = fx.affectedEdges ?? [];
+              const movingPathSkill = ["hawk", "prowler", "fakeout"].includes(fx.skillId);
               const travelEdges: [number, number][] = fx.travelEdges?.length
                 ? fx.travelEdges
-                : affectedEdges.length ? affectedEdges
-                : fx.fromRegion !== fx.targetRegion ? [[fx.fromRegion, fx.targetRegion]] : [];
+                : movingPathSkill && affectedEdges.length ? affectedEdges
+                : fx.fromRegion !== fx.targetRegion && affectedEdges.length === 0 ? [[fx.fromRegion, fx.targetRegion]] : [];
               const impactDelay = travelEdges.length ? (travelEdges.length - 1) * 520 + 620 : 0;
-              const effectSummary = fx.blocked
-                ? `${fx.blockedReason ?? "효과 차단"} · 효과 없음`
-                : `${fx.areaLabel ?? "영향 구역"} · ${affectedRegions.length}구역${affectedEdges.length ? ` · ${affectedEdges.length}통로` : ""}`;
+              const spreadEdges: [number, number][] = affectedEdges.length
+                ? []
+                : affectedRegions
+                  .filter((region) => region !== fx.targetRegion && (GRAPH.get(fx.targetRegion) ?? []).includes(region))
+                  .map((region) => [fx.targetRegion, region]);
               return <div key={fx.id} className={`skill-map-fx team-${fx.owner} kind-${fx.kind} fx-${fx.skillId} ${fx.blocked ? "blocked" : ""}`} aria-label={`${fx.label} ${fx.blocked ? "차단됨" : "사용 연출"}`}>
-                {affectedEdges.map(([from, to], index) => <span key={`skill-area-edge-${from}-${to}`} className="skill-fx-area-edge" style={{ ...connectionStyle(from, to), animationDelay: `${index * 90}ms` }} />)}
-                {affectedRegions.map((regionId, index) => {
+                {affectedEdges.map(([from, to], index) => {
+                  const edgeDelay = fx.edgeAnimation === "simultaneous" || fx.edgeAnimation === "toxic-toggle" ? 0 : fx.edgeAnimation === "sequence" ? index * 140 : 120;
+                  return <span key={`skill-area-edge-${from}-${to}`} className={`skill-fx-area-edge ${fx.edgeAnimation === "toxic-toggle" ? "toxic-rise" : ""}`} style={{ ...connectionStyle(from, to), animationDelay: `${edgeDelay}ms` }} />;
+                })}
+                {spreadEdges.map(([from, to]) => <span key={`skill-spread-${from}-${to}`} className="skill-fx-spread-edge" style={{ ...connectionStyle(from, to), animationDelay: `${impactDelay + 70}ms` }} />)}
+                {affectedRegions.map((regionId) => {
                   const region = REGIONS.find((item) => item.id === regionId)!;
-                  return <span key={`skill-area-region-${regionId}`} className={`skill-fx-area-region ${regionId === fx.targetRegion ? "primary" : ""}`} style={{ left: `${region.x}%`, top: `${region.y}%`, animationDelay: `${index * 70}ms` }} />;
+                  const propagationDelay = fx.edgeAnimation === "simultaneous" || fx.edgeAnimation === "toxic-toggle" ? 0 : regionId === fx.targetRegion ? 0 : distance(fx.targetRegion, regionId) === 1 ? 170 : 320;
+                  const regionDelay = impactDelay + propagationDelay;
+                  return <span key={`skill-area-region-${regionId}`} className={`skill-fx-area-region ${regionId === fx.targetRegion ? "primary" : ""}`} style={{ left: `${region.x}%`, top: `${region.y}%`, animationDelay: `${regionDelay}ms` }} />;
                 })}
                 {travelEdges.map(([from, to], index) => (fx.owner === viewerSide || (observed.has(from) && observed.has(to))) && <span
                   key={`skill-flight-${from}-${to}`}
                   className="skill-fx-flight"
                   style={{ ...connectionStyle(from, to), "--skill-flight-delay": `${index * 520}ms` } as CSSProperties}
-                ><i className={fx.skillId === "fakeout" ? `skill-moving-token fakeout ${agentArtClass("요루")}` : `skill-moving-token ${skillArtClass(fx.skillId)}`}><small>{index + 1}</small></i></span>)}
-                <span className="skill-fx-impact" style={{ left: `${target.x}%`, top: `${target.y}%`, "--skill-impact-delay": `${impactDelay}ms` } as CSSProperties}><i className={skillArtClass(fx.skillId)} /><b>{fx.label}</b>{fx.blocked && <strong>차단됨 · 효과 없음</strong>}<em>{effectSummary}</em></span>
+                ><i className={fx.skillId === "fakeout" ? `skill-moving-token fakeout ${agentArtClass("요루")}` : `skill-moving-token ${skillArtClass(fx.skillId)}`} /></span>)}
+                <span className="skill-fx-impact" style={{ left: `${target.x}%`, top: `${target.y}%`, "--skill-impact-delay": `${impactDelay}ms` } as CSSProperties}><i className={skillArtClass(fx.skillId)} /></span>
               </div>;
             })()}
             {movementFx && movementVisible && <div key={movementFx.id} className={`movement-path-fx team-${movementFx.team}`} aria-label={`${movementFx.agentName} 이동 경로`}>
@@ -11369,10 +11441,10 @@ export default function Home() {
                   <span className="node-core">{region.id}</span>
                   <span className="node-label">{region.site && <b>{region.site}</b>}{region.name}</span>
                   <span className="unit-stack ally-stack">
-                    {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${agentArtClass(agent.name)} ${game.selectedAgentId === agent.id ? "selected" : ""} ${arrivingAgentId === agent.id ? "movement-arriving" : ""}`} style={arrivingAgentId === agent.id ? movementArrivalStyle : undefined} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`} aria-label={`${agent.name} 지도 토큰`}><AgentStatusBadges game={game} agent={agent} compact /></i>)}
+                    {allies.map((agent) => <i key={agent.id} className={`unit-token role-${agent.role} ${agentArtClass(agent.name)} ${game.selectedAgentId === agent.id ? "selected" : ""} ${arrivingAgentId === agent.id ? "movement-arriving" : ""}`} style={arrivingAgentId === agent.id ? movementArrivalStyle : undefined} onClick={(event) => { event.stopPropagation(); selectAgent(agent.id); }} title={`${agent.name} · ${WEAPONS[agent.weapon].name}`} aria-label={`${agent.name} 지도 토큰`}><AgentStatusBadges game={game} agent={agent} compact /><SkillResultPop game={game} agent={agent} /></i>)}
                   </span>
                   <span className="unit-stack enemy-stack">
-                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); const arriving = arrivingAgentId === agent.id; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""} ${arriving ? "movement-arriving" : ""}`} style={arriving ? movementArrivalStyle : undefined} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <AgentStatusBadges game={game} agent={agent} compact />}{lastKnown && <small>잔상</small>}</i>; })}
+                    {shownEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const identified = observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)); const lastKnown = allowLastKnown && !!memory && !agent.detected && !observed.has(agent.region); const arriving = arrivingAgentId === agent.id; return <i key={agent.id} className={`unit-token hostile ${agentArtClass(agent.name)} ${identified ? "identified" : ""} ${lastKnown ? "last-known" : ""} ${arriving ? "movement-arriving" : ""}`} style={arriving ? movementArrivalStyle : undefined} title={`${agent.name} · ${identified ? WEAPONS[agent.weapon].name : "장비 미확인"}${lastKnown ? " · 이번 턴 마지막 확인 위치" : ""}`} aria-label={`${agent.name} 지도 토큰`}>{(observedNow || agent.detected) && <><AgentStatusBadges game={game} agent={agent} compact /><SkillResultPop game={game} agent={agent} /></>}{lastKnown && <small>잔상</small>}</i>; })}
                     {deceptiveFakeouts.map((item) => <i key={item.id} className={`unit-token hostile identified ${agentArtClass("요루")}`} title={`요루 · ${WEAPONS[item.disguiseWeapon ?? "classic"].name}`} aria-label="요루 지도 토큰" />)}
                   </span>
                   {revealedEnemies.length > 0 && <span className="enemy-wait-intel">{revealedEnemies.map((agent) => { const memory = memoriesHere.find((item) => item.agentId === agent.id); const waitDirs = memory?.waitDirs ?? agent.waitDirs; return <i key={agent.id}><b>{agent.name}</b>{waitDirs.length ? `대기 → ${waitDirs.join(" · ")}` : "대기 없음"}</i>; })}</span>}

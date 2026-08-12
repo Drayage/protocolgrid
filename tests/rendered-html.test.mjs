@@ -1382,7 +1382,7 @@ test("Skye heals nearby allies and sends a two-region hawk with short blind and 
   assert.match(page, /definition\.id === "flash"[\s\S]{0,700}aiShortDurationUtilityHasFollowup\(game, side, \[target\.region\]\)/);
 });
 
-test("skill casts reveal their full footprint while moving utility follows each selected passage", async () => {
+test("skill casts spread in waves, keep path timing, and place result words only on affected agents", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -1390,12 +1390,15 @@ test("skill casts reveal their full footprint while moving utility follows each 
   assert.match(page, /affectedRegions\?: number\[\]/);
   assert.match(page, /affectedEdges\?: \[number, number\]\[\]/);
   assert.match(page, /travelEdges\?: \[number, number\]\[\]/);
+  assert.match(page, /edgeAnimation\?: "sequence" \| "simultaneous" \| "toxic-toggle"/);
   assert.match(page, /const adjacentAreaSkills = new Set\(\["regrowth", "recon", "haunt", "zero-point"\]\)/);
   assert.match(page, /function resolvedSkillFootprint/);
   assert.match(page, /\["hawk", "prowler"\]\.includes\(skillId\)/);
   assert.match(page, /affectedEdges: route\.slice\(0, -1\)\.map/);
-  assert.match(page, /className="skill-fx-area-edge"/);
+  assert.match(page, /className=\{`skill-fx-area-edge/);
+  assert.match(page, /className="skill-fx-spread-edge"/);
   assert.match(page, /className=\{`skill-fx-area-region/);
+  assert.match(page, /distance\(fx\.targetRegion, regionId\) === 1 \? 170/);
   assert.match(page, /--skill-flight-delay/);
   assert.match(page, /fx\.skillId === "fakeout" \? `skill-moving-token fakeout/);
   assert.match(page, /className="persistent-skill-zones"/);
@@ -1405,14 +1408,39 @@ test("skill casts reveal their full footprint while moving utility follows each 
   assert.match(page, /targetingSkillDefinition\.description/);
   assert.match(page, /blockedReason: waitingEnemy \? `\$\{waitingEnemy\.name\}이 파괴`/);
   assert.match(page, /affectedRegions: \[\], affectedEdges: \[\], areaLabel: "파괴됨 · 효과 없음"/);
-  assert.match(page, /fx\.blocked && <strong>차단됨 · 효과 없음<\/strong>/);
+  assert.doesNotMatch(page, /<b>\{fx\.label\}<\/b>/);
+  assert.doesNotMatch(page, /<strong>차단됨 · 효과 없음<\/strong>/);
+  assert.match(page, /function SkillResultPop/);
+  for (const result of ["실명", "발각", "제압", "충격", "이동 불가", "봉쇄", "회복"]) assert.match(page, new RegExp(`"${result}"`));
+  assert.match(page, /<SkillResultPop game=\{game\} agent=\{agent\}/);
   assert.match(css, /\.skill-fx-area-region/);
+  assert.match(css, /@keyframes skillSpreadEdge/);
+  assert.match(css, /\.skill-result-pop b/);
+  assert.match(css, /@keyframes skillResultPop/);
   assert.match(css, /\.skill-target-route/);
   assert.match(css, /\.persistent-skill-zone\.haunt/);
   assert.match(css, /\.device-coverage-edge\.device-turret/);
   assert.match(css, /\.skill-map-fx\.blocked \.skill-fx-impact/);
+  assert.doesNotMatch(css, /\.persistent-skill-zone\.source::after\s*\{[^}]*content:\s*attr/);
+  assert.doesNotMatch(css, /\.device-coverage-edge::after/);
   assert.match(css, /@keyframes skillAreaReveal/);
   assert.match(css, /@keyframes persistentSkillPulse/);
+});
+
+test("line smoke builds in order while Viper screen toggles every segment together", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /if \(skillId === "high-tide"\)[\s\S]{0,320}edgeAnimation: "sequence"/);
+  assert.match(page, /if \(skillId === "toxic-screen"\)[\s\S]{0,320}edgeAnimation: "simultaneous"/);
+  assert.equal((page.match(/edgeAnimation: "toxic-toggle"/g) ?? []).length >= 2, true);
+  assert.match(page, /fx\.edgeAnimation === "sequence" \? index \* 140/);
+  assert.match(page, /fx\.edgeAnimation === "toxic-toggle" \? "toxic-rise"/);
+  assert.match(page, /--smoke-sequence-delay/);
+  assert.match(css, /\.map-edge\.smoke-high-tide[\s\S]{0,220}highTideEdgeIn/);
+  assert.match(css, /\.map-edge\.toxic-edge\.active[\s\S]{0,240}toxicEdgeActivate/);
+  assert.match(css, /@keyframes toxicScreenRise/);
 });
 
 test("Sage healing orb and four-turn wall preserve teleport while blocking movement and taking two breaks", async () => {
