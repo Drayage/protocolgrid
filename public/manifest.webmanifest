@@ -1,0 +1,28 @@
+{
+  "id": "./",
+  "name": "Protocol: Grid — 전술 카드게임",
+  "short_name": "Protocol: Grid",
+  "description": "5대5 구역 전투와 경제, 스킬, 설치 목표를 다루는 전술 카드게임",
+  "lang": "ko-KR",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#03090b",
+  "theme_color": "#03090b",
+  "categories": ["games", "strategy", "entertainment"],
+  "icons": [
+    {
+      "src": "pwa-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "pwa-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

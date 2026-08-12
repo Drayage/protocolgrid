@@ -16,6 +16,39 @@ test("static Pages build renders the finished tactical game entry screen", async
   assert.doesNotMatch(html, /Your site is taking shape|Codex is working|react-loading-skeleton/);
 });
 
+test("PWA manifest, install prompt, and offline shell honor the deployed base path", async () => {
+  const [html, sourceHtml, main, worker, manifestText, icon192, icon512] = await Promise.all([
+    builtHtml(),
+    readFile(new URL("../index.html", import.meta.url), "utf8"),
+    readFile(new URL("../main.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
+    readFile(new URL("../public/pwa-icon-192.png", import.meta.url)),
+    readFile(new URL("../public/pwa-icon-512.png", import.meta.url)),
+  ]);
+  const manifest = JSON.parse(manifestText);
+  assert.equal(manifest.id, "./");
+  assert.equal(manifest.start_url, "./");
+  assert.equal(manifest.scope, "./");
+  assert.equal(manifest.display, "standalone");
+  assert.deepEqual(manifest.icons.map((icon) => icon.sizes), ["192x192", "512x512"]);
+  assert.equal(icon192.readUInt32BE(16), 192);
+  assert.equal(icon192.readUInt32BE(20), 192);
+  assert.equal(icon512.readUInt32BE(16), 512);
+  assert.equal(icon512.readUInt32BE(20), 512);
+  assert.match(sourceHtml, /rel="manifest" href="%BASE_URL%manifest\.webmanifest"/);
+  assert.match(sourceHtml, /rel="apple-touch-icon" href="%BASE_URL%pwa-icon-192\.png"/);
+  assert.match(html, /rel="manifest" href="\/manifest\.webmanifest"/);
+  assert.match(main, /navigator\.serviceWorker\.register\(`\$\{baseUrl\}sw\.js`, \{ scope: baseUrl \}\)/);
+  assert.match(main, /beforeinstallprompt/);
+  assert.match(main, /className="pwa-install-button"/);
+  assert.match(worker, /new URL\("\.\/", self\.registration\.scope\)/);
+  assert.match(worker, /request\.mode === "navigate"/);
+  assert.match(worker, /cache\.match\(APP_ROOT\)/);
+  assert.match(worker, /html\.matchAll\(\/\(\?:src\|href\)/);
+  assert.doesNotMatch(worker, /\/protocolgrid\//);
+});
+
 test("source keeps the complete round, combat, skill, and economy loops wired", async () => {
   const [page, css, spriteAtlas] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
