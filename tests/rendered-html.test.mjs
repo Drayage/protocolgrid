@@ -459,7 +459,7 @@ test("mid-round AI replans, plants secured sites, and uses utility for entry and
   assert.match(page, /function aiUtilityRegionPlacementBias/);
   assert.match(page, /score \+= aiUtilityEdgePlacementBias\(game, agent, a, b\)/);
   assert.match(page, /mainBodyDistance > 2 && !knownHold/);
-  assert.match(page, /side === "defense" && !spikeActive && !defenseThreatSite\(game\)/);
+  assert.match(page, /side === "defense" && !spikeActive && !defenseTimedControlWindowOpen\(game\)/);
   assert.match(page, /attackSiteSituation\(draft, draft\.attackPlan\.targetSite\)\.alliesOnSite\.length > 0/);
 });
 
@@ -1513,6 +1513,26 @@ test("Viper emitter requires retrieval while Toxic Screen cycles three passages 
   assert.match(page, /const screenEntryWindow =/);
   assert.match(page, /screenEnemyPressure \|\| screenObjectiveActive \|\| screenEntryWindow/);
   assert.match(page, /sourceSkill: "toxic-screen"/);
+});
+
+test("defense prepares persistent control forward and waits for credible site pressure before raising screens", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /skill\("gravnet"[\s\S]{0,120}"adjacent"/);
+  assert.match(page, /definition\.id === "gravnet"[\s\S]{0,180}aiSkillRegions\(agent, "adjacent"\)/);
+  assert.match(page, /function credibleDefenseControlThreatSite[\s\S]{0,180}defenseThreatStrength\(game, threat\) >= 2/);
+  assert.match(page, /function aiDefensiveMovementControlRegionBias/);
+  assert.match(page, /if \(onTargetSite && threat !== targetSite && !objectiveActiveHere\) return -72/);
+  assert.match(page, /forwardApproach \? 52 : 0/);
+  assert.match(page, /definition\.id === "barrier-mesh"[\s\S]{0,900}aiDefensiveMovementControlRegionBias/);
+  assert.match(page, /definition\.id === "barrier-orb"[\s\S]{0,1100}aiDefensiveMovementControlEdgeBias/);
+  assert.match(page, /function aiThreeEdgeScreenPath[\s\S]{0,1500}aiDefensiveMovementControlEdgeBias/);
+  assert.match(page, /const screenEntryWindow =[\s\S]{0,300}defenseTimedControlWindowOpen\(game, screen\.regions\)/);
+  assert.match(page, /const screenObjectiveActive =[\s\S]{0,260}defenseTimedControlWindowOpen\(game, screen\.regions\)/);
+  assert.match(page, /definition\.id === "cove"[\s\S]{0,500}defenseTimedControlWindowOpen\(game, edge\)/);
+  assert.match(page, /definition\.id === "high-tide"[\s\S]{0,1500}defenseTimedControlWindowOpen\(game, \[path\.first, path\.second\]\)/);
+  assert.match(page, /definition\.id === "smoke"[\s\S]{0,250}defenseTimedControlWindowOpen\(game, edge\)/);
+  assert.match(page, /const target = aiDarkRegion[\s\S]{0,180}defenseTimedControlWindowOpen\(game, \[target\]\)/);
+  assert.match(page, /const objectiveSite = siteForRegion\(game\.spike\.region\)/);
 });
 
 test("new utility participates in AI priority, recovery, expiry, and map presentation", async () => {

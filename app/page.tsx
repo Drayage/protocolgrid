@@ -1007,7 +1007,7 @@ const AGENTS: Record<string, AgentTemplate> = {
   "페이드": { name: "페이드", role: "initiator", skills: [skill("haunt", "귀체", "2원 · 1회", "range2", "거리 2 이내에 2턴 감시 장치를 설치합니다. 주변 적을 발각하며 적은 추가행동으로 제거할 수 있습니다."), skill("prowler", "추적귀", "1원 · 2회", "adjacent", "인접한 두 구역을 차례로 탐색합니다. 발각된 적, 마지막 위치가 확인된 적, 그 외 적 순서로 한 명을 찾아 발각·대기 해제·트레이드 표식을 적용합니다.")] },
   "케이/오": { name: "케이/오", role: "initiator", skills: [skill("zero-point", "제로/포인트", "2원 · 1회", "range2", "거리 2 이내 목표와 주변의 요원 이름을 확인합니다. 위치 발각 없이 제압하고 범위 안 적 설치물을 다음 적 턴 종료까지 정지시킵니다."), skill("kayo-flash", "플래시/드라이브", "1원 · 2회", "range2", "거리 2 이내 구역의 적과 그 구역을 대기 중인 적은 첫 공격 에임이 3 감소합니다.")] },
   "체임버": { name: "체임버", role: "sentinel", skills: [skill("headhunter", "헤드헌터", "1원당 2발 · 최대 8발", "self", "교전 중 공격할 때 사용할 수 있습니다. 셰리프와 같은 성능에 에임 +1을 받고 한 발을 소모합니다."), skill("rendezvous", "랑데부", "2원 · 1회", "self", "현재 구역에 귀환 장치를 설치합니다. 추가행동 또는 교전 공격 후 장치로 귀환하며 도착 교전 우선도는 5, 재사용 대기는 4턴입니다.")] },
-  "데드록": { name: "데드록", role: "sentinel", skills: [skill("gravnet", "중력그물", "1원 · 2회", "range2", "거리 2 이내 구역에 그물을 설치합니다. 적은 진입할 수 있지만 그 턴에는 이동·교전 탈주가 불가능하고 무빙 -1·우선도 +1을 받습니다."), skill("barrier-mesh", "장벽망", "2원 · 1회", "adjacent", "인접 구역에 3턴 장벽망을 설치합니다. 설치 당시 구역 안에 있거나 이후 진입한 적은 들어온 통로로만 나갈 수 있으며 추가행동 2회로 파괴됩니다.")] },
+  "데드록": { name: "데드록", role: "sentinel", skills: [skill("gravnet", "중력그물", "1원 · 2회", "adjacent", "인접 구역에 그물을 설치합니다. 적은 진입할 수 있지만 그 턴에는 이동·교전 탈주가 불가능하고 무빙 -1·우선도 +1을 받습니다."), skill("barrier-mesh", "장벽망", "2원 · 1회", "adjacent", "인접 구역에 3턴 장벽망을 설치합니다. 설치 당시 구역 안에 있거나 이후 진입한 적은 들어온 통로로만 나갈 수 있으며 추가행동 2회로 파괴됩니다.")] },
   "하버": { name: "하버", role: "controller", skills: [skill("cove", "해만", "2원 · 1회", "any", "사거리 제한 없이 통로 하나에 2턴 연막을 만듭니다. 통로를 가로지르는 총격과 피해 스킬을 차단합니다."), skill("high-tide", "만조", "2원 · 1회", "adjacent", "인접한 두 구역을 이어 두 통로와 중간 구역에 2턴 연막을 만듭니다. 닿으면 이동이 멈추고 1턴 동안 무빙·이동력이 1 감소합니다.")] },
 };
 
@@ -6447,9 +6447,34 @@ function edgeMatches(edge: [number, number], candidates: [number, number][]) {
   return candidates.some(([a, b]) => edgeKey(a, b) === key);
 }
 
+function credibleDefenseControlThreatSite(game: GameState): "A" | "B" | null {
+  const threat = defenseThreatSite(game);
+  return threat && defenseThreatStrength(game, threat) >= 2 ? threat : null;
+}
+
+function defenseControlHomeSite(game: GameState, agent: Agent): "A" | "B" {
+  const currentSite = siteForRegion(agent.region);
+  if (currentSite) return currentSite;
+  const lane = defenseAssignedLane(game, agent);
+  if (lane !== "MID") return lane;
+  return Math.min(...SITE_REGIONS.A.map((region) => distance(agent.region, region)))
+    <= Math.min(...SITE_REGIONS.B.map((region) => distance(agent.region, region))) ? "A" : "B";
+}
+
+function defenseTimedControlWindowOpen(game: GameState, regions: number[] = []) {
+  if (["planting", "planted", "half", "defusing"].includes(game.spike.status)) {
+    if (!regions.length || game.spike.region === null) return true;
+    const objectiveSite = siteForRegion(game.spike.region);
+    return objectiveSite !== null && regions.some((region) => tacticalRegionsForSite(objectiveSite).has(region));
+  }
+  const threat = credibleDefenseControlThreatSite(game);
+  if (!threat) return false;
+  return !regions.length || regions.some((region) => tacticalRegionsForSite(threat).has(region));
+}
+
 function aiUtilityTargetSite(game: GameState, agent: Agent): "A" | "B" {
   if (agent.team === "attack") return game.attackPlan.targetSite;
-  return defenseThreatSite(game)
+  return credibleDefenseControlThreatSite(game)
     ?? game.defensePlan.strongSite
     ?? (Math.min(...SITE_REGIONS.A.map((region) => distance(agent.region, region)))
       <= Math.min(...SITE_REGIONS.B.map((region) => distance(agent.region, region))) ? "A" : "B");
@@ -6458,6 +6483,45 @@ function aiUtilityTargetSite(game: GameState, agent: Agent): "A" | "B" {
 function utilitySiteEndpoints(edges: [number, number][], site: "A" | "B") {
   const siteRegions = new Set(SITE_REGIONS[site]);
   return new Set(edges.flatMap(([a, b]) => [a, b]).filter((region) => siteRegions.has(region)));
+}
+
+// Long-lived movement blockers may be prepared before contact, but an empty
+// site's interior is a poor early investment. With no credible hit, place
+// them on the forward approach to shrink attacker movement. Once a site hit
+// is confirmed, its inner entry regions become valid denial positions.
+function aiDefensiveMovementControlRegionBias(game: GameState, agent: Agent, region: number) {
+  if (agent.team !== "defense") return 0;
+  const threat = credibleDefenseControlThreatSite(game);
+  const targetSite = threat ?? defenseControlHomeSite(game, agent);
+  const candidateSite = siteForRegion(region);
+  const onTargetSite = SITE_REGIONS[targetSite].includes(region);
+  const onOtherSite = (["A", "B"] as const).some((site) => site !== targetSite && SITE_REGIONS[site].includes(region));
+  const forwardApproach = SITE_APPROACH_REGIONS[targetSite].includes(region);
+  const targetTactical = tacticalRegionsForSite(targetSite).has(region);
+  const objectiveActiveHere = game.spike.region !== null
+    && ["planting", "planted", "half", "defusing"].includes(game.spike.status)
+    && siteForRegion(game.spike.region) === targetSite;
+
+  if (onOtherSite || candidateSite && candidateSite !== targetSite) return -54;
+  if (onTargetSite && threat !== targetSite && !objectiveActiveHere) return -72;
+
+  const forwardProgress = Math.max(-2, Math.min(3,
+    distance(agent.region, ATTACK_SPAWN_REGION) - distance(region, ATTACK_SPAWN_REGION)));
+  return (forwardApproach ? 52 : 0)
+    + (targetTactical && !onTargetSite ? 18 : 0)
+    + (AI_WAIT_CHOKE_REGIONS.has(region) ? 8 : 0)
+    + (onTargetSite && (threat === targetSite || objectiveActiveHere) ? 24 : 0)
+    + forwardProgress * 5
+    + (region === DEFENSE_SPAWN_REGION ? -48 : 0);
+}
+
+function aiDefensiveMovementControlEdgeBias(game: GameState, agent: Agent, a: number, b: number) {
+  if (agent.team !== "defense") return 0;
+  const threat = credibleDefenseControlThreatSite(game);
+  const targetSite = threat ?? defenseControlHomeSite(game, agent);
+  const crossesForwardBoundary = [a, b].some((region) => SITE_REGIONS[targetSite].includes(region))
+    && [a, b].some((region) => SITE_APPROACH_REGIONS[targetSite].includes(region));
+  return aiDefensiveMovementControlRegionBias(game, agent, b) + (crossesForwardBoundary ? 18 : 0);
 }
 
 // Shared placement doctrine for vision blockers and movement-control utility.
@@ -6757,13 +6821,16 @@ function aiThreeEdgeScreenPath(game: GameState, agent: Agent, objective: number)
   const candidates = paths.map((path) => {
     const tacticalBias = path.slice(0, -1).reduce((sum, region, index) =>
       sum + aiUtilityEdgePlacementBias(game, agent, region, path[index + 1]), 0);
-    const score = tacticalBias
+    const movementControlBias = path.slice(0, -1).reduce((sum, region, index) =>
+      sum + aiDefensiveMovementControlEdgeBias(game, agent, region, path[index + 1]), 0);
+    const placementBias = tacticalBias + movementControlBias;
+    const score = placementBias
       - Math.min(...path.map((region) => distance(region, objective))) * 4
       + path.filter((region) => SITE_REGIONS[targetSite].includes(region)).length * 4;
-    return { path, tacticalBias, score };
+    return { path, placementBias, score };
   }).sort((a, b) => b.score - a.score);
   const best = candidates[0];
-  return best && best.tacticalBias > 0 && best.score > 0 ? best.path : null;
+  return best && best.placementBias > 0 && best.score > 0 ? best.path : null;
 }
 
 function tryUseAiSkill(game: GameState, side: Side): boolean {
@@ -6866,7 +6933,11 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
     }
 
     const emitter = agent.name === "바이퍼" ? game.deployables.find((item) => item.kind === "poison-emitter" && item.ownerAgentId === agent.id && !item.armed && !isDeployableDisabled(game, item)) : null;
-    if (emitter && (intel.some((enemy) => enemy.exact && distance(enemy.region, emitter.region) <= 1) || distance(emitter.region, agentObjective) <= 1)) {
+    const emitterEnemyPressure = !!emitter && intel.some((enemy) => enemy.exact && distance(enemy.region, emitter.region) <= 1);
+    const emitterTacticalWindow = !!emitter && (side === "attack"
+      ? distance(emitter.region, agentObjective) <= 1
+      : defenseTimedControlWindowOpen(game, [emitter.region]));
+    if (emitter && (emitterEnemyPressure || emitterTacticalWindow)) {
       if (!applyActionStartFire(game, agent)) return true;
       emitter.armed = true;
       game.smokes.push({ key: `poison-${emitter.id}`, region: emitter.region, owner: side, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 2, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "poison-cloud" });
@@ -6878,10 +6949,12 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
 
     const screen = agent.name === "바이퍼" ? game.toxicScreens.find((item) => item.ownerAgentId === agent.id && !item.active && !isToxicScreenDisabled(game, item) && item.readyOwnerTurn <= game.teamTurns[side]) : null;
     const screenEnemyPressure = !!screen && intel.some((enemy) => enemy.exact && screen.regions.some((region) => distance(region, enemy.region) <= 1));
-    const screenObjectiveActive = ["planting", "planted", "half", "defusing"].includes(game.spike.status);
+    const screenObjectiveActive = !!screen
+      && ["planting", "planted", "half", "defusing"].includes(game.spike.status)
+      && (side === "attack" || defenseTimedControlWindowOpen(game, screen.regions));
     const screenEntryWindow = !!screen
       && aiToxicScreenHasImmediateFollowup(game, side, screen)
-      && (side === "attack" ? attackPlanPhase(game) === "execute" : !!defenseThreatSite(game) || defenseRetakeIsActive(game));
+      && (side === "attack" ? attackPlanPhase(game) === "execute" : defenseTimedControlWindowOpen(game, screen.regions));
     if (screen && toxicScreenPreservesPostplantSight(game, screen) && (screenEnemyPressure || screenObjectiveActive || screenEntryWindow)) {
       if (!applyActionStartFire(game, agent)) return true;
       screen.active = true;
@@ -7100,7 +7173,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
       }
 
       if (definition.id === "gravnet") {
-        const target = aiSkillRegions(agent, "range2").map((region) => ({
+        const target = aiSkillRegions(agent, "adjacent").map((region) => ({
           region,
           targets: exactIntel.filter((enemy) => enemy.region === region),
           objectiveScore: region === objective ? 3 : 0,
@@ -7121,7 +7194,8 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           const occupants = exactIntel.filter((enemy) => enemy.region === region).length * 10;
           const holdBonus = game.spike.region === region && ["planting", "planted", "half", "defusing"].includes(game.spike.status) ? 10 : 0;
           const placementBias = aiUtilityRegionPlacementBias(game, agent, region);
-          return { region, occupants, placementBias, score: routePressure + occupants + holdBonus + placementBias };
+          const movementControlBias = aiDefensiveMovementControlRegionBias(game, agent, region);
+          return { region, occupants, placementBias, score: routePressure + occupants + holdBonus + placementBias + movementControlBias };
         }).sort((a, b) => b.score - a.score)[0];
         if (!target || target.score <= 4 || target.placementBias <= 0 && !target.occupants) continue;
         if (!begin()) return true;
@@ -7132,8 +7206,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
 
       if (definition.id === "cove") {
         if (game.smokes.some((smoke) => smoke.sourceAgentId === agent.id && smoke.sourceSkill === "cove")) continue;
+        if (side === "defense" && !defenseTimedControlWindowOpen(game)) continue;
         const edge = aiSmokeEdge(game, agent, intel, true);
-        if (!edge) continue;
+        if (!edge || side === "defense" && !defenseTimedControlWindowOpen(game, edge)) continue;
         if (!begin()) return true;
         game.smokes.push({ key: edgeKey(edge[0], edge[1]), owner: side, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 2, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "cove" });
         finish(edge[1], { affectedRegions: edge, affectedEdges: [edge], areaLabel: "해만 차단 통로" });
@@ -7142,12 +7217,16 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
 
       if (definition.id === "high-tide") {
         if (game.smokes.some((smoke) => smoke.sourceAgentId === agent.id && smoke.sourceSkill === "high-tide")) continue;
+        if (side === "defense" && !defenseTimedControlWindowOpen(game)) continue;
         const paths = (GRAPH.get(agent.region) ?? []).flatMap((first) =>
           (GRAPH.get(first) ?? []).filter((second) => second !== agent.region).map((second) => {
             const intelScore = exactIntel.filter((enemy) => [first, second].includes(enemy.region) || enemy.agent.waitDirs.some((wait) => [first, second].includes(wait))).length * 8;
             const placementBias = aiUtilityEdgePlacementBias(game, agent, agent.region, first)
               + aiUtilityRegionPlacementBias(game, agent, first)
-              + aiUtilityEdgePlacementBias(game, agent, first, second);
+              + aiUtilityEdgePlacementBias(game, agent, first, second)
+              + aiDefensiveMovementControlEdgeBias(game, agent, agent.region, first)
+              + aiDefensiveMovementControlRegionBias(game, agent, first)
+              + aiDefensiveMovementControlEdgeBias(game, agent, first, second);
             return {
               first,
               second,
@@ -7157,7 +7236,7 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
             };
           }));
         const path = paths.sort((a, b) => b.score - a.score)[0];
-        if (!path || path.score <= 1 || path.placementBias <= 0 && !path.intelScore || !aiShortDurationUtilityHasFollowup(game, side, [path.first, path.second])) continue;
+        if (!path || path.score <= 1 || path.placementBias <= 0 && !path.intelScore || side === "defense" && !defenseTimedControlWindowOpen(game, [path.first, path.second]) || !aiShortDurationUtilityHasFollowup(game, side, [path.first, path.second])) continue;
         if (!begin()) return true;
         const expiry = game.teamTurns[otherSide(side)] + 2;
         game.smokes.push(
@@ -7287,7 +7366,8 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
             const ownPathPenalty = shortestPath(agent.region, objective).slice(0, 2).length === 2 && edgeKey(agent.region, shortestPath(agent.region, objective)[1]) === edge ? 8 : 0;
             const holdBonus = side === "defense" && !defenseRetakeIsActive(game) ? 5 : side === "attack" && ["planted", "half", "defusing"].includes(game.spike.status) ? 6 : 0;
             const placementBias = aiUtilityEdgePlacementBias(game, agent, agent.region, region);
-            return { region, enemyRouteScore, placementBias, score: enemyRouteScore + holdBonus + placementBias - ownPathPenalty };
+            const movementControlBias = aiDefensiveMovementControlEdgeBias(game, agent, agent.region, region);
+            return { region, enemyRouteScore, placementBias, score: enemyRouteScore + holdBonus + placementBias + movementControlBias - ownPathPenalty };
           })
           .sort((a, b) => b.score - a.score);
         const target = candidates[0];
@@ -7303,8 +7383,9 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
         const target = (GRAPH.get(agent.region) ?? [])
           .map((region) => {
             const placementBias = aiUtilityRegionPlacementBias(game, agent, region);
+            const movementControlBias = aiDefensiveMovementControlRegionBias(game, agent, region);
             const intelScore = exactIntel.filter((enemy) => enemy.region === region || enemy.agent.waitDirs.includes(region)).length * 8;
-            return { region, placementBias, intelScore, score: placementBias + intelScore + Math.max(0, 5 - distance(region, objective)) };
+            return { region, placementBias, intelScore, score: placementBias + movementControlBias + intelScore + Math.max(0, 5 - distance(region, objective)) };
           })
           .sort((a, b) => b.score - a.score)[0];
         if (!target || target.score <= 4 || target.placementBias <= 0 && !target.intelScore || distance(agent.region, objective) > 3 && !exactIntel.length) continue;
@@ -7551,17 +7632,17 @@ function tryUseAiSkill(game: GameState, side: Side): boolean {
           );
           if (mainBodyDistance > 2 && !knownHold) continue;
         }
-        if (side === "defense" && !spikeActive && !defenseThreatSite(game)) continue;
+        if (side === "defense" && !spikeActive && !defenseTimedControlWindowOpen(game)) continue;
         if (definition.id === "smoke") {
           const edge = aiSmokeEdge(game, agent, intel);
-          if (!edge) continue;
+          if (!edge || side === "defense" && !defenseTimedControlWindowOpen(game, edge)) continue;
           if (!begin()) return true;
           game.smokes.push({ key: edgeKey(edge[0], edge[1]), owner: side, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 4, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "smoke" });
           finish(edge[1], { affectedRegions: edge, affectedEdges: [edge], areaLabel: "연막 차단 통로" });
           return true;
         }
         const target = aiDarkRegion(game, agent, intel);
-        if (target === null) continue;
+        if (target === null || side === "defense" && !defenseTimedControlWindowOpen(game, [target])) continue;
         if (!begin()) return true;
         game.smokes.push({ key: `region-${target}`, region: target, owner: side, expiresEnemyTurn: game.teamTurns[otherSide(side)] + 3, expiresOn: "enemy-end", sourceAgentId: agent.id, sourceSkill: "dark" });
         finish(target);
