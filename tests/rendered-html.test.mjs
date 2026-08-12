@@ -419,8 +419,11 @@ test("mid-round AI replans, plants secured sites, and uses utility for entry and
   assert.match(page, /function aiEntryUtilityRegion/);
   assert.match(page, /entryRegion = aiEntryUtilityRegion\(game, agent, currentAndAdjacent\)/);
   assert.match(page, /entryRegion = aiEntryUtilityRegion\(game, agent, aiSkillRegions\(agent, "range2"\)\)/);
-  assert.match(page, /edgeMatches\(edge, DEFENDER_BACK_EDGES\[targetSite\]\)/);
-  assert.match(page, /edgeMatches\(edge, ATTACK_ENTRY_EDGES\[targetSite\]\)/);
+  assert.match(page, /function aiUtilityEdgePlacementBias/);
+  assert.match(page, /edgeMatches\(edge, DEFENDER_BACK_EDGES\[site\]\)/);
+  assert.match(page, /edgeMatches\(edge, ATTACK_ENTRY_EDGES\[site\]\)/);
+  assert.match(page, /function aiUtilityRegionPlacementBias/);
+  assert.match(page, /score \+= aiUtilityEdgePlacementBias\(game, agent, a, b\)/);
   assert.match(page, /mainBodyDistance > 2 && !knownHold/);
   assert.match(page, /side === "defense" && !spikeActive && !defenseThreatSite\(game\)/);
   assert.match(page, /attackSiteSituation\(draft, draft\.attackPlan\.targetSite\)\.alliesOnSite\.length > 0/);
@@ -666,6 +669,27 @@ test("combat retreat closes the result scene before replaying movement on the ta
   assert.match(css, /\.post-combat-move-banner/);
 });
 
+test("combat retreat uses a large intel-safe map while tactical map layers keep a stable priority", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /function CombatRetreatMap/);
+  assert.match(page, /const observed = observedRegions\(game, actor\.team\)/);
+  assert.match(page, /memory\.observer === actor\.team/);
+  assert.match(page, /const optionSet = new Set\(options\)/);
+  assert.match(page, /disabled=\{!valid\}[\s\S]{0,100}onClick=\{\(\) => onSelect\(region\.id\)\}/);
+  assert.match(page, /className="retreat-map-open"[\s\S]{0,120}setCombatRetreatMapOpen\(true\)/);
+  assert.match(page, /event\.key === "Escape"/);
+  assert.match(page, /combatRetreatMapOpen && combatActor[\s\S]{0,220}<CombatRetreatMap/);
+  assert.match(css, /\.combat-retreat-map-layer \{[^}]*z-index: 210/);
+  assert.match(css, /\.combat-retreat-map-node\.valid \{[^}]*z-index: 10/);
+  assert.match(css, /\.node-label \{[^}]*z-index: 6/);
+  assert.match(css, /\.effect-stack \{[^}]*z-index: 7/);
+  assert.match(css, /\.unit-stack \{[^}]*z-index: 10/);
+  assert.match(css, /\.floating-number-stack \{[^}]*z-index: 15/);
+});
+
 test("AI remembers a conceded entry and only re-enters after applied disruption or a ready trade", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /interface AiRetreatMemory/);
@@ -880,9 +904,9 @@ test("combat UI shows applied dice, distance damage, vital slots, and distinct s
   assert.match(page, /function CombatVitalSlots/);
   assert.match(page, /const max = kind === "hp" \? Math\.max\(AGENT_MAX_HP, before, after\) : MAX_ARMOR/);
   assert.match(page, /Array\.from\(\{ length: max \}/);
-  assert.match(page, /className=\{statClass\(appliedStats\.aimDelta\)\}/);
-  assert.match(page, /BODY <b>\{appliedStats\.bodyDamage\}/);
-  assert.match(page, /HEAD <b>\{appliedStats\.headDamage\}/);
+  assert.match(page, /className=\{statClass\(visibleStats\.aimDelta\)\}/);
+  assert.match(page, /BODY <b>\{visibleStats\.bodyDamage\}/);
+  assert.match(page, /HEAD <b>\{visibleStats\.headDamage\}/);
   assert.match(page, /거리 \{combatScene\.range\}/);
   assert.match(page, /incoming-headshot/);
   assert.match(page, /missed-shot/);
@@ -1300,19 +1324,33 @@ test("Yoru, Skye, Sage, and Viper join the roster with a Pages-safe expansion at
   assert.ok(atlas.byteLength > 100_000);
 });
 
-test("Yoru deception is a full-health decoy combat and Gatecrash teleports at priority two", async () => {
+test("Yoru deception snapshots an indistinguishable combatant and Gatecrash teleports at priority two", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /kind: "agent" \| "turret" \| "decoy"/);
   assert.match(page, /function queueFakeoutEncounter/);
-  assert.match(page, /hpBefore: AGENT_MAX_HP/);
+  assert.match(page, /function createFakeoutDeployable/);
+  assert.match(page, /disguiseHp: agent\.hp/);
+  assert.match(page, /disguiseArmor: agent\.armor/);
+  assert.match(page, /disguiseWeapon: agent\.weapon/);
+  assert.match(page, /disguiseAim: stats\.aim/);
+  assert.match(page, /disguiseMove: stats\.move/);
+  assert.match(page, /hpBefore: disguiseHp, hpAfter: disguiseHp/);
+  assert.match(page, /weapon: disguiseWeapon/);
+  assert.match(page, /snapshotAim: disguiseAim, snapshotMove: disguiseMove/);
   assert.match(page, /kind: "decoy"/);
   assert.match(page, /if \(scene\.kind === "decoy"\)/);
   assert.match(page, /hit: true/);
   assert.match(page, /effect\.kind === "fakeout-blind"/);
   assert.match(page, /aimPenalty: 3, consumeOnAttack: true/);
   assert.match(page, /expiresEnemyTurn\?: number/);
-  assert.match(page, /kind: "fakeout"[\s\S]{0,180}expiresEnemyTurn: game\.teamTurns\[otherSide\(side\)\] \+ 2/);
-  assert.match(page, /kind: "fakeout" as const[\s\S]{0,180}expiresEnemyTurn: draft\.teamTurns\[otherSide\(agent\.team\)\] \+ 2/);
+  assert.match(page, /kind: "fakeout"[\s\S]{0,180}expiresEnemyTurn: game\.teamTurns\[otherSide\(agent\.team\)\] \+ 2/);
+  assert.match(page, /function fakeoutImmediateDefender/);
+  assert.match(page, /enemy\.waitDirs\.includes\(fakeout\.region\)/);
+  assert.match(page, /queueFakeoutEncounter\(game, defender, fakeout, triggeredWait \? 1 : 3\)/);
+  assert.match(page, /fighter\.kind !== "turret" && <div className=\{`combat-weapon-readout/);
+  assert.match(page, /const visibleStats = appliedStats \?\? decoyStats/);
+  assert.match(page, /title=\{`요루 · \$\{WEAPONS\[item\.disguiseWeapon/);
+  assert.doesNotMatch(page, /deceptiveFakeouts\.map\([\s\S]{0,250}fakeout-token/);
   assert.match(page, /const expiredFakeouts = expiringDeployables\.filter/);
   assert.match(page, /기만 분신 .*상대 턴 2회 경과로 사라졌습니다/);
   assert.match(page, /queueCurrentEncounter\(draft, agent, 2, true, 0, true, "movement"\)/);
@@ -1330,7 +1368,9 @@ test("Skye heals nearby allies and sends a two-region hawk with short blind and 
   assert.match(page, /forEach\(\(ally\) => applyHeal\(draft, ally, 1, "재생"\)\)/);
   assert.match(page, /targeting\.skillId === "hawk" && !targeting\.selected\?\.length/);
   assert.match(page, /const \[first\] = targeting\.selected!/);
-  assert.match(page, /reconArrowWatcher\(draft, agent\.team, first\) \?\? reconArrowWatcher\(draft, agent\.team, region\)/);
+  assert.match(page, /const firstWatcher = reconArrowWatcher\(draft, agent\.team, first\)/);
+  assert.match(page, /const waitingEnemy = firstWatcher \?\? reconArrowWatcher\(draft, agent\.team, region\)/);
+  assert.match(page, /const reached = firstWatcher \? \[first\] : \[first, region\]/);
   assert.match(page, /kind: "hawk-blind", aimPenalty: 3/);
   assert.match(page, /const hawkRevealIds = new Set/);
   assert.match(page, /target\.detectedExpiresTeamTurn === null\) target\.detected = false/);
@@ -1342,6 +1382,39 @@ test("Skye heals nearby allies and sends a two-region hawk with short blind and 
   assert.match(page, /definition\.id === "flash"[\s\S]{0,700}aiShortDurationUtilityHasFollowup\(game, side, \[target\.region\]\)/);
 });
 
+test("skill casts reveal their full footprint while moving utility follows each selected passage", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /affectedRegions\?: number\[\]/);
+  assert.match(page, /affectedEdges\?: \[number, number\]\[\]/);
+  assert.match(page, /travelEdges\?: \[number, number\]\[\]/);
+  assert.match(page, /const adjacentAreaSkills = new Set\(\["regrowth", "recon", "haunt", "zero-point"\]\)/);
+  assert.match(page, /function resolvedSkillFootprint/);
+  assert.match(page, /\["hawk", "prowler"\]\.includes\(skillId\)/);
+  assert.match(page, /affectedEdges: route\.slice\(0, -1\)\.map/);
+  assert.match(page, /className="skill-fx-area-edge"/);
+  assert.match(page, /className=\{`skill-fx-area-region/);
+  assert.match(page, /--skill-flight-delay/);
+  assert.match(page, /fx\.skillId === "fakeout" \? `skill-moving-token fakeout/);
+  assert.match(page, /className="persistent-skill-zones"/);
+  assert.match(page, /data-label=\{hauntCore \? "귀체 감시"/);
+  assert.match(page, /className=\{`device-coverage-edge device-\$\{device\.kind\}/);
+  assert.match(page, /data-label=\{cameraCore \? "카메라 시야"/);
+  assert.match(page, /targetingSkillDefinition\.description/);
+  assert.match(page, /blockedReason: waitingEnemy \? `\$\{waitingEnemy\.name\}이 파괴`/);
+  assert.match(page, /affectedRegions: \[\], affectedEdges: \[\], areaLabel: "파괴됨 · 효과 없음"/);
+  assert.match(page, /fx\.blocked && <strong>차단됨 · 효과 없음<\/strong>/);
+  assert.match(css, /\.skill-fx-area-region/);
+  assert.match(css, /\.skill-target-route/);
+  assert.match(css, /\.persistent-skill-zone\.haunt/);
+  assert.match(css, /\.device-coverage-edge\.device-turret/);
+  assert.match(css, /\.skill-map-fx\.blocked \.skill-fx-impact/);
+  assert.match(css, /@keyframes skillAreaReveal/);
+  assert.match(css, /@keyframes persistentSkillPulse/);
+});
+
 test("Sage healing orb and four-turn wall preserve teleport while blocking movement and taking two breaks", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /skill\("healing-orb", "회복 구슬"/);
@@ -1349,6 +1422,9 @@ test("Sage healing orb and four-turn wall preserve teleport while blocking movem
   assert.match(page, /interface BarrierEffect/);
   assert.match(page, /hp: 2, expiresEnemyTurn: draft\.teamTurns\[otherSide\(agent\.team\)\] \+ 4/);
   assert.match(page, /function isBarrierBlocked/);
+  assert.match(page, /function isSightBlocked/);
+  assert.match(page, /isBarrierBlocked\(game, a, b\) \|\| isSmokeBlocked\(game, a, b\)/);
+  assert.match(page, /if \(isBarrierSightBlockedBetween\(game, enemy\.region, mover\.region\)\) return false/);
   assert.match(page, /function shortestMovementPath/);
   assert.match(page, /function canAgentTraverseEdge[\s\S]{0,180}isBarrierBlocked\(game, from, to\)/);
   assert.match(page, /barrier\.hp -= 1/);
@@ -1447,6 +1523,9 @@ test("Fade Haunt and Prowler search the first region before applying information
   assert.match(page, /regionRank: regions\.indexOf\(enemy\.region\)/);
   assert.match(page, /a\.regionRank - b\.regionRank \|\| a\.informationRank - b\.informationRank/);
   assert.doesNotMatch(page, /a\.informationRank - b\.informationRank \|\| a\.regionRank - b\.regionRank/);
+  assert.match(page, /const found = resolveProwlerSweep\(game, agent, target\.swept\)/);
+  assert.match(page, /found\?\.region === target\.swept\[0\] \? \[target\.swept\[0\]\] : target\.swept/);
+  assert.match(page, /resolvedEffectTarget = reached\.at\(-1\)!/);
   assert.match(page, /오래된 위치 기억을 폐기합니다/);
 });
 
@@ -1475,14 +1554,25 @@ test("Chamber buys two Headhunter rounds per coin and can reserve priority-five 
   assert.match(page, /marker\.readyOwnerTurn = game\.teamTurns\[agent\.team\] \+ 4/);
 });
 
-test("Deadlock region restraints block continued movement and combat retreat until expiry or two breaks", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+test("Deadlock adjacent region restraints catch existing occupants, block retreat, and render their zone", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
   assert.match(page, /function hostileGravNetAt/);
   assert.match(page, /if \(hostileGravNetAt\(game, agent, from\)\) return false/);
   assert.match(page, /function combatRetreatRegions[\s\S]{0,180}canAgentTraverseEdge/);
   assert.match(page, /mesh\.meshEntries\?\.\[agent\.id\] === to/);
   assert.match(page, /mesh\.meshEntries\[agent\.id\] = from/);
-  assert.match(page, /kind: "barrier-mesh"[\s\S]{0,220}hp: 2, maxHp: 2[\s\S]{0,160}expiresEnemyTurn: draft\.teamTurns\[otherSide\(agent\.team\)\] \+ 3/);
+  assert.match(page, /skill\("barrier-mesh"[\s\S]{0,120}"adjacent"/);
+  assert.match(page, /function inferredBarrierMeshEntry/);
+  assert.match(page, /function createBarrierMeshDeployable/);
+  assert.match(page, /filter\(\(enemy\) => enemy\.alive && enemy\.region === region\)/);
+  assert.match(page, /meshEntries\[enemy\.id\] = entry/);
+  assert.match(page, /kind: "barrier-mesh"[\s\S]{0,220}hp: 2,[\s\S]{0,80}maxHp: 2,[\s\S]{0,160}expiresEnemyTurn: game\.teamTurns\[otherSide\(agent\.team\)\] \+ 3/);
+  assert.match(page, /aiSkillRegions\(agent, "adjacent"\)/);
+  assert.match(page, /barrierMeshZone \? "barrier-mesh-zone"/);
+  assert.match(css, /\.region-node\.barrier-mesh-zone::after/);
   assert.match(page, /device\.hp = \(device\.hp \?\? 1\) - 1/);
 });
 
@@ -1541,6 +1631,12 @@ test("AI softly follows its committed utility while smoke scoring preserves alli
   assert.match(page, /waitSightLoss \* 10 \+ teamRouteLoss \* 4 \+ postplantSightLoss \* 18/);
   assert.match(page, /score -= aiSmokeEdgeFriendlySightPenalty/);
   assert.match(page, /score -= aiSmokeRegionFriendlySightPenalty/);
+  assert.match(page, /function aiUtilityEdgePlacementBias/);
+  assert.match(page, /defenderBack \? 44 : 0/);
+  assert.match(page, /attackEntry \? \(retaking \? 18 : 48\) : 0/);
+  assert.match(page, /aiUtilityRegionPlacementBias\(game, agent, region\)/);
+  assert.match(page, /const placementBias = aiUtilityEdgePlacementBias\(game, agent, agent\.region, region\)/);
+  assert.match(page, /const path = aiThreeEdgeScreenPath\(game, agent, objective\)/);
   assert.equal((page.match(/if \(!best \|\| best\.score <= 0\) return null;/g) ?? []).length >= 2, true);
 });
 
