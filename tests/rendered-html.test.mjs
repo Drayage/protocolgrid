@@ -162,12 +162,13 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /interface VisibilityContext/);
-  assert.match(page, /const viewerSide = spectatorMode \? actorSide : playMode === "vs-ai" \? humanSide : actorSide/);
-  assert.match(page, /const allowLastKnown = spectatorMode \? false : !aiSide \|\| actorSide === viewerSide/);
+  assert.match(page, /const viewerSide = onlineSession\?\.side \?\? \(spectatorMode \? actorSide : playMode === "vs-ai" \? humanSide : actorSide\)/);
+  assert.match(page, /const allowLastKnown = spectatorMode \? false : onlineMode \? true : !aiSide \|\| actorSide === viewerSide/);
   assert.match(page, /function observedRegions\(game: GameState, observer: Side\)/);
   assert.match(page, /if \(!context\.allowLastKnown\) return visible/);
   assert.match(page, /const viewerTeam = game\.teams\[viewerSide\]/);
   assert.match(page, /const viewerLog = useMemo/);
+  assert.match(page, /const concealedSide = onlineMode \? otherSide\(viewerSide\) : aiSide/);
   assert.match(page, /hiddenAgentNames\.some\(\(name\) => entry\.includes\(name\)\)/);
   assert.match(page, /상대 작전 진행 중/);
   assert.match(page, /game\.lastSkillFx\.owner === viewerSide \|\| observed\.has\(game\.lastSkillFx\.targetRegion\)/);
@@ -196,12 +197,56 @@ test("human versus AI supports either side and mirrors setup after a side swap",
   assert.match(css, /\.human-side-picker/);
 });
 
+test("local human versus human protects private setup and turn information during handoff", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /type HotseatHandoffPhase = "setup" \| "turn"/);
+  assert.match(page, /사람 vs 사람/);
+  assert.match(page, /function HotseatHandoff/);
+  assert.match(page, /구매와 배치 정보는 상대에게 공개되지 않습니다/);
+  assert.match(page, /actorSide === hotseatControlSideRef\.current/);
+  assert.match(page, /if \(hotseatHandoff\) return <HotseatHandoff/);
+  assert.match(css, /\.hotseat-handoff \{[^}]*position: fixed[^}]*z-index: 500[^}]*background:/s);
+});
+
+test("online human versus human creates Firebase rooms and synchronizes private-side control", async () => {
+  const [page, online, rules, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/firebase-online.ts", import.meta.url), "utf8"),
+    readFile(new URL("../firebase-database.rules.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /type PlayMode = "hotseat" \| "online" \| "vs-ai" \| "ai-vs-ai"/);
+  assert.match(page, /온라인 대전/);
+  assert.match(page, /function OnlineLobbyScreen/);
+  assert.match(page, /function OnlineWaitingScreen/);
+  assert.match(page, /function onlineControlSide/);
+  assert.match(page, /const \{ publishOnlineGame, setOnlinePhase \} = await loadOnlineApi\(\)/);
+  assert.match(page, /publishOnlineGame\(session, snapshot\)/);
+  assert.match(page, /isOnlineOpponentAction/);
+  assert.match(online, /signInAnonymously/);
+  assert.match(online, /protocol_grid_rooms/);
+  assert.match(online, /runTransaction/);
+  assert.match(online, /onDisconnect\(connectedRef\)\.set\(false\)/);
+  assert.match(online, /export async function refreshOnlinePresence/);
+  assert.doesNotThrow(() => JSON.parse(rules));
+  assert.match(rules, /protocol_grid_rooms/);
+  assert.match(rules, /auth != null/);
+  assert.match(rules, /newData\.parent\(\)\.child\('players'\)/);
+  assert.match(rules, /data\.child\('phase'\)\.val\(\) === 'buy_defense'/);
+  assert.match(rules, /child\('game'\)\.child\('winner'\)\.exists\(\)/);
+  assert.match(css, /\.online-room-screen/);
+  assert.match(css, /\.online-waiting-screen/);
+});
+
 test("AI versus AI spectator mode auto-prepares both teams and records tactical analysis", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /type PlayMode = "hotseat" \| "vs-ai" \| "ai-vs-ai"/);
+  assert.match(page, /type PlayMode = "hotseat" \| "online" \| "vs-ai" \| "ai-vs-ai"/);
   assert.match(page, /AI vs AI 관전/);
   assert.match(page, /function prepareAiVsAiRound/);
   assert.match(page, /sides=\{controlledAiSides\}/);

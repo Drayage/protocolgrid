@@ -1,0 +1,113 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "protocol_grid_rooms": {
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() && newData.child('meta').child('hostUid').val() === auth.uid) || (data.exists() && !newData.exists() && data.child('meta').child('hostUid').val() === auth.uid))",
+        ".validate": "$code.matches(/^[A-Z0-9]{4,6}$/) && newData.hasChildren(['meta','players','state']) && newData.child('meta').child('createdAt').val() > now - 604800000",
+        "meta": {
+          ".write": "auth != null && ((!data.exists() && newData.child('hostUid').val() === auth.uid) || root.child('protocol_grid_rooms').child($code).child('meta').child('hostUid').val() === auth.uid || (data.child('status').val() === 'waiting' && data.child('phase').val() === 'lobby' && newData.child('status').val() === 'playing' && newData.child('phase').val() === 'buy_defense' && (root.child('protocol_grid_rooms').child($code).child('players').child('attack').child('uid').val() === auth.uid || root.child('protocol_grid_rooms').child($code).child('players').child('defense').child('uid').val() === auth.uid)) || (root.child('protocol_grid_rooms').child($code).child('players').child('defense').child('uid').val() === auth.uid && ((data.child('phase').val() === 'buy_defense' && newData.child('phase').val() === 'deploy') || (data.child('phase').val() === 'deploy' && (newData.child('phase').val() === 'buy_defense' || newData.child('phase').val() === 'buy_attack')))) || (root.child('protocol_grid_rooms').child($code).child('players').child('attack').child('uid').val() === auth.uid && ((data.child('phase').val() === 'buy_attack' && (newData.child('phase').val() === 'deploy' || newData.child('phase').val() === 'setup_attack_wait')) || (data.child('phase').val() === 'setup_attack_wait' && (newData.child('phase').val() === 'buy_attack' || newData.child('phase').val() === 'play')))) || (newData.child('status').val() === 'ended' && newData.child('phase').val() === 'ended' && root.child('protocol_grid_rooms').child($code).child('state').child('game').child('winner').exists() && (root.child('protocol_grid_rooms').child($code).child('players').child('attack').child('uid').val() === auth.uid || root.child('protocol_grid_rooms').child($code).child('players').child('defense').child('uid').val() === auth.uid)))",
+          ".validate": "newData.hasChildren(['createdAt','hostUid','hostSide','status','phase']) && ((newData.child('phase').val() === 'lobby' && newData.child('status').val() === 'waiting') || (newData.child('phase').val() === 'ended' && newData.child('status').val() === 'ended') || (newData.child('phase').val() !== 'lobby' && newData.child('phase').val() !== 'ended' && newData.child('status').val() === 'playing'))",
+          "createdAt": { ".validate": "newData.isNumber() && (!data.exists() || newData.val() === data.val())" },
+          "hostUid": { ".validate": "newData.isString() && newData.val().length <= 128 && (!data.exists() || newData.val() === data.val())" },
+          "hostSide": { ".validate": "(newData.val() === 'attack' || newData.val() === 'defense') && (!data.exists() || newData.val() === data.val())" },
+          "status": { ".validate": "newData.val() === 'waiting' || newData.val() === 'playing' || newData.val() === 'ended'" },
+          "phase": { ".validate": "newData.val() === 'lobby' || newData.val() === 'buy_defense' || newData.val() === 'deploy' || newData.val() === 'buy_attack' || newData.val() === 'setup_attack_wait' || newData.val() === 'play' || newData.val() === 'ended'" },
+          "$other": { ".validate": false }
+        },
+        "players": {
+          ".write": "auth != null && root.child('protocol_grid_rooms').child($code).child('meta').child('hostUid').val() === auth.uid",
+          "$side": {
+            ".write": "auth != null && ($side === 'attack' || $side === 'defense') && ((!data.exists() && newData.child('uid').val() === auth.uid) || (data.child('uid').val() === auth.uid && newData.child('uid').val() === auth.uid))",
+            ".validate": "newData.hasChildren(['uid','side','connected','joinedAt']) && newData.child('side').val() === $side",
+            "uid": { ".validate": "newData.isString() && newData.val().length <= 128" },
+            "side": { ".validate": "newData.val() === 'attack' || newData.val() === 'defense'" },
+            "connected": { ".validate": "newData.isBoolean()" },
+            "joinedAt": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          }
+        },
+        "state": {
+          ".write": "auth != null && ((!data.exists() && newData.parent().child('meta').child('hostUid').val() === auth.uid) || root.child('protocol_grid_rooms').child($code).child('players').child('attack').child('uid').val() === auth.uid || root.child('protocol_grid_rooms').child($code).child('players').child('defense').child('uid').val() === auth.uid)",
+          ".validate": "newData.hasChildren(['revision','updatedBy','game']) && newData.child('revision').isNumber() && newData.child('revision').val() >= 0 && newData.child('updatedBy').isString() && newData.child('updatedBy').val().length <= 128 && (newData.child('updatedBy').val() === newData.parent().child('players').child('attack').child('uid').val() || newData.child('updatedBy').val() === newData.parent().child('players').child('defense').child('uid').val()) && newData.child('game').hasChildren(['turnSide','turnSerial','teams']) && ((newData.parent().child('meta').child('phase').val() === 'buy_defense' || newData.parent().child('meta').child('phase').val() === 'deploy') ? newData.child('updatedBy').val() === newData.parent().child('players').child('defense').child('uid').val() : ((newData.parent().child('meta').child('phase').val() === 'buy_attack' || newData.parent().child('meta').child('phase').val() === 'setup_attack_wait') ? newData.child('updatedBy').val() === newData.parent().child('players').child('attack').child('uid').val() : true))",
+          "revision": { ".validate": "newData.isNumber() && (!data.exists() || newData.val() === data.val() + 1)" },
+          "updatedBy": { ".validate": "newData.val() === auth.uid" },
+          "game": { "$other": { ".validate": true } },
+          "$other": { ".validate": false }
+        },
+        "$other": { ".validate": false }
+      }
+    },
+    "rooms": {
+      "$code": {
+        ".read": true,
+        ".write": true,
+        ".validate": "$code.matches(/^[A-Z0-9]{4,6}$/)",
+        "meta": {
+          ".validate": "newData.hasChildren(['createdAt','status'])",
+          "createdAt": { ".validate": "newData.isNumber()" },
+          "seed": { ".validate": "newData.isNumber()" },
+          "status": { ".validate": "newData.isString() && newData.val().matches(/^(waiting|playing|ended)$/)" },
+          "$other": { ".validate": false }
+        },
+        "players": {
+          "0": { "joined": { ".validate": "newData.isBoolean()" }, "$o": { ".validate": false } },
+          "1": { "joined": { ".validate": "newData.isBoolean()" }, "$o": { ".validate": false } },
+          "$other": { ".validate": false }
+        },
+        "turns": {
+          "$n": {
+            ".validate": "$n.matches(/^[0-9]{1,4}$/)",
+            "$side": {
+              ".validate": "$side.matches(/^[01]$/) && newData.hasChild('submitted')",
+              "submitted": { ".validate": "newData.isBoolean()" },
+              "actions": {
+                ".validate": "!newData.exists() || newData.hasChildren()",
+                "$i": {
+                  ".validate": "$i.matches(/^[0-9]{1,2}$/)",
+                  "type": { ".validate": "newData.isString() && newData.val().length <= 16" },
+                  "line": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 2" },
+                  "count": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 99" },
+                  "branch": { ".validate": "newData.isString() && newData.val().length <= 8" },
+                  "$o": { ".validate": false }
+                }
+              },
+              "$o": { ".validate": false }
+            }
+          }
+        },
+        "$other": { ".validate": false }
+      }
+    },
+    "chetics_rooms": {
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".validate": "$code.matches(/^[A-Z0-9]{4,6}$/)"
+      }
+    },
+    "tichu": {
+      "rooms": {
+        "$roomId": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    },
+    "animaldojocrush_rooms": {
+      "$code": {
+        ".read": true,
+        ".write": true,
+        ".validate": "$code.matches(/^[A-Z0-9]{4,6}$/) && newData.hasChildren(['seq','createdAt','phase','players'])",
+        "seq": { ".validate": "newData.isNumber() && newData.val() >= 0" },
+        "createdAt": { ".validate": "newData.isNumber()" },
+        "phase": { ".validate": "newData.isString() && newData.val().matches(/^(lobby|playing|ended)$/)" },
+        "players": { "$playerId": { ".validate": "newData.hasChildren(['id','name'])" } },
+        "state": { ".validate": "!newData.exists() || newData.hasChildren(['version','phase','players'])" },
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}
