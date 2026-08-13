@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { configureTacticalAudio, playTacticalSound, unlockTacticalAudio, type TacticalAudioProfile } from "./game-audio";
 import type {
   OnlinePhase,
@@ -15,7 +15,32 @@ type PlayMode = "hotseat" | "online" | "vs-ai" | "ai-vs-ai";
 type HotseatHandoffPhase = "setup" | "turn";
 type GameStage = "title" | "select" | OnlinePhase;
 const loadOnlineApi = () => import("./firebase-online");
+const ONLINE_SESSION_STORAGE_KEY = "protocol-grid-online-session-v1";
+const ONLINE_LINEUP_STORAGE_KEY = "protocol-grid-online-lineup-v1";
 const normalizeOnlineCode = (code: string) => code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+
+function savedOnlineSession(): OnlineSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = JSON.parse(window.localStorage.getItem(ONLINE_SESSION_STORAGE_KEY) ?? "null") as Partial<OnlineSession> | null;
+    if (!value || typeof value.uid !== "string" || typeof value.code !== "string" || (value.side !== "attack" && value.side !== "defense")) return null;
+    const code = normalizeOnlineCode(value.code);
+    return code.length >= 4 ? { code, uid: value.uid, side: value.side, host: value.host === true } : null;
+  } catch {
+    return null;
+  }
+}
+
+function savedOnlineLineup(session: OnlineSession): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const value = JSON.parse(window.localStorage.getItem(ONLINE_LINEUP_STORAGE_KEY) ?? "null") as { code?: string; uid?: string; names?: unknown } | null;
+    if (!value || value.code !== session.code || value.uid !== session.uid || !Array.isArray(value.names)) return [];
+    return [...new Set(value.names.filter((name): name is string => typeof name === "string"))].slice(0, 5);
+  } catch {
+    return [];
+  }
+}
 type AttackPlanKind = "direct-a" | "direct-b" | "mid-a" | "mid-b" | "fake-a-b" | "fake-b-a" | "split-read";
 type AttackPlanPhase = "spread" | "pressure" | "rotate" | "execute" | "postplant";
 type AttackTempo = "fast" | "standard" | "slow";
@@ -2206,12 +2231,52 @@ function buyPhaseWeaponDifference(agent: Agent, weaponId: WeaponId) {
 }
 
 function ensureAiTacticalState(game: GameState) {
+  // Realtime Database removes empty arrays/objects. Restore every required
+  // collection before a remote snapshot reaches gameplay or presentation.
+  game.droppedWeapons ??= [];
+  game.deployables ??= [];
   game.barriers ??= [];
   game.toxicScreens ??= [];
   game.leerZones ??= [];
   game.gravNets ??= [];
+  game.fires ??= [];
+  game.stims ??= [];
+  game.smokes ??= [];
+  game.statusEffects ??= [];
+  game.aftershocks ??= [];
+  game.trade ??= [];
+  game.combatQueue ??= [];
+  game.pendingReengagements ??= [];
+  game.turnStartContactQueue ??= [];
+  game.revealedEnemyIds ??= [];
+  game.enemyMemories ??= [];
+  game.enemyMemories.forEach((memory) => { memory.waitDirs ??= []; });
   game.reynaDamageThisTurn ??= {};
   game.reynaSoulWindows ??= [];
+  game.floatingNumbers ??= [];
+  game.turnKillCounts ??= {};
+  game.roundKillHighlights ??= [];
+  game.roundKillVictims ??= {};
+  game.roundDeaths ??= [];
+  game.log ??= [];
+  game.analytics ??= createAnalytics();
+  game.analytics.timeline ??= [];
+  ([game.teams.attack, game.teams.defense] as TeamState[]).forEach((team) => {
+    team.deck ??= [];
+    team.hand ??= [];
+    team.discard ??= [];
+    team.agents.forEach((agent) => {
+      agent.waitDirs ??= [];
+      agent.waitOrders ??= {};
+      agent.skills ??= {};
+    });
+  });
+  game.combatQueue.forEach((scene) => {
+    scene.choices ??= {};
+    scene.waitDirections ??= [];
+    scene.retreatLockedIds ??= [];
+    scene.openingAttackRequiredIds ??= [];
+  });
   game.deployables.filter((item) => item.kind === "fakeout" && item.expiresEnemyTurn === undefined)
     .forEach((item) => { item.expiresEnemyTurn = game.teamTurns[otherSide(item.owner)] + 2; });
   game.aiEnemyKnowledge ??= [];
@@ -8056,6 +8121,24 @@ function shuffledAgents(names: string[]) {
   return shuffled;
 }
 
+function createBalancedRandomLineup(excludedNames: string[] = []) {
+  const excluded = new Set(excludedNames);
+  const pool = Object.keys(AGENTS).filter((name) => !excluded.has(name));
+  const draw = (role?: Role) => {
+    const candidates = pool.filter((name) => role === undefined || AGENTS[name].role === role);
+    const selected = candidates[Math.floor(Math.random() * candidates.length)];
+    if (!selected) throw new Error(`${role ? ROLE_LABEL[role] : "자유 역할"} 무작위 후보가 부족합니다.`);
+    pool.splice(pool.indexOf(selected), 1);
+    return selected;
+  };
+  return shuffledAgents([...ROLE_ORDER.map((role) => draw(role)), draw()]);
+}
+
+function createOnlinePlaceholderLineup(excludedNames: string[]) {
+  const excluded = new Set(excludedNames);
+  return shuffledAgents(Object.keys(AGENTS).filter((name) => !excluded.has(name))).slice(0, 5);
+}
+
 function createBalancedRandomLineups(): Record<Side, string[]> {
   const pool = Object.keys(AGENTS);
   const draw = (role?: Role) => {
@@ -8226,8 +8309,54 @@ function OnlineLobbyScreen({ session, room, onLeave }: {
           return <article key={side} className={`${side} ${player ? "joined" : "empty"}`}><i>{side === "attack" ? "ATK" : "DEF"}</i><div><strong>{SIDE_LABEL[side]}</strong><small>{player ? player.uid === session.uid ? "나 · 접속됨" : player.connected ? "상대 · 접속됨" : "상대 · 연결 끊김" : "참가 대기 중"}</small></div><b>{player?.connected ? "ONLINE" : "WAIT"}</b></article>;
         })}
       </div>
-      <div className="online-room-status"><i /><span>{opponent ? "상대 참가 완료 · 경기 화면을 준비하는 중" : "상대 플레이어를 기다리는 중"}</span></div>
+      <div className="online-room-status"><i /><span>{opponent ? "상대 참가 완료 · 자기 진영 요원을 선택하는 중" : "상대 플레이어를 기다리는 중"}</span></div>
       <button className="online-leave" onClick={onLeave}>방 나가기</button>
+    </section>
+  </main>;
+}
+
+function OnlineLineupScreen({ session, picked, opponentNames, busy, error, onToggle, onRandom, onConfirm, onLeave }: {
+  session: OnlineSession;
+  picked: string[];
+  opponentNames: string[];
+  busy: boolean;
+  error: string | null;
+  onToggle: (name: string) => void;
+  onRandom: () => void;
+  onConfirm: () => void;
+  onLeave: () => void;
+}) {
+  const agentNumber = new Map(Object.keys(AGENTS).map((name, index) => [name, index + 1]));
+  return <main className={`setup-screen online-lineup-screen team-${session.side}`}>
+    <header className="setup-topbar"><button onClick={onLeave}>방 나가기</button><div><span>ONLINE · ROOM {session.code}</span><strong>{SIDE_LABEL[session.side]} 요원 선택</strong></div><span className="setup-topbar-actions"><button className="balanced-random" onClick={onRandom}>균형 랜덤</button></span></header>
+    <section className="online-lineup-layout">
+      <div className="online-lineup-main">
+        <div className="selection-heading"><div><span className="eyebrow">SELECT YOUR TEAM</span><h2>내가 플레이할 {SIDE_LABEL[session.side]} 5명</h2></div><p>수동 선택은 상대 진영과 같은 요원도 가능합니다. 균형 랜덤은 각 역할군 1명과 자유 역할 1명으로 구성하며 상대 조합과 겹치지 않습니다.</p></div>
+        <div className="agent-role-groups">
+          {ROLE_ORDER.map((role) => {
+            const roleAgents = Object.values(AGENTS).filter((agent) => agent.role === role);
+            const pickedCount = picked.filter((name) => AGENTS[name].role === role).length;
+            return <section key={role} className={`agent-role-group role-${role}`}>
+              <header><div><span>{role.toUpperCase()}</span><h3>{ROLE_LABEL[role]}</h3></div><b>{pickedCount}명 선택</b></header>
+              <div className="agent-select-grid">{roleAgents.map((agent) => {
+                const pickedIndex = picked.indexOf(agent.name);
+                return <button key={agent.name} className={`select-agent-card role-${agent.role} ${pickedIndex >= 0 ? "picked" : ""}`} onClick={() => onToggle(agent.name)}>
+                  <span className="select-number">{String(agentNumber.get(agent.name) ?? 0).padStart(2, "0")}</span><span className={`select-avatar ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} />
+                  <span className="select-agent-copy"><small>{ROLE_LABEL[agent.role]}</small><strong>{agent.name}</strong><em>{roleCards(agent.role).map((kind) => CARD_DATA[kind].name).join(" · ")}</em></span>
+                  <span className="pick-badges">{pickedIndex >= 0 && <i className={session.side === "attack" ? "atk" : "def"}>{session.side === "attack" ? "A" : "D"}{pickedIndex + 1}</i>}</span>
+                </button>;
+              })}</div>
+            </section>;
+          })}
+        </div>
+      </div>
+      <aside className="online-lineup-summary">
+        <span className="eyebrow">YOUR ONLINE LINEUP</span><h2>{picked.length}/5 선택</h2>
+        <div className="online-lineup-picks">{Array.from({ length: 5 }).map((_, index) => <article key={index} className={picked[index] ? `role-${AGENTS[picked[index]].role}` : "empty"}>{picked[index] ? <><span className={`select-avatar ${agentArtClass(picked[index])}`} /><strong>{picked[index]}</strong><small>{ROLE_LABEL[AGENTS[picked[index]].role]}</small></> : <b>+</b>}</article>)}</div>
+        <div className="online-lineup-rule"><b>온라인 조합 규칙</b><span>직접 선택 · 상대와 중복 허용</span><span>균형 랜덤 · 상대 {opponentNames.length}명과 중복 없음</span><span>확정 후 수비팀 구매부터 시작</span></div>
+        {error && <em className="online-lineup-error" role="alert">{error}</em>}
+        <button className="confirm-lineup" disabled={busy || picked.length !== 5} onClick={onConfirm}><span>READY</span><strong>{busy ? "조합 동기화 중" : `${SIDE_LABEL[session.side]} 조합 확정`}</strong></button>
+      </aside>
     </section>
   </main>;
 }
@@ -8248,6 +8377,18 @@ function OnlineWaitingScreen({ session, room, game, onLeave }: {
       <p>{ONLINE_PHASE_LABEL[phase]} · 상대가 결정을 완료하면 화면이 자동으로 전환됩니다.</p>
       <div className={`online-connection ${opponent?.connected ? "connected" : "disconnected"}`}><i /><span>{opponent?.connected ? "상대 연결 정상" : "상대 연결이 끊겼습니다 · 재접속 대기 중"}</span></div>
       <button onClick={onLeave}>온라인 방 나가기</button>
+    </section>
+  </main>;
+}
+
+function OnlineReconnectScreen() {
+  return <main className="online-waiting-screen online-reconnect-screen">
+    <section role="status" aria-live="polite">
+      <span className="eyebrow">ONLINE SESSION RECOVERY</span>
+      <div className="online-waiting-emblem"><i /><b>RECONNECT</b></div>
+      <h1>진행 중인 방에 다시 연결하는 중</h1>
+      <p>저장된 플레이어 자리와 최신 턴·교전 상태를 확인하고 있습니다.</p>
+      <div className="online-connection connected"><i /><span>Firebase 실시간 상태 동기화 중</span></div>
     </section>
   </main>;
 }
@@ -8528,7 +8669,9 @@ interface SelectionScreenProps {
 }
 
 function SelectionScreen(props: SelectionScreenProps) {
-  const current = props.pickingSide === "attack" ? props.attackPick : props.defensePick;
+  const activePickingSide = props.playMode === "online" ? props.humanSide : props.pickingSide;
+  const current = activePickingSide === "attack" ? props.attackPick : props.defensePick;
+  const requiredOnlinePick = props.humanSide === "attack" ? props.attackPick : props.defensePick;
   const attackDeck = deckComposition(props.attackPick);
   const defenseDeck = deckComposition(props.defensePick);
   const agentNumber = new Map(Object.keys(AGENTS).map((name, index) => [name, index + 1]));
@@ -8541,10 +8684,11 @@ function SelectionScreen(props: SelectionScreenProps) {
           <div className="side-tabs">
             {(["attack", "defense"] as Side[]).map((side) => {
               const picks = side === "attack" ? props.attackPick : props.defensePick;
-              return <button key={side} className={`${props.pickingSide === side ? "active" : ""} tab-${side}`} onClick={() => props.onPickingSide(side)}><span>{side === "attack" ? "ATK" : "DEF"}</span><strong>{SIDE_LABEL[side]}</strong><b>{picks.length}/5</b></button>;
+              const onlineLocked = props.playMode === "online" && side !== props.humanSide;
+              return <button key={side} disabled={onlineLocked} className={`${activePickingSide === side ? "active" : ""} ${onlineLocked ? "online-locked" : ""} tab-${side}`} onClick={() => props.onPickingSide(side)}><span>{side === "attack" ? "ATK" : "DEF"}</span><strong>{SIDE_LABEL[side]}</strong><b>{onlineLocked ? "참가자 선택" : `${picks.length}/5`}</b></button>;
             })}
           </div>
-          <div className="selection-heading"><div><span className="eyebrow">SELECT YOUR AGENTS</span><h2>{SIDE_LABEL[props.pickingSide]} 조합</h2></div><p>수동 선택은 양 진영에 같은 요원을 고를 수 있습니다. 균형 랜덤은 역할군별 1명과 자유 역할 1명으로 구성하며 양 진영이 겹치지 않습니다.</p></div>
+          <div className="selection-heading"><div><span className="eyebrow">SELECT YOUR AGENTS</span><h2>{SIDE_LABEL[activePickingSide]} 조합</h2></div><p>{props.playMode === "online" ? "방장은 자기 진영만 선택합니다. 참가자는 방에 들어온 뒤 자기 진영 5명을 직접 선택합니다." : "수동 선택은 양 진영에 같은 요원을 고를 수 있습니다. 균형 랜덤은 역할군별 1명과 자유 역할 1명으로 구성하며 양 진영이 겹치지 않습니다."}</p></div>
           <div className="agent-role-groups">
             {ROLE_ORDER.map((role) => {
               const roleAgents = Object.values(AGENTS).filter((agent) => agent.role === role);
@@ -8558,7 +8702,7 @@ function SelectionScreen(props: SelectionScreenProps) {
                   return <button key={agent.name} className={`select-agent-card role-${agent.role} ${picked ? "picked" : ""}`} onClick={() => props.onToggle(agent.name)}>
                     <span className="select-number">{String(agentNumber.get(agent.name) ?? 0).padStart(2, "0")}</span><span className={`select-avatar ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`} />
                     <span className="select-agent-copy"><small>{ROLE_LABEL[agent.role]}</small><strong>{agent.name}</strong><em>{roleCards(agent.role).map((kind) => CARD_DATA[kind].name).join(" · ")}</em></span>
-                    <span className="pick-badges">{attackIndex >= 0 && <i className="atk">A{attackIndex + 1}</i>}{defenseIndex >= 0 && <i className="def">D{defenseIndex + 1}</i>}</span>
+                    <span className="pick-badges">{attackIndex >= 0 && (props.playMode !== "online" || props.humanSide === "attack") && <i className="atk">A{attackIndex + 1}</i>}{defenseIndex >= 0 && (props.playMode !== "online" || props.humanSide === "defense") && <i className="def">D{defenseIndex + 1}</i>}</span>
                   </button>;
                 })}</div>
               </section>;
@@ -8567,7 +8711,7 @@ function SelectionScreen(props: SelectionScreenProps) {
         </div>
         <aside className="deck-builder">
           <span className="eyebrow">LIVE DECK BUILDER</span><h2>15장 덱 구성</h2>
-          {(["attack", "defense"] as Side[]).map((side) => {
+          {(props.playMode === "online" ? [props.humanSide] : ["attack", "defense"] as Side[]).map((side) => {
             const picks = side === "attack" ? props.attackPick : props.defensePick;
             const deck = side === "attack" ? attackDeck : defenseDeck;
             return <article key={side} className={`deck-preview deck-${side}`}><header><div><span>{side === "attack" ? "ATK" : "DEF"}</span><strong>{SIDE_LABEL[side]}</strong></div><b>{picks.length * 3}/15</b></header>
@@ -8584,9 +8728,9 @@ function SelectionScreen(props: SelectionScreenProps) {
             <button className={props.playMode === "online" ? "active online-mode" : "online-mode"} onClick={() => props.onPlayMode("online")}><strong>온라인 대전</strong><small>방 만들기 · 코드 참가</small></button>
             <button className={props.playMode === "ai-vs-ai" ? "active spectator-mode" : "spectator-mode"} onClick={() => props.onPlayMode("ai-vs-ai")}><strong>AI vs AI 관전</strong><small>자동 구매 · 배치 · 전술 분석</small></button>
             {(props.playMode === "vs-ai" || props.playMode === "online") && <div className="human-side-picker"><span>{props.playMode === "online" ? "방장의 진영 선택" : "내 진영 선택"}</span><button className={props.humanSide === "attack" ? "active attack" : "attack"} onClick={() => props.onHumanSide("attack")}><b>ATK</b><strong>공격팀 플레이</strong><small>{props.playMode === "online" ? "참가자는 수비팀" : "AI가 수비·배치"}</small></button><button className={props.humanSide === "defense" ? "active defense" : "defense"} onClick={() => props.onHumanSide("defense")}><b>DEF</b><strong>수비팀 플레이</strong><small>{props.playMode === "online" ? "참가자는 공격팀" : "AI가 공격·설치"}</small></button></div>}
-            {props.playMode === "online" && <div className="online-join-panel"><span>기존 방 참가</span><label><input aria-label="온라인 방 코드" value={props.onlineCode} maxLength={6} placeholder="방 코드" onChange={(event) => props.onOnlineCode(normalizeOnlineCode(event.target.value))} /><button disabled={props.onlineBusy || props.onlineCode.length < 4} onClick={props.onJoinOnline}>코드로 참가</button></label><small>참가할 때는 요원 조합을 선택하지 않아도 됩니다.</small>{props.onlineError && <em role="alert">{props.onlineError}</em>}</div>}
+            {props.playMode === "online" && <div className="online-join-panel"><span>기존 방 참가</span><label><input aria-label="온라인 방 코드" value={props.onlineCode} maxLength={6} placeholder="방 코드" onChange={(event) => props.onOnlineCode(normalizeOnlineCode(event.target.value))} /><button disabled={props.onlineBusy || props.onlineCode.length < 4} onClick={props.onJoinOnline}>코드로 참가</button></label><small>입장한 뒤 내가 플레이할 진영의 요원 5명을 선택합니다.</small>{props.onlineError && <em role="alert">{props.onlineError}</em>}</div>}
           </div>
-          <button className="confirm-lineup" disabled={props.onlineBusy || props.attackPick.length !== 5 || props.defensePick.length !== 5} onClick={props.playMode === "online" ? props.onCreateOnline : props.onConfirm}><span>{props.playMode === "online" ? "CREATE ROOM" : "STEP 02"}</span><strong>{props.playMode === "ai-vs-ai" ? "AI 자동 경기 시작" : props.playMode === "vs-ai" ? `${SIDE_LABEL[props.humanSide]} 구매로 이동` : props.playMode === "online" ? props.onlineBusy ? "Firebase 연결 중" : `${SIDE_LABEL[props.humanSide]}으로 방 만들기` : "수비 플레이어에게 넘기기"}</strong></button>
+          <button className="confirm-lineup" disabled={props.onlineBusy || (props.playMode === "online" ? requiredOnlinePick.length !== 5 : props.attackPick.length !== 5 || props.defensePick.length !== 5)} onClick={props.playMode === "online" ? props.onCreateOnline : props.onConfirm}><span>{props.playMode === "online" ? "CREATE ROOM" : "STEP 02"}</span><strong>{props.playMode === "ai-vs-ai" ? "AI 자동 경기 시작" : props.playMode === "vs-ai" ? `${SIDE_LABEL[props.humanSide]} 구매로 이동` : props.playMode === "online" ? props.onlineBusy ? "Firebase 연결 중" : `${SIDE_LABEL[props.humanSide]}으로 방 만들기` : "수비 플레이어에게 넘기기"}</strong></button>
         </aside>
       </section>
     </main>
@@ -9096,6 +9240,8 @@ export default function Home() {
   const [onlineRoom, setOnlineRoom] = useState<OnlineRoom<GameState> | null>(null);
   const [onlineBusy, setOnlineBusy] = useState(false);
   const [onlineError, setOnlineError] = useState<string | null>(null);
+  const [onlineRestoring, setOnlineRestoring] = useState(() => savedOnlineSession() !== null);
+  const [onlineLineupPick, setOnlineLineupPick] = useState<string[]>([]);
   const [pendingStayConfirm, setPendingStayConfirm] = useState<{ agentId: string; agentName: string; region: number; cardId: string } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem("protocol-grid-sound-enabled") !== "false");
@@ -9132,6 +9278,14 @@ export default function Home() {
     turnSerial: -1,
   });
 
+  const applyOnlineGameSnapshot = useCallback((state: OnlineRoom<GameState>["state"], setupSide?: Side) => {
+    const remoteGame = structuredClone(state.game) as GameState;
+    ensureAiTacticalState(remoteGame);
+    setGame(remoteGame);
+    setSetupAgentId((current) => getAgent(remoteGame, current) ? current : remoteGame.teams[setupSide ?? remoteGame.turnSide].agents[0]?.id ?? null);
+    setDeploymentAgentId((current) => getAgent(remoteGame, current)?.team === "defense" ? current : remoteGame.teams.defense.agents[0]?.id ?? null);
+  }, []);
+
   const aiSide: Side | null = playMode === "vs-ai" ? otherSide(humanSide) : null;
   const spectatorMode = playMode === "ai-vs-ai";
   const onlineMode = playMode === "online" && onlineSession !== null;
@@ -9149,6 +9303,7 @@ export default function Home() {
         : stage === "play" ? onlineControlSide(game)
           : null;
   const isOnlineOpponentAction = !!onlineSession && !!onlineActiveSide && onlineSession.side !== onlineActiveSide && !game.winner;
+  const viewerInputLocked = isAiControlledTurn || isOnlineOpponentAction;
   const selectedAgent = getAgent(game, game.selectedAgentId);
   const displayedAgent = selectedAgent?.team === viewerSide && selectedAgent.alive ? selectedAgent : viewerTeam.agents.find((agent) => agent.alive) ?? null;
   const selectedCard = activeTeam.hand.find((card) => card.id === game.selectedCardId) ?? null;
@@ -9173,6 +9328,53 @@ export default function Home() {
   }, [game, aiSide, onlineMode, spectatorMode, viewerSide]);
 
   useEffect(() => {
+    const saved = savedOnlineSession();
+    if (!saved) {
+      window.localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY);
+      setOnlineRestoring(false);
+      return;
+    }
+    let cancelled = false;
+    setOnlineRestoring(true);
+    void loadOnlineApi().then(async ({ resumeOnlineSession, getOnlineRoom }) => {
+      const session = await resumeOnlineSession(saved);
+      const room = await getOnlineRoom<GameState>(session.code);
+      return { session, room };
+    }).then(({ session, room }) => {
+      if (cancelled) return;
+      const setupSide: Side = room.meta.phase === "buy_attack" || room.meta.phase === "setup_attack_wait" ? "attack" : "defense";
+      onlineRevisionRef.current = room.state.revision;
+      onlineWritePendingRef.current = false;
+      onlinePendingPhaseRef.current = null;
+      applyOnlineGameSnapshot(room.state, setupSide);
+      setOnlineLineupPick(room.meta.phase === "lobby" && !session.host ? savedOnlineLineup(session).filter((name) => Object.prototype.hasOwnProperty.call(AGENTS, name)) : []);
+      setPlayMode("online");
+      setOnlineSession(session);
+      setOnlineRoom(room);
+      setOnlineCode(session.code);
+      setStage(room.meta.phase === "ended" ? "play" : room.meta.phase);
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      window.localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY);
+      setPlayMode("online");
+      setOnlineError(`자동 재접속 실패 · ${error instanceof Error ? error.message : "방 정보를 확인할 수 없습니다."}`);
+      setStage("select");
+    }).finally(() => {
+      if (!cancelled) setOnlineRestoring(false);
+    });
+    return () => { cancelled = true; };
+  }, [applyOnlineGameSnapshot]);
+
+  useEffect(() => {
+    if (onlineSession) window.localStorage.setItem(ONLINE_SESSION_STORAGE_KEY, JSON.stringify(onlineSession));
+  }, [onlineSession]);
+
+  useEffect(() => {
+    if (!onlineSession || onlineSession.host || stage !== "lobby") return;
+    window.localStorage.setItem(ONLINE_LINEUP_STORAGE_KEY, JSON.stringify({ code: onlineSession.code, uid: onlineSession.uid, names: onlineLineupPick }));
+  }, [onlineLineupPick, onlineSession, stage]);
+
+  useEffect(() => {
     if (stage !== "play" || playMode !== "hotseat" || game.winner || actorSide === hotseatControlSideRef.current) return;
     hotseatControlSideRef.current = actorSide;
     setHotseatHandoff({ side: actorSide, phase: "turn" });
@@ -9180,6 +9382,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!onlineSession) return;
+    // Keep the live subscription active while this client switches between acting and observing.
     let unsubscribe: (() => void) | undefined;
     let cancelled = false;
     setOnlineError(null);
@@ -9196,17 +9399,12 @@ export default function Home() {
         setOnlineRoom(room);
         const currentSide = (Object.entries(room.players ?? {}) as [Side, { uid: string }][]).find(([, player]) => player.uid === onlineSession.uid)?.[0];
         if (currentSide && currentSide !== onlineSession.side) setOnlineSession((current) => current ? { ...current, side: currentSide } : current);
-        const firstSnapshot = onlineRevisionRef.current < 0;
-        if (room.state && room.state.revision > onlineRevisionRef.current) {
-          onlineRevisionRef.current = room.state.revision;
-          if (firstSnapshot || room.state.updatedBy !== onlineSession.uid) {
-            const remoteGame = structuredClone(room.state.game) as GameState;
-            ensureAiTacticalState(remoteGame);
-            onlineWritePendingRef.current = false;
-            setGame(remoteGame);
-            setSetupAgentId((current) => getAgent(remoteGame, current) ? current : remoteGame.teams[room.meta.phase === "buy_attack" || room.meta.phase === "setup_attack_wait" ? "attack" : "defense"].agents[0]?.id ?? null);
-            setDeploymentAgentId((current) => getAgent(remoteGame, current)?.team === "defense" ? current : remoteGame.teams.defense.agents[0]?.id ?? null);
-          }
+        if (room.meta.phase === "buy_attack" || room.meta.phase === "setup_attack_wait") {
+          setSetupAgentId((current) => getAgent(room.state.game, current)?.team === "attack" ? current : room.state.game.teams.attack.agents[0]?.id ?? null);
+        } else if (room.meta.phase === "buy_defense") {
+          setSetupAgentId((current) => getAgent(room.state.game, current)?.team === "defense" ? current : room.state.game.teams.defense.agents[0]?.id ?? null);
+        } else if (room.meta.phase === "deploy") {
+          setDeploymentAgentId((current) => getAgent(room.state.game, current)?.team === "defense" ? current : room.state.game.teams.defense.agents[0]?.id ?? null);
         }
         if (!onlinePendingPhaseRef.current || onlinePendingPhaseRef.current === room.meta.phase) {
           onlinePendingPhaseRef.current = null;
@@ -9216,6 +9414,27 @@ export default function Home() {
     }).catch((error: unknown) => setOnlineError(error instanceof Error ? error.message : "Firebase 모듈을 불러오지 못했습니다."));
     return () => { cancelled = true; unsubscribe?.(); };
   }, [onlineSession]);
+
+  useEffect(() => {
+    if (!onlineSession) return;
+    let unsubscribe: (() => void) | undefined;
+    let cancelled = false;
+    void loadOnlineApi().then(({ subscribeOnlineGameState }) => {
+      if (cancelled) return;
+      unsubscribe = subscribeOnlineGameState<GameState>(onlineSession.code, (state) => {
+        if (!state) {
+          setOnlineError("온라인 게임 상태를 불러오지 못했습니다. 연결 상태와 Database Rules를 확인하세요.");
+          return;
+        }
+        if (state.revision <= onlineRevisionRef.current) return;
+        onlineRevisionRef.current = state.revision;
+        if (state.updatedBy === onlineSession.uid) return;
+        onlineWritePendingRef.current = false;
+        applyOnlineGameSnapshot(state);
+      });
+    }).catch((error: unknown) => setOnlineError(error instanceof Error ? error.message : "온라인 게임 상태 연결에 실패했습니다."));
+    return () => { cancelled = true; unsubscribe?.(); };
+  }, [applyOnlineGameSnapshot, onlineSession]);
 
   useEffect(() => {
     const unlock = () => unlockTacticalAudio();
@@ -9231,7 +9450,7 @@ export default function Home() {
   }, [soundEnabled, soundVolume, audioProfile]);
 
   useEffect(() => {
-    if (stage !== "play" || hotseatHandoff || isOnlineOpponentAction) return;
+    if (stage !== "play" || hotseatHandoff) return;
     const audio = audioEventRef.current;
     const scene = game.combatQueue[0];
     if (scene && scene.id !== audio.encounterId) {
@@ -9271,29 +9490,29 @@ export default function Home() {
       audio.turnSerial = game.turnSerial;
       playTacticalSound({ type: "turn", side: game.turnSide });
     }
-  }, [stage, game, observed, spectatorMode, viewerSide, hotseatHandoff, isOnlineOpponentAction]);
+  }, [stage, game, observed, spectatorMode, viewerSide, hotseatHandoff]);
 
   const activeKillFxId = game.lastKillFx?.id ?? null;
   useEffect(() => {
-    if (!activeKillFxId || hotseatHandoff || isOnlineOpponentAction) return;
+    if (!activeKillFxId || hotseatHandoff) return;
     const timer = window.setTimeout(() => {
       setGame((current) => current.lastKillFx?.id === activeKillFxId ? { ...current, lastKillFx: null } : current);
     }, 2200);
     return () => window.clearTimeout(timer);
-  }, [activeKillFxId, hotseatHandoff, isOnlineOpponentAction]);
+  }, [activeKillFxId, hotseatHandoff]);
 
   const activeAftershockFxId = game.lastAftershockFx?.id ?? null;
   useEffect(() => {
-    if (!activeAftershockFxId || hotseatHandoff || isOnlineOpponentAction) return;
+    if (!activeAftershockFxId || hotseatHandoff) return;
     const timer = window.setTimeout(() => {
       setGame((current) => current.lastAftershockFx?.id === activeAftershockFxId ? { ...current, lastAftershockFx: null } : current);
     }, 2600);
     return () => window.clearTimeout(timer);
-  }, [activeAftershockFxId, hotseatHandoff, isOnlineOpponentAction]);
+  }, [activeAftershockFxId, hotseatHandoff]);
 
   const floatingNumberIds = useMemo(() => game.floatingNumbers.map((item) => item.id).join(","), [game.floatingNumbers]);
   useEffect(() => {
-    if (!game.floatingNumbers.length || hotseatHandoff || isOnlineOpponentAction) return;
+    if (!game.floatingNumbers.length || hotseatHandoff) return;
     const idsToClear = new Set(game.floatingNumbers.map((item) => item.id));
     const timer = window.setTimeout(() => {
       setGame((current) => current.floatingNumbers.some((item) => idsToClear.has(item.id))
@@ -9301,11 +9520,11 @@ export default function Home() {
         : current);
     }, 1500);
     return () => window.clearTimeout(timer);
-  }, [floatingNumberIds, hotseatHandoff, isOnlineOpponentAction]);
+  }, [floatingNumberIds, hotseatHandoff]);
 
   const activePostCombatMovementFx = game.postCombatMovementFxQueue?.[0] ?? null;
   useEffect(() => {
-    if (!activePostCombatMovementFx || hotseatHandoff || isOnlineOpponentAction) return;
+    if (!activePostCombatMovementFx || hotseatHandoff) return;
     const activeId = activePostCombatMovementFx.id;
     const duration = Math.max(760, (activePostCombatMovementFx.path.length - 1) * 260 + 520);
     window.setTimeout(() => mapBoardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 40);
@@ -9321,7 +9540,7 @@ export default function Home() {
       });
     }, duration);
     return () => window.clearTimeout(timer);
-  }, [activePostCombatMovementFx, hotseatHandoff, isOnlineOpponentAction]);
+  }, [activePostCombatMovementFx, hotseatHandoff]);
 
   const currentCombatScene = game.combatQueue[0] ?? null;
   const currentCombatPhase = currentCombatScene?.phase ?? null;
@@ -9348,7 +9567,7 @@ export default function Home() {
     && !combatApproachActive
     && combatIntroReadyId !== currentCombatId;
   useEffect(() => {
-    if (hotseatHandoff || isOnlineOpponentAction) return;
+    if (hotseatHandoff) return;
     if (!currentCombatId) {
       setCombatApproachReadyId(null);
       return;
@@ -9360,9 +9579,9 @@ export default function Home() {
     setCombatApproachReadyId(null);
     const timer = window.setTimeout(() => setCombatApproachReadyId(currentCombatId), combatApproachDuration);
     return () => window.clearTimeout(timer);
-  }, [currentCombatId, currentCombatApproachFx?.id, combatApproachDuration, hotseatHandoff, isOnlineOpponentAction]);
+  }, [currentCombatId, currentCombatApproachFx?.id, combatApproachDuration, hotseatHandoff]);
   useEffect(() => {
-    if (hotseatHandoff || isOnlineOpponentAction) return;
+    if (hotseatHandoff) return;
     if (!currentCombatId) {
       setCombatIntroReadyId(null);
       return;
@@ -9374,7 +9593,7 @@ export default function Home() {
     setCombatIntroReadyId(null);
     const timer = window.setTimeout(() => setCombatIntroReadyId(currentCombatId), 1850);
     return () => window.clearTimeout(timer);
-  }, [currentCombatId, combatApproachActive, hotseatHandoff, isOnlineOpponentAction]);
+  }, [currentCombatId, combatApproachActive, hotseatHandoff]);
   useEffect(() => {
     setCombatRetreatMapOpen(false);
   }, [currentCombatId, currentCombatPhase, currentCombatScene?.actorId]);
@@ -9491,6 +9710,7 @@ export default function Home() {
 
   const mutate = (recipe: (draft: GameState) => void) => {
     setGame((current) => {
+      if (isOnlineOpponentAction) return current;
       const draft = structuredClone(current) as GameState;
       ensureAiTacticalState(draft);
       recipe(draft);
@@ -9518,18 +9738,40 @@ export default function Home() {
   }, [game, onlineSession]);
 
   const toggleLineupAgent = (name: string) => {
-    const update = pickingSide === "attack" ? setAttackPick : setDefensePick;
-    const current = pickingSide === "attack" ? attackPick : defensePick;
+    const targetSide = playMode === "online" ? humanSide : pickingSide;
+    const update = targetSide === "attack" ? setAttackPick : setDefensePick;
+    const current = targetSide === "attack" ? attackPick : defensePick;
     if (current.includes(name)) update(current.filter((item) => item !== name));
     else if (current.length < 5) update([...current, name]);
   };
 
   const recommendedLineups = () => {
+    if (playMode === "online") {
+      if (humanSide === "attack") {
+        setAttackPick(["요루", "레이즈", "스카이", "소바", "바이퍼"]);
+        setDefensePick([]);
+      } else {
+        setAttackPick([]);
+        setDefensePick(["피닉스", "네온", "세이지", "킬조이", "오멘"]);
+      }
+      return;
+    }
     setAttackPick(["요루", "레이즈", "스카이", "소바", "바이퍼"]);
     setDefensePick(["피닉스", "네온", "세이지", "킬조이", "오멘"]);
   };
 
   const balancedRandomLineups = () => {
+    if (playMode === "online") {
+      const lineup = createBalancedRandomLineup();
+      if (humanSide === "attack") {
+        setAttackPick(lineup);
+        setDefensePick([]);
+      } else {
+        setAttackPick([]);
+        setDefensePick(lineup);
+      }
+      return;
+    }
     const lineups = createBalancedRandomLineups();
     setAttackPick(lineups.attack);
     setDefensePick(lineups.defense);
@@ -9543,11 +9785,13 @@ export default function Home() {
   };
 
   const createOnlineMatch = async () => {
-    if (attackPick.length !== 5 || defensePick.length !== 5 || onlineBusy) return;
+    const hostNames = humanSide === "attack" ? attackPick : defensePick;
+    if (hostNames.length !== 5 || onlineBusy) return;
     setOnlineBusy(true);
     setOnlineError(null);
     try {
-      const next = createInitialGame(attackPick, defensePick, Date.now());
+      const guestPlaceholder = createOnlinePlaceholderLineup(hostNames);
+      const next = createInitialGame(humanSide === "attack" ? hostNames : guestPlaceholder, humanSide === "defense" ? hostNames : guestPlaceholder, Date.now());
       const { createOnlineRoom } = await loadOnlineApi();
       const session = await createOnlineRoom(humanSide, next);
       onlineRevisionRef.current = 0;
@@ -9569,14 +9813,60 @@ export default function Home() {
     setOnlineBusy(true);
     setOnlineError(null);
     try {
-      const { joinOnlineRoom } = await loadOnlineApi();
+      const { joinOnlineRoom, getOnlineRoom } = await loadOnlineApi();
       const session = await joinOnlineRoom(onlineCode);
-      onlineRevisionRef.current = -1;
+      const room = await getOnlineRoom<GameState>(session.code);
+      const setupSide: Side = room.meta.phase === "buy_attack" || room.meta.phase === "setup_attack_wait" ? "attack" : "defense";
+      onlineRevisionRef.current = room.state.revision;
       onlineWritePendingRef.current = false;
       onlinePendingPhaseRef.current = null;
+      applyOnlineGameSnapshot(room.state, setupSide);
+      setOnlineLineupPick(session.host ? [] : savedOnlineLineup(session).filter((name) => Object.prototype.hasOwnProperty.call(AGENTS, name)));
       setOnlineSession(session);
+      setOnlineRoom(room);
       setOnlineCode(session.code);
-      setStage("lobby");
+      setStage(room.meta.phase === "ended" ? "play" : room.meta.phase);
+    } catch (error) {
+      setOnlineError(onlineFailureMessage(error));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const toggleOnlineLineupAgent = (name: string) => {
+    setOnlineLineupPick((current) => current.includes(name) ? current.filter((item) => item !== name) : current.length < 5 ? [...current, name] : current);
+  };
+
+  const randomOnlineLineup = () => {
+    if (!onlineSession || !onlineRoom) return;
+    const opponentNames = onlineRoom.state.game.teams[otherSide(onlineSession.side)].agents.map((agent) => agent.name);
+    try {
+      setOnlineLineupPick(createBalancedRandomLineup(opponentNames));
+      setOnlineError(null);
+    } catch {
+      setOnlineError("상대가 한 역할군의 모든 요원을 선택해 비중복 균형 랜덤을 만들 수 없습니다. 직접 5명을 선택하세요.");
+    }
+  };
+
+  const confirmOnlineLineup = async () => {
+    if (!onlineSession || !onlineRoom || onlineLineupPick.length !== 5 || onlineBusy) return;
+    setOnlineBusy(true);
+    setOnlineError(null);
+    try {
+      const remoteGame = onlineRoom.state.game;
+      const attackNames = onlineSession.side === "attack" ? onlineLineupPick : remoteGame.teams.attack.agents.map((agent) => agent.name);
+      const defenseNames = onlineSession.side === "defense" ? onlineLineupPick : remoteGame.teams.defense.agents.map((agent) => agent.name);
+      const next = createInitialGame(attackNames, defenseNames, remoteGame.strategySeed);
+      const { publishOnlineGame, setOnlinePhase } = await loadOnlineApi();
+      const revision = await publishOnlineGame(onlineSession, next);
+      onlineRevisionRef.current = revision;
+      onlineWritePendingRef.current = false;
+      setGame(next);
+      setOnlineRoom((current) => current ? { ...current, state: { revision, updatedBy: onlineSession.uid, game: next } } : current);
+      setSetupAgentId(next.teams.defense.agents[0]?.id ?? null);
+      await setOnlinePhase(onlineSession, "buy_defense");
+      window.localStorage.removeItem(ONLINE_LINEUP_STORAGE_KEY);
+      setStage("buy_defense");
     } catch (error) {
       setOnlineError(onlineFailureMessage(error));
     } finally {
@@ -9598,10 +9888,13 @@ export default function Home() {
 
   const exitOnlineMatch = () => {
     const session = onlineSession;
+    window.localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY);
+    window.localStorage.removeItem(ONLINE_LINEUP_STORAGE_KEY);
     setOnlineSession(null);
     setOnlineRoom(null);
     setOnlineError(null);
     setOnlineCode("");
+    setOnlineLineupPick([]);
     onlineRevisionRef.current = -1;
     onlineWritePendingRef.current = false;
     onlinePendingPhaseRef.current = null;
@@ -9752,6 +10045,8 @@ export default function Home() {
 
   const restartToTitle = () => {
     const session = onlineSession;
+    window.localStorage.removeItem(ONLINE_SESSION_STORAGE_KEY);
+    window.localStorage.removeItem(ONLINE_LINEUP_STORAGE_KEY);
     setGame(createInitialGame());
     setAttackPick([]);
     setDefensePick([]);
@@ -9767,6 +10062,7 @@ export default function Home() {
     setOnlineSession(null);
     setOnlineRoom(null);
     setOnlineCode("");
+    setOnlineLineupPick([]);
     setOnlineError(null);
     onlineRevisionRef.current = -1;
     onlineWritePendingRef.current = false;
@@ -9802,10 +10098,12 @@ export default function Home() {
     changeGameStage(spectatorMode ? "play" : nextAiSide === "defense" ? "buy_attack" : "buy_defense");
   };
 
+  if (onlineRestoring) return <OnlineReconnectScreen />;
   if (stage === "title") return <TitleScreen onStart={() => setStage("select")} />;
-  if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBalancedRandom={balancedRandomLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} playMode={playMode} onPlayMode={(mode) => { setPlayMode(mode); setOnlineError(null); }} humanSide={humanSide} onHumanSide={setHumanSide} onlineCode={onlineCode} onlineBusy={onlineBusy} onlineError={onlineError} onOnlineCode={setOnlineCode} onCreateOnline={() => void createOnlineMatch()} onJoinOnline={() => void joinOnlineMatch()} />;
+  if (stage === "select") return <SelectionScreen attackPick={attackPick} defensePick={defensePick} pickingSide={pickingSide} onPickingSide={setPickingSide} onToggle={toggleLineupAgent} onRecommended={recommendedLineups} onBalancedRandom={balancedRandomLineups} onBack={() => setStage("title")} onConfirm={confirmLineups} playMode={playMode} onPlayMode={(mode) => { setPlayMode(mode); if (mode === "online") setPickingSide(humanSide); setOnlineError(null); }} humanSide={humanSide} onHumanSide={(side) => { setHumanSide(side); if (playMode === "online") setPickingSide(side); }} onlineCode={onlineCode} onlineBusy={onlineBusy} onlineError={onlineError} onOnlineCode={setOnlineCode} onCreateOnline={() => void createOnlineMatch()} onJoinOnline={() => void joinOnlineMatch()} />;
+  if (stage === "lobby" && onlineSession && !onlineSession.host && onlineRoom?.players?.[otherSide(onlineSession.side)]) return <OnlineLineupScreen session={onlineSession} picked={onlineLineupPick} opponentNames={onlineRoom.state.game.teams[otherSide(onlineSession.side)].agents.map((agent) => agent.name)} busy={onlineBusy} error={onlineError} onToggle={toggleOnlineLineupAgent} onRandom={randomOnlineLineup} onConfirm={() => void confirmOnlineLineup()} onLeave={exitOnlineMatch} />;
   if (stage === "lobby" && onlineSession) return <OnlineLobbyScreen session={onlineSession} room={onlineRoom} onLeave={exitOnlineMatch} />;
-  if (isOnlineOpponentAction && onlineSession) return <OnlineWaitingScreen session={onlineSession} room={onlineRoom} game={game} onLeave={exitOnlineMatch} />;
+  if (isOnlineOpponentAction && onlineSession && stage !== "play") return <OnlineWaitingScreen session={onlineSession} room={onlineRoom} game={game} onLeave={exitOnlineMatch} />;
   if (hotseatHandoff) return <HotseatHandoff side={hotseatHandoff.side} phase={hotseatHandoff.phase} matchRound={game.matchRound} onReady={() => setHotseatHandoff(null)} />;
   if (stage === "buy_defense") return <PurchaseScreen game={game} side="defense" selectedId={setupAgentId} step="STEP 02" onSelect={setSetupAgentId} onWeapon={(weapon) => setupBuyWeapon("defense", weapon)} onBulkWeapon={(weapon) => setupBulkBuyWeapon("defense", weapon)} onArmor={(type, price, value) => setupBuyArmor("defense", type, price, value)} onBulkArmor={(type, price, value) => setupBulkBuyArmor("defense", type, price, value)} onSkill={(item) => setupBuySkill("defense", item)} onAllSkills={(scope) => setupBuyAllSkills("defense", scope)} onBack={() => { if (onlineSession) exitOnlineMatch(); else if (game.matchRound === 1 && !game.teams.attack.score && !game.teams.defense.score) setStage("select"); }} onContinue={() => { setDeploymentAgentId(game.teams.defense.agents[0]?.id ?? null); changeGameStage("deploy"); }} />;
   if (stage === "deploy") return <DeploymentScreen game={game} selectedId={deploymentAgentId} onSelect={setDeploymentAgentId} onPlace={placeDefender} onBack={() => { setSetupAgentId(game.teams.defense.agents[0]?.id ?? null); changeGameStage("buy_defense"); }} onStart={() => { if (aiSide === "attack") autoBuyAttackAndStart(); else { setSetupAgentId(game.teams.attack.agents[0]?.id ?? null); if (playMode === "hotseat") setHotseatHandoff({ side: "attack", phase: "setup" }); changeGameStage("buy_attack"); } }} />;
@@ -9813,7 +10111,7 @@ export default function Home() {
   if (stage === "setup_attack_wait") return <AttackWaitSetupScreen game={game} selectedId={setupAgentId} onSelect={setSetupAgentId} onSetWait={setAttackOpeningWait} onAuto={() => mutate((draft) => autoSetAttackOpeningWaits(draft))} onClear={clearAttackOpeningWait} onBack={() => changeGameStage("buy_attack")} onStart={() => startFirstDefenseTurn("공격팀 구매와 본진 대기 설정 완료. 수비팀 첫 턴을 시작합니다.")} />;
 
   const selectAgent = (id: string) => {
-    if (isAiControlledTurn || game.pendingContact) return;
+    if (viewerInputLocked || game.pendingContact) return;
     const agent = getAgent(game, id);
     if (!agent || agent.team !== game.turnSide || !agent.alive || game.winner) return;
     if (selectedCard?.used && selectedCard.committedAgentId && selectedCard.committedAgentId !== id) return;
@@ -9821,7 +10119,7 @@ export default function Home() {
   };
 
   const selectCard = (card: ActionCard) => {
-    if (isAiControlledTurn) return;
+    if (viewerInputLocked) return;
     if (card.used || game.actionsUsed >= 3 || game.pendingWait || game.targeting || game.pendingContact || game.winner) return;
     if (selectedCard?.used && selectedCard.committedAgentId) return;
     mutate((draft) => {
@@ -10303,7 +10601,7 @@ export default function Home() {
   });
 
   const handleRegionClick = (region: number) => {
-    if (game.winner || isAiControlledTurn || game.pendingContact) return;
+    if (game.winner || viewerInputLocked || game.pendingContact) return;
     if (game.pendingWait) { finishWait(region); return; }
     if (game.targeting?.kind === "skill") { if (validTargets.has(region)) resolveSkillTarget(region); return; }
     if (game.targeting?.kind === "special") {
@@ -11779,11 +12077,11 @@ export default function Home() {
   );
   const movementArrivalDelay = movementFx ? Math.max(360, (movementFx.path.length - 2) * 240 + 360) : 0;
   const movementArrivalStyle = { "--move-arrival-delay": `${movementArrivalDelay}ms` } as CSSProperties;
-  const targetingSkillActor = game.targeting?.kind === "skill" ? getAgent(game, game.targeting.agentId) : null;
+  const targetingSkillActor = !isOnlineOpponentAction && game.targeting?.kind === "skill" ? getAgent(game, game.targeting.agentId) : null;
   const targetingSkillDefinition = targetingSkillActor && game.targeting?.kind === "skill"
     ? AGENTS[targetingSkillActor.name].skills.find((definition) => definition.id === game.targeting?.skillId) ?? null
     : null;
-  const targetingSelectedRegions = game.targeting?.kind === "skill" ? game.targeting.selected ?? [] : [];
+  const targetingSelectedRegions = !isOnlineOpponentAction && game.targeting?.kind === "skill" ? game.targeting.selected ?? [] : [];
   const targetingRouteRegions = targetingSkillActor && targetingSkillDefinition
     ? ["smoke", "cove"].includes(targetingSkillDefinition.id)
       ? targetingSelectedRegions
@@ -11800,9 +12098,10 @@ export default function Home() {
     && !isDeployableDisabled(game, item)
     && (item.owner === viewerSide || observed.has(item.region)));
   return (
-    <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""} ${onlineMode ? "online-shell" : ""}`}>
+    <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""} ${onlineMode ? "online-shell" : ""} ${isOnlineOpponentAction ? "online-observing" : ""}`}>
       <AiController game={game} sides={controlledAiSides} paused={spectatorMode && spectatorPaused} speed={spectatorMode ? spectatorSpeed : 1} stepSignal={spectatorStep} presentationLocked={combatApproachActive || combatIntroActive || currentCombatPhase === "outro"} onStep={runAiStep} onEndTurn={endTurn} onCombatAttack={combatAttack} onCombatRetreat={combatRetreat} onCombatAdvance={combatAdvance} onCombatContinue={advanceCombat} onTailwind={tailwindMove} />
       <CombatOutroController sceneId={currentCombatPhase === "outro" ? currentCombatId : null} onComplete={advanceCombat} />
+      {isOnlineOpponentAction && onlineSession && <div className={`online-observer-strip ${combatScene ? "combat-live" : ""}`} role="status" aria-live="polite"><i /><span><b>{combatScene ? "상대 교전 선택 관전 중" : "상대 행동 관전 중"}</b><small>{combatScene ? "교전 접근·사격·피해·결과가 실시간으로 공유됩니다." : "내 시야 기준 전장을 계속 확인할 수 있습니다."}</small></span><em>ROOM {onlineSession.code}</em></div>}
       {game.lastKillFx && <KillStreakOverlay key={game.lastKillFx.id} highlight={game.lastKillFx} />}
       {game.lastAftershockFx && <AftershockAlertOverlay key={game.lastAftershockFx.id} alert={game.lastAftershockFx} />}
       <header className="topbar">
@@ -11814,7 +12113,7 @@ export default function Home() {
           <span className="side-name defense-name">DEF <b>{game.teams.defense.score}</b></span>
           <div className="round-core">
             <span>매치 R{game.matchRound} · 전술 {game.cycle}/{PRE_PLANT_CYCLE_LIMIT}</span>
-            <strong>{spectatorMode ? `AI 시뮬레이션 · ${SIDE_LABEL[game.turnSide]}` : onlineSession ? `ONLINE ${onlineSession.code} · ${SIDE_LABEL[actorSide]} 조작` : `${SIDE_LABEL[game.turnSide]} ${isAiControlledTurn ? "AI 작전 중" : "행동"}`}</strong>
+            <strong>{spectatorMode ? `AI 시뮬레이션 · ${SIDE_LABEL[game.turnSide]}` : onlineSession ? `ONLINE ${onlineSession.code} · ${isOnlineOpponentAction ? "상대 행동 관전" : `${SIDE_LABEL[actorSide]} 조작`}` : `${SIDE_LABEL[game.turnSide]} ${isAiControlledTurn ? "AI 작전 중" : "행동"}`}</strong>
           </div>
           <span className="side-name attack-name"><b>{game.teams.attack.score}</b> ATK</span>
         </div>
@@ -11856,7 +12155,7 @@ export default function Home() {
             {viewerTeam.agents.map((agent, index) => {
               const stats = finalStats(game, agent);
               return (
-                <button key={agent.id} className={`agent-row ${game.selectedAgentId === agent.id ? "selected" : ""} ${!agent.alive ? "dead" : ""}`} disabled={isAiControlledTurn} onClick={() => selectAgent(agent.id)}>
+                <button key={agent.id} className={`agent-row ${game.selectedAgentId === agent.id ? "selected" : ""} ${!agent.alive ? "dead" : ""}`} disabled={viewerInputLocked} onClick={() => selectAgent(agent.id)}>
                   <span className="agent-portrait-frame"><span className={`agent-avatar role-${agent.role} ${agentArtClass(agent.name)}`} aria-label={`${agent.name} 초상`}><small>{index + 1}</small></span><AgentStatusBadges game={game} agent={agent} compact /></span>
                   <span className="agent-copy"><strong>{agent.name}</strong><small>{ROLE_LABEL[agent.role]} · {WEAPONS[agent.weapon].name}</small></span>
                   <span className="agent-vitals"><b>{agent.hp + agent.armor}</b><small>A{stats.aim} / M{stats.move}</small></span>
@@ -11993,7 +12292,7 @@ export default function Home() {
                }), ...rememberedEnemies.filter((agent) => !enemies.some((enemy) => enemy.id === agent.id))];
               const deceptiveFakeouts = game.deployables.filter((item) => item.kind === "fakeout" && item.owner !== viewerSide && item.region === region.id && observedNow);
               const revealedEnemies = shownEnemies.filter((agent) => observedNow || agent.detected || (allowLastKnown && game.revealedEnemyIds.includes(agent.id)));
-              const isValid = !isAiControlledTurn && validTargets.has(region.id);
+              const isValid = !viewerInputLocked && validTargets.has(region.id);
               const devices = game.deployables.filter((item) => item.region === region.id && (item.owner === viewerSide || observedNow) && !(item.kind === "fakeout" && item.owner !== viewerSide));
               const fire = game.fires.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
               const stim = game.stims.some((item) => item.region === region.id && (item.owner === viewerSide || observedNow));
@@ -12066,12 +12365,12 @@ export default function Home() {
               <div><small>SPIKE</small><strong>{spikeHudLabel}</strong></div>
               {spikeVisible && ["planted", "half", "defusing"].includes(game.spike.status) && <b>{game.spike.explosion}</b>}
             </div>
-            {!isAiControlledTurn && (game.pendingWait || game.targeting) && <div className="targeting-banner">
+            {!viewerInputLocked && (game.pendingWait || game.targeting) && <div className="targeting-banner">
               <strong>{game.pendingWait ? WEAPONS[getAgent(game, game.pendingWait)?.weapon ?? "classic"].type === "sniper" ? "저격 대기 구역 선택 · 거리 1~2" : "대기 구역 선택 · 거리 1" : game.targeting?.kind === "control" ? "두 방향을 지정" : game.targeting?.kind === "special" ? `${game.targeting.special === "rush" ? "러쉬" : "커버"} 이동` : targetingSkillDefinition ? `${targetingSkillDefinition.name} · ${targetingSelectedRegions.length ? `경로 ${targetingSelectedRegions.length}단계 지정됨` : "효과 범위 선택"}` : "스킬 목표 선택"}</strong>
               <span>{game.pendingWait ? "점유 중인 적이 있으면 먼저 일반 교전을 벌입니다. 대기 시도자는 이 교전에서 후퇴할 수 없습니다." : targetingSkillDefinition ? `${targetingSkillDefinition.description} · 청록 구역은 선택 가능, 번호 표시는 현재 지정 경로입니다.` : "청록색으로 표시된 구역을 선택하세요."}</span>
               <button onClick={(event) => { event.stopPropagation(); if (game.pendingWait) skipWait(); else cancelTargeting(); }}>취소</button>
             </div>}
-            {!isAiControlledTurn && game.pendingContact && pendingContactAgent && !combatScene && !combatIntermission && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
+            {!viewerInputLocked && game.pendingContact && pendingContactAgent && !combatScene && !combatIntermission && <section className="contact-choice-panel" aria-label="거리 1 교전 선택" aria-live="polite">
               <header><span>VISUAL CONTACT // 거리 1</span><strong>{pendingContactAgent.name}이 적을 발견했습니다</strong><p>교전을 선택하면 이 요원은 첫 공격을 마칠 때까지 이탈할 수 없습니다.</p></header>
               <div>{pendingContactEnemies.map((enemy) => { const matchingWait = enemy.waitDirs.includes(pendingContactAgent.region); const offAngle = enemy.waitDirs.length > 0 && !matchingWait; return <button key={enemy.id} className={`contact-engage ${offAngle ? "off-angle-contact" : ""}`} onClick={() => engageOptionalContact(enemy.id)}><i className={agentArtClass(enemy.name)} /><span><b>{withAndJosa(enemy.name)} 교전</b><small>{matchingWait ? "대기 반응 · 적 기본 우선도 1" : offAngle ? `기습 우선도 ${Math.max(1, (game.pendingContact?.priority ?? 3) - 1)} · 적 대응 우선도 3` : `${regionName(enemy.region)} · 양쪽 보너스 없음`}</small>{matchingWait && <em>현재 위치를 대기 중 · 교전 선택 시 대기 발동</em>}{offAngle && <em>다른 방향 대기 중: {enemy.waitDirs.map((region) => `${region}번`).join(" · ")} · 대기 미발동</em>}</span></button>; })}</div>
               <button className="contact-skip" onClick={skipOptionalContact}><b>교전하지 않기</b><small>{game.pendingContact.source === "turn-start" ? "턴을 그대로 시작합니다" : "남은 이동·행동을 계속합니다"}</small></button>
@@ -12080,22 +12379,22 @@ export default function Home() {
 
           <div className="hand-zone">
             <div className="hand-label"><span>TACTICAL HAND</span><small>카드 선택 → 요원 선택 → 지도 구역 선택</small></div>
-            {!isAiControlledTurn && selectedAgent && selectedCard?.kind === "basic" && !game.pendingWait && !game.pendingContact && <button className="stationary-basic-action" onClick={() => handleRegionClick(selectedAgent.region)}>
+            {!viewerInputLocked && selectedAgent && selectedCard?.kind === "basic" && !game.pendingWait && !game.pendingContact && <button className="stationary-basic-action" onClick={() => handleRegionClick(selectedAgent.region)}>
               <b>제자리에서 기본 행동</b><small>이동하지 않고 추가행동을 얻은 뒤 대기 방향 선택</small>
             </button>}
             <div className="card-row">
               {viewerTeam.hand.map((card, index) => {
                 const unusable = displayedAgent ? !canUseCard(card, displayedAgent) : false;
                 return (
-                  <button key={card.id} className={`action-card card-${card.kind} ${game.selectedCardId === card.id ? "selected" : ""} ${card.used ? "used" : ""}`} disabled={isAiControlledTurn || card.used || game.actionsUsed >= 3 || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner} onClick={() => selectCard(card)}>
+                  <button key={card.id} className={`action-card card-${card.kind} ${game.selectedCardId === card.id ? "selected" : ""} ${card.used ? "used" : ""}`} disabled={viewerInputLocked || card.used || game.actionsUsed >= 3 || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner} onClick={() => selectCard(card)}>
                     <span className="card-index">0{index + 1}</span><span className="card-tag">{CARD_DATA[card.kind].tag}</span>
                     <strong>{CARD_DATA[card.kind].name}</strong><p>{CARD_DATA[card.kind].description}</p>
-                    <small className={unusable ? "blocked" : ""}>{isAiControlledTurn ? "상대 작전 중 · 내 카드" : unusable ? `${ROLE_LABEL[displayedAgent!.role]} 사용 불가` : `${card.source} 덱 제공`}</small>
+                    <small className={unusable ? "blocked" : ""}>{viewerInputLocked ? "상대 작전 중 · 내 카드" : unusable ? `${ROLE_LABEL[displayedAgent!.role]} 사용 불가` : `${card.source} 덱 제공`}</small>
                   </button>
                 );
               })}
-              {!isAiControlledTurn && viewerSide === "attack" && game.cycle <= 2 && !viewerTeam.rushUsed && <button className="special-card rush-card" onClick={() => startSpecial("rush")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact || game.actionsUsed >= 3}><span>ROUND {game.cycle}</span><strong>러쉬</strong><p>한 구역 아군 전원을 인접 구역으로 이동 · 행동 1회 소모</p></button>}
-              {!isAiControlledTurn && viewerSide === "defense" && viewerTeam.cover && <button className="special-card cover-card" onClick={() => startSpecial("cover")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact || game.actionsUsed >= 3}><span>ONE USE</span><strong>커버</strong><p>보관 가능한 단체 재진입 카드 · 행동 1회 소모</p></button>}
+              {!viewerInputLocked && viewerSide === "attack" && game.cycle <= 2 && !viewerTeam.rushUsed && <button className="special-card rush-card" onClick={() => startSpecial("rush")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact || game.actionsUsed >= 3}><span>ROUND {game.cycle}</span><strong>러쉬</strong><p>한 구역 아군 전원을 인접 구역으로 이동 · 행동 1회 소모</p></button>}
+              {!viewerInputLocked && viewerSide === "defense" && viewerTeam.cover && <button className="special-card cover-card" onClick={() => startSpecial("cover")} disabled={!!game.targeting || !!game.pendingWait || !!game.pendingContact || game.actionsUsed >= 3}><span>ONE USE</span><strong>커버</strong><p>보관 가능한 단체 재진입 카드 · 행동 1회 소모</p></button>}
             </div>
           </div>
         </section>
@@ -12105,7 +12404,7 @@ export default function Home() {
           {displayedAgent ? <>
             <div className="selected-agent-head">
               <span className="large-portrait-frame"><span className={`large-avatar role-${displayedAgent.role} ${agentArtClass(displayedAgent.name)}`} aria-label={`${displayedAgent.name} 초상`} /><AgentStatusBadges game={game} agent={displayedAgent} /></span>
-              <div><span className="eyebrow">{isAiControlledTurn ? "YOUR AGENT" : "SELECTED AGENT"}</span><h2>{displayedAgent.name}</h2><p>{ROLE_LABEL[displayedAgent.role]} · {regionName(displayedAgent.region)}</p></div>
+              <div><span className="eyebrow">{viewerInputLocked ? "YOUR AGENT" : "SELECTED AGENT"}</span><h2>{displayedAgent.name}</h2><p>{ROLE_LABEL[displayedAgent.role]} · {regionName(displayedAgent.region)}</p></div>
             </div>
             <div className="stat-grid">
               <div><span>체력</span><strong>{displayedAgent.hp}/{AGENT_MAX_HP}</strong></div><div><span>방어</span><strong>{displayedAgent.armor}/{MAX_ARMOR}</strong></div>
@@ -12113,17 +12412,17 @@ export default function Home() {
             </div>
             <div className="loadout-line"><div><span className="eyebrow">PRIMARY</span><strong>{WEAPONS[displayedAgent.weapon].name}</strong></div><div className="damage-chip">{WEAPONS[displayedAgent.weapon].body}<small>BODY</small> / {WEAPONS[displayedAgent.weapon].head}<small>HEAD</small></div></div>
             <div className="extra-action-head"><span>현재 카드 추가행동</span><strong>{displayedAgent.extraActions}</strong></div>
-            {!isAiControlledTurn && selectedAgent && selectedAgent.id === displayedAgent.id && selectedCard && !selectedCard.used && !game.pendingContact && canUseCard(selectedCard, selectedAgent) && <button className="pre-action-button" onClick={commitPreAction}><span>카드 전/직후 중 1회</span><strong>사전 추가행동 사용</strong><small>이 카드에만 연결됩니다. 다음 카드 선택이나 턴 종료 시 남은 횟수는 사라집니다.</small></button>}
-            {!isAiControlledTurn && selectedAgent && selectedCard?.used && selectedCard.committedAgentId === selectedAgent.id && <div className="committed-card-note"><span>COMMITTED</span><strong>{CARD_DATA[selectedCard.kind].name} 행동을 지도에서 완료하세요.</strong></div>}
+            {!viewerInputLocked && selectedAgent && selectedAgent.id === displayedAgent.id && selectedCard && !selectedCard.used && !game.pendingContact && canUseCard(selectedCard, selectedAgent) && <button className="pre-action-button" onClick={commitPreAction}><span>카드 전/직후 중 1회</span><strong>사전 추가행동 사용</strong><small>이 카드에만 연결됩니다. 다음 카드 선택이나 턴 종료 시 남은 횟수는 사라집니다.</small></button>}
+            {!viewerInputLocked && selectedAgent && selectedCard?.used && selectedCard.committedAgentId === selectedAgent.id && <div className="committed-card-note"><span>COMMITTED</span><strong>{CARD_DATA[selectedCard.kind].name} 행동을 지도에서 완료하세요.</strong></div>}
             <div className="skills-list">
               {AGENTS[displayedAgent.name].skills.map((item) => (
-                <button key={item.id} disabled={isAiControlledTurn || displayedAgent.extraActions < 1 || (displayedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner || isAgentSuppressed(game, displayedAgent) || !skillAllowedDuringDefenseOpening(game, displayedAgent.team, item.id) || ["headhunter", "soul-harvest"].includes(item.id)} onClick={() => activateSkill(item)} title={!skillAllowedDuringDefenseOpening(game, displayedAgent.team, item.id) ? "수비 준비 턴에는 설치·배치 스킬만 사용할 수 있습니다." : item.description}>
+                <button key={item.id} disabled={viewerInputLocked || displayedAgent.extraActions < 1 || (displayedAgent.skills[item.id] ?? 0) < 1 || !!game.targeting || !!game.pendingWait || !!game.pendingContact || !!game.winner || isAgentSuppressed(game, displayedAgent) || !skillAllowedDuringDefenseOpening(game, displayedAgent.team, item.id) || ["headhunter", "soul-harvest"].includes(item.id)} onClick={() => activateSkill(item)} title={!skillAllowedDuringDefenseOpening(game, displayedAgent.team, item.id) ? "수비 준비 턴에는 설치·배치 스킬만 사용할 수 있습니다." : item.description}>
                   <span className={`skill-glyph ${skillArtClass(item.id)}`} aria-label={`${item.name} 아이콘`} /><span><strong>{item.name}</strong><small>{item.description}</small></span><b>×{displayedAgent.skills[item.id] ?? 0}</b>
                 </button>
               ))}
             </div>
             <div className="quick-actions">
-              {!isAiControlledTurn && selectedAgent && <>
+              {!viewerInputLocked && selectedAgent && <>
                 {canPlant && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("plant")}>◆ 스파이크 설치</button>}
                 {canHalf && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("half")}>◇ 반 해체</button>}
                 {canFinal && <button disabled={selectedAgent.extraActions < 1 || !!game.pendingContact} onClick={() => quickAction("final")}>◇ 최종 해체</button>}
@@ -12145,9 +12444,9 @@ export default function Home() {
           </> : <div className="empty-inspector">요원을 선택하세요.</div>}
           <div className="combat-log">
             <div className="log-heading"><span>전투 기록</span><i>LIVE</i></div>
-            {isAiControlledTurn && !spectatorMode ? <div className="opponent-turn-note"><b>상대 작전 진행 중</b><span>아군의 거리 1 시야와 직접 교전으로 확인되는 정보만 표시합니다.</span></div> : <ol>{viewerLog.map((entry, index) => <li key={`${entry}-${index}`}><span>{String(viewerLog.length - index).padStart(2, "0")}</span>{entry}</li>)}</ol>}
+            {viewerInputLocked && !spectatorMode ? <div className="opponent-turn-note"><b>상대 작전 진행 중</b><span>아군의 거리 1 시야와 직접 교전으로 확인되는 정보만 표시합니다.</span></div> : <ol>{viewerLog.map((entry, index) => <li key={`${entry}-${index}`}><span>{String(viewerLog.length - index).padStart(2, "0")}</span>{entry}</li>)}</ol>}
           </div>
-          {spectatorMode ? <div className="spectator-status"><i className={spectatorPaused ? "paused" : ""} /><span>{spectatorPaused ? "시뮬레이션 일시정지" : `AI 자동 진행 · ×${spectatorSpeed}`}</span><small>전장 전체 정보 공개</small></div> : <button className="end-turn" disabled={isAiControlledTurn || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner || game.combatQueue.length > 0 || combatIntermission || !!(selectedCard?.used && selectedCard.committedAgentId)} onClick={endTurn}><span>턴 종료</span><small>{game.actionsUsed}/3 카드 사용 · 미사용 카드도 버림</small></button>}
+          {spectatorMode ? <div className="spectator-status"><i className={spectatorPaused ? "paused" : ""} /><span>{spectatorPaused ? "시뮬레이션 일시정지" : `AI 자동 진행 · ×${spectatorSpeed}`}</span><small>전장 전체 정보 공개</small></div> : <button className="end-turn" disabled={viewerInputLocked || !!game.pendingWait || !!game.targeting || !!game.pendingContact || !!game.winner || game.combatQueue.length > 0 || combatIntermission || !!(selectedCard?.used && selectedCard.committedAgentId)} onClick={endTurn}><span>턴 종료</span><small>{game.actionsUsed}/3 카드 사용 · 미사용 카드도 버림</small></button>}
         </aside>
       </section>
 
@@ -12160,6 +12459,7 @@ export default function Home() {
       {combatScene && !combatApproachActive && <div className="modal-backdrop combat-backdrop"><section className={`combat-modal phase-${combatScene.phase} ${combatIntroActive ? "presentation-intro" : combatScene.phase === "outro" ? "presentation-outro" : ""}`} aria-label="전투 진행" aria-live="polite">
         {(combatIntroActive || combatScene.phase === "outro") && <CombatTransitionScene scene={combatScene} mode={combatScene.phase === "outro" ? "outro" : "intro"} />}
         <header className="combat-modal-head"><div><span className="combat-alert"><i /> ENGAGEMENT ACTIVE</span><h2>{combatScene.kind === "turret" ? "포탑 자동 교전" : `지속 교전 · ${combatScene.round}회차`}</h2></div><div><span>GAME TURN</span><b>{SIDE_LABEL[game.turnSide]} · 전술 {game.cycle}</b></div></header>
+        {isOnlineOpponentAction && <div className="remote-combat-wait"><i /><span><b>상대의 교전 선택을 기다리는 중</b><small>접근·사격·피해·이탈 결과는 양쪽 화면에 실시간으로 공유됩니다.</small></span></div>}
         <div ref={combatTurnRef} className={`combat-turn-banner focus-${combatFocusSide}`}>
           <div className={`combat-game-turn ${game.turnSide}`}><span>현재 게임 턴</span><b>{SIDE_LABEL[game.turnSide]}</b><small>행동카드 {game.actionsUsed}/3 사용</small></div>
           <i>›</i>

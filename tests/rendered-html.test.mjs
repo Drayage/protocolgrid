@@ -193,7 +193,7 @@ test("human versus AI supports either side and mirrors setup after a side swap",
   assert.match(page, /aiSide === "defense" \? "buy_attack" : "buy_defense"/);
   assert.match(page, /const nextHumanSide = playMode === "vs-ai" && swapSides \? otherSide\(humanSide\) : humanSide/);
   assert.match(page, /else if \(nextAiSide === "defense"\) prepareAiDefenseForHumanAttack\(draft\)/);
-  assert.match(page, /humanSide=\{humanSide\} onHumanSide=\{setHumanSide\}/);
+  assert.match(page, /humanSide=\{humanSide\} onHumanSide=\{\(side\) => \{ setHumanSide\(side\)/);
   assert.match(css, /\.human-side-picker/);
 });
 
@@ -221,8 +221,16 @@ test("online human versus human creates Firebase rooms and synchronizes private-
   assert.match(page, /type PlayMode = "hotseat" \| "online" \| "vs-ai" \| "ai-vs-ai"/);
   assert.match(page, /온라인 대전/);
   assert.match(page, /function OnlineLobbyScreen/);
+  assert.match(page, /function OnlineLineupScreen/);
   assert.match(page, /function OnlineWaitingScreen/);
   assert.match(page, /function onlineControlSide/);
+  assert.match(page, /const viewerInputLocked = isAiControlledTurn \|\| isOnlineOpponentAction/);
+  assert.match(page, /isOnlineOpponentAction && onlineSession && stage !== "play"/);
+  assert.match(page, /className=\{`online-observer-strip \$\{combatScene \? "combat-live" : ""\}`\}/);
+  assert.match(page, /className="remote-combat-wait"/);
+  assert.match(page, /교전 접근·사격·피해·결과가 실시간으로 공유됩니다/);
+  assert.match(page, /if \(isOnlineOpponentAction\) return current/);
+  assert.doesNotMatch(page, /stage !== "play" \|\| hotseatHandoff \|\| isOnlineOpponentAction/);
   assert.match(page, /const \{ publishOnlineGame, setOnlinePhase \} = await loadOnlineApi\(\)/);
   assert.match(page, /publishOnlineGame\(session, snapshot\)/);
   assert.match(page, /isOnlineOpponentAction/);
@@ -231,6 +239,38 @@ test("online human versus human creates Firebase rooms and synchronizes private-
   assert.match(online, /runTransaction/);
   assert.match(online, /onDisconnect\(connectedRef\)\.set\(false\)/);
   assert.match(online, /export async function refreshOnlinePresence/);
+  assert.match(online, /export async function resumeOnlineSession/);
+  assert.match(online, /export async function getOnlineRoom/);
+  assert.match(online, /export function subscribeOnlineGameState/);
+  assert.doesNotMatch(online, /if \(room\.meta\.status === "waiting"\)/);
+  assert.match(online, /const unsubscribers = \[/);
+  assert.match(online, /`\$\{path\}\/state`/);
+  assert.match(page, /ONLINE_SESSION_STORAGE_KEY/);
+  assert.match(page, /ONLINE_LINEUP_STORAGE_KEY/);
+  assert.match(page, /function savedOnlineSession/);
+  assert.match(page, /function savedOnlineLineup/);
+  assert.match(page, /function OnlineReconnectScreen/);
+  assert.match(page, /resumeOnlineSession\(saved\)/);
+  assert.match(page, /getOnlineRoom<GameState>\(session\.code\)/);
+  assert.match(page, /subscribeOnlineGameState<GameState>/);
+  assert.match(page, /applyOnlineGameSnapshot\(room\.state, setupSide\)/);
+  assert.match(page, /Realtime Database removes empty arrays\/objects/);
+  assert.match(page, /game\.combatQueue \?\?= \[\]/);
+  assert.match(page, /agent\.waitDirs \?\?= \[\]/);
+  assert.match(page, /function createBalancedRandomLineup/);
+  assert.match(page, /function createOnlinePlaceholderLineup/);
+  assert.match(page, /상대가 한 역할군의 모든 요원을 선택해 비중복 균형 랜덤을 만들 수 없습니다/);
+  assert.match(page, /const confirmOnlineLineup = async/);
+  assert.match(page, /publishOnlineGame\(onlineSession, next\)/);
+  assert.match(page, /setOnlinePhase\(onlineSession, "buy_defense"\)/);
+  assert.match(page, /방장은 자기 진영만 선택합니다/);
+  assert.match(page, /props\.playMode !== "online" \|\| props\.humanSide === "attack"/);
+  assert.match(page, /if \(playMode === "online"\) \{\s+const lineup = createBalancedRandomLineup\(\)/);
+  assert.match(page, /입장한 뒤 내가 플레이할 진영의 요원 5명을 선택합니다/);
+  assert.match(page, /localStorage\.setItem\(ONLINE_SESSION_STORAGE_KEY/);
+  assert.match(page, /localStorage\.removeItem\(ONLINE_SESSION_STORAGE_KEY\)/);
+  assert.match(page, /localStorage\.setItem\(ONLINE_LINEUP_STORAGE_KEY/);
+  assert.match(page, /localStorage\.removeItem\(ONLINE_LINEUP_STORAGE_KEY\)/);
   assert.doesNotThrow(() => JSON.parse(rules));
   assert.match(rules, /protocol_grid_rooms/);
   assert.match(rules, /auth != null/);
@@ -239,6 +279,10 @@ test("online human versus human creates Firebase rooms and synchronizes private-
   assert.match(rules, /child\('game'\)\.child\('winner'\)\.exists\(\)/);
   assert.match(css, /\.online-room-screen/);
   assert.match(css, /\.online-waiting-screen/);
+  assert.match(css, /\.online-lineup-layout/);
+  assert.match(css, /\.online-lineup-summary \.confirm-lineup \{ position: fixed/);
+  assert.match(css, /\.online-observer-strip/);
+  assert.match(css, /\.online-observing \.combat-modal > \.combat-actions/);
 });
 
 test("AI versus AI spectator mode auto-prepares both teams and records tactical analysis", async () => {
@@ -888,6 +932,7 @@ test("hot-reloaded games backfill newly added AI tactical state", async () => {
   assert.match(page, /function ensureAiTacticalState\(game: GameState\)/);
   assert.match(page, /game\.barriers \?\?= \[\]/);
   assert.match(page, /game\.toxicScreens \?\?= \[\]/);
+  assert.match(page, /game\.enemyMemories\.forEach\(\(memory\) => \{ memory\.waitDirs \?\?= \[\]; \}\)/);
   assert.match(page, /game\.aiEnemyKnowledge \?\?= \[\]/);
   assert.match(page, /game\.aiRecoveryOrders \?\?= \[\]/);
   assert.match(page, /const draft = structuredClone\(current\) as GameState;[\s\S]{0,100}ensureAiTacticalState\(draft\)/);
@@ -1884,6 +1929,7 @@ test("agent selection is grouped by role and balanced random lineups alone avoid
   assert.match(page, /defense\.push\(draw\(\)\)/);
   assert.match(page, />균형 랜덤</);
   const manualToggle = page.slice(page.indexOf("const toggleLineupAgent"), page.indexOf("const recommendedLineups"));
-  assert.match(manualToggle, /const current = pickingSide === "attack" \? attackPick : defensePick/);
+  assert.match(manualToggle, /const targetSide = playMode === "online" \? humanSide : pickingSide/);
+  assert.match(manualToggle, /const current = targetSide === "attack" \? attackPick : defensePick/);
   assert.doesNotMatch(manualToggle, /otherSide|opposing|상대/);
 });

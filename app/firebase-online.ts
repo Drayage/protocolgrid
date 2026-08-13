@@ -135,22 +135,69 @@ export async function joinOnlineRoom(codeInput: string): Promise<OnlineSession> 
   }, { applyLocally: false });
   if (!claim.committed) throw new Error("다른 플레이어가 먼저 참가했습니다.");
 
-  if (room.meta.status === "waiting") {
-    await update(ref(database, `${roomPath(code)}/meta`), { status: "playing", phase: "buy_defense" });
-  }
   const session = { code, uid: user.uid, side, host: user.uid === room.meta.hostUid } satisfies OnlineSession;
   await registerPresence(session);
   return session;
 }
 
-export function subscribeOnlineRoom<Game>(code: string, listener: (room: OnlineRoom<Game> | null) => void): Unsubscribe {
+export async function resumeOnlineSession(saved: OnlineSession): Promise<OnlineSession> {
+  const code = normalizeCode(saved.code);
+  if (code.length < 4) throw new Error("저장된 온라인 방 코드가 올바르지 않습니다.");
+  const user = await authenticatedUser();
   const { database } = firebaseServices();
-  return onValue(ref(database, roomPath(normalizeCode(code))), (snapshot) => {
-    listener(snapshot.exists() ? snapshot.val() as OnlineRoom<Game> : null);
+  const snapshot = await get(ref(database, roomPath(code)));
+  if (!snapshot.exists()) throw new Error("다시 접속할 온라인 방을 찾을 수 없습니다.");
+  const room = snapshot.val() as OnlineRoom<unknown>;
+  const side = (Object.entries(room.players ?? {}) as [OnlineSide, OnlinePlayer][])
+    .find(([, player]) => player.uid === user.uid)?.[0];
+  if (!side) throw new Error("이 브라우저의 기존 플레이어 자리를 확인할 수 없습니다.");
+  const session = { code, uid: user.uid, side, host: room.meta.hostUid === user.uid } satisfies OnlineSession;
+  await registerPresence(session);
+  return session;
+}
+
+export async function getOnlineRoom<Game>(codeInput: string): Promise<OnlineRoom<Game>> {
+  const code = normalizeCode(codeInput);
+  await authenticatedUser();
+  const { database } = firebaseServices();
+  const snapshot = await get(ref(database, roomPath(code)));
+  if (!snapshot.exists()) throw new Error("온라인 방을 찾을 수 없습니다.");
+  return snapshot.val() as OnlineRoom<Game>;
+}
+
+export function subscribeOnlineGameState<Game>(code: string, listener: (state: OnlineRoom<Game>["state"] | null) => void): Unsubscribe {
+  const { database } = firebaseServices();
+  return onValue(ref(database, `${roomPath(normalizeCode(code))}/state`), (snapshot) => {
+    listener(snapshot.exists() ? snapshot.val() as OnlineRoom<Game>["state"] : null);
   }, (error) => {
-    console.error("온라인 방 구독 실패", error);
+    console.error("온라인 게임 상태 구독 실패", error);
     listener(null);
   });
+}
+
+export function subscribeOnlineRoom<Game>(code: string, listener: (room: OnlineRoom<Game> | null) => void): Unsubscribe {
+  const { database } = firebaseServices();
+  const path = roomPath(normalizeCode(code));
+  let meta: OnlineRoom<Game>["meta"] | null | undefined;
+  let players: OnlineRoom<Game>["players"] | null | undefined;
+  let state: OnlineRoom<Game>["state"] | null | undefined;
+  let failed = false;
+  const emit = () => {
+    if (failed || meta === undefined || players === undefined || state === undefined) return;
+    listener(meta && players && state ? { meta, players, state } : null);
+  };
+  const fail = (error: Error) => {
+    if (failed) return;
+    failed = true;
+    console.error("온라인 방 구독 실패", error);
+    listener(null);
+  };
+  const unsubscribers = [
+    onValue(ref(database, `${path}/meta`), (snapshot) => { meta = snapshot.exists() ? snapshot.val() as OnlineRoom<Game>["meta"] : null; emit(); }, fail),
+    onValue(ref(database, `${path}/players`), (snapshot) => { players = snapshot.exists() ? snapshot.val() as OnlineRoom<Game>["players"] : null; emit(); }, fail),
+    onValue(ref(database, `${path}/state`), (snapshot) => { state = snapshot.exists() ? snapshot.val() as OnlineRoom<Game>["state"] : null; emit(); }, fail),
+  ];
+  return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
 }
 
 export async function publishOnlineGame<Game>(session: OnlineSession, game: Game) {
