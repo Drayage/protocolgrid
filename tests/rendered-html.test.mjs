@@ -106,6 +106,8 @@ test("source keeps the complete round, combat, skill, and economy loops wired", 
   assert.match(page, /agentArtClass/);
   assert.match(page, /skillArtClass/);
   assert.match(page, /function waitConeViews/);
+  assert.match(page, /\(agent\.waitDirs \?\? \[\]\)\.forEach/);
+  assert.match(page, /memory\.waitDirs \?\? \[\] : agent\.waitDirs \?\? \[\]/);
   assert.match(page, /교전 중 전장 현황/);
   assert.match(page, /ENEMY CONTACT/);
   assert.match(page, /lastSkillFx: SkillFx \| null/);
@@ -171,7 +173,9 @@ test("AI turns keep the human viewer perspective and hide stale enemy intel", as
   assert.match(page, /const concealedSide = onlineMode \? otherSide\(viewerSide\) : aiSide/);
   assert.match(page, /hiddenAgentNames\.some\(\(name\) => entry\.includes\(name\)\)/);
   assert.match(page, /상대 작전 진행 중/);
-  assert.match(page, /game\.lastSkillFx\.owner === viewerSide \|\| observed\.has\(game\.lastSkillFx\.targetRegion\)/);
+  assert.match(page, /function skillFxVisibleToViewer/);
+  assert.match(page, /if \(\["trip", "turret"\]\.includes\(fx\.skillId\)\) return false/);
+  assert.match(page, /skillFxVisibleToViewer\(game\.lastSkillFx, viewerSide, observed, spectatorMode\)/);
   assert.match(css, /combat-modal > \.combat-actions, \.combat-modal > \.combat-continue \{ order: 5/);
   assert.match(css, /combat-modal > \.combat-map-overview \{ order: 8/);
   assert.match(page, /combatTurnRef\.current/);
@@ -224,12 +228,19 @@ test("online human versus human creates Firebase rooms and synchronizes private-
   assert.match(page, /function OnlineLineupScreen/);
   assert.match(page, /function OnlineWaitingScreen/);
   assert.match(page, /function onlineControlSide/);
+  assert.match(page, /function combatChoiceActorId/);
+  assert.match(page, /find\(\(id\) => !scene\.choices\?\.\[id\]\)/);
+  assert.match(page, /scene\.actorId = combatChoiceActorId\(scene\)/);
+  assert.match(page, /currentCombatDriverId, autoObservedCombat/);
   assert.match(page, /const viewerInputLocked = isAiControlledTurn \|\| isOnlineOpponentAction/);
   assert.match(page, /isOnlineOpponentAction && onlineSession && stage !== "play"/);
   assert.match(page, /className=\{`online-observer-strip \$\{combatScene \? "combat-live" : ""\}`\}/);
   assert.match(page, /className="remote-combat-wait"/);
   assert.match(page, /교전 접근·사격·피해·결과가 실시간으로 공유됩니다/);
   assert.match(page, /if \(isOnlineOpponentAction\) return current/);
+  assert.match(page, /const changed = recipe\(draft\)/);
+  assert.match(page, /if \(changed === false\) return current/);
+  assert.match(page, /onlineControlSide\(draft\) !== onlineSession\.side\) return false/);
   assert.doesNotMatch(page, /stage !== "play" \|\| hotseatHandoff \|\| isOnlineOpponentAction/);
   assert.match(page, /const \{ publishOnlineGame, setOnlinePhase \} = await loadOnlineApi\(\)/);
   assert.match(page, /publishOnlineGame\(session, snapshot\)/);
@@ -1537,6 +1548,7 @@ test("skill casts spread in waves, keep path timing, and place result words only
   assert.match(page, /className="persistent-skill-zones"/);
   assert.match(page, /data-label=\{hauntCore \? "귀체 감시"/);
   assert.match(page, /className=\{`device-coverage-edge device-\$\{device\.kind\}/);
+  assert.match(page, /&& \(spectatorMode \|\| item\.owner === viewerSide\)\);/);
   assert.match(page, /data-label=\{cameraCore \? "카메라 시야"/);
   assert.match(page, /targetingSkillDefinition\.description/);
   assert.match(page, /blockedReason: waitingEnemy \? `\$\{waitingEnemy\.name\}이 파괴`/);

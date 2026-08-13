@@ -3771,14 +3771,14 @@ function waitConeViews(game: GameState, context: VisibilityContext): WaitConeVie
   const observed = context.omniscient ? new Set(REGIONS.map((region) => region.id)) : observedRegions(game, observer);
   const cones: WaitConeView[] = [];
   game.teams[observer].agents.filter((agent) => agent.alive).forEach((agent) => {
-    agent.waitDirs.forEach((to) => cones.push({ id: `${agent.id}-${to}`, agentName: agent.name, from: agent.region, to, hostile: false, lastKnown: false }));
+    (agent.waitDirs ?? []).forEach((to) => cones.push({ id: `${agent.id}-${to}`, agentName: agent.name, from: agent.region, to, hostile: false, lastKnown: false }));
   });
   game.teams[otherSide(observer)].agents.filter((agent) => agent.alive).forEach((agent) => {
     const memory = context.allowLastKnown ? game.enemyMemories.find((item) => item.observer === observer && item.agentId === agent.id) : undefined;
     const currentlyKnown = observed.has(agent.region) || agent.detected || (context.allowLastKnown && game.revealedEnemyIds.includes(agent.id));
     if (!context.omniscient && !memory && !currentlyKnown) return;
     const from = memory && !observed.has(agent.region) && !agent.detected ? memory.region : agent.region;
-    const waitDirs = memory && !observed.has(agent.region) && !agent.detected ? memory.waitDirs : agent.waitDirs;
+    const waitDirs = memory && !observed.has(agent.region) && !agent.detected ? memory.waitDirs ?? [] : agent.waitDirs ?? [];
     waitDirs.forEach((to) => cones.push({ id: `${agent.id}-${to}`, agentName: agent.name, from, to, hostile: true, lastKnown: !!memory && !observed.has(agent.region) && !agent.detected }));
   });
   return cones;
@@ -8393,13 +8393,24 @@ function OnlineReconnectScreen() {
   </main>;
 }
 
+function combatChoiceActorId(scene: CombatScene): string {
+  if (scene.kind !== "agent" || scene.phase !== "choice" || !scene.simultaneous) return scene.actorId;
+  return [scene.firstActorId, scene.secondActorId].find((id) => !scene.choices?.[id]) ?? scene.actorId;
+}
+
+function skillFxVisibleToViewer(fx: SkillFx, viewerSide: Side, observed: Set<number>, omniscient = false) {
+  if (omniscient || fx.owner === viewerSide) return true;
+  if (["trip", "turret"].includes(fx.skillId)) return false;
+  return observed.has(fx.targetRegion);
+}
+
 function onlineControlSide(game: GameState): Side {
   const scene = game.combatQueue[0];
   if (!scene) return game.turnSide;
   const controllerId = scene.phase === "tailwind"
     ? scene.tailwindActorId
     : scene.phase === "choice"
-      ? scene.actorId
+      ? combatChoiceActorId(scene)
       : scene.phase === "result" && !scene.resolved
         ? scene.pendingNextActorId ?? scene.actorId
         : null;
@@ -9467,7 +9478,7 @@ export default function Home() {
       });
     }
     const skillFx = game.lastSkillFx;
-    if (skillFx && skillFx.id !== audio.skillId && (spectatorMode || skillFx.owner === viewerSide || observed.has(skillFx.targetRegion))) {
+    if (skillFx && skillFx.id !== audio.skillId && skillFxVisibleToViewer(skillFx, viewerSide, observed, spectatorMode)) {
       audio.skillId = skillFx.id;
       playTacticalSound({ type: "skill", skillId: skillFx.skillId, kind: skillFx.kind, pan: audioPanForRegion(skillFx.targetRegion) });
     }
@@ -9657,7 +9668,7 @@ export default function Home() {
         combatScrollFrameRef.current = null;
       }
     };
-  }, [currentCombatId, currentCombatPhase, currentCombatHasShot, currentCombatScene?.resolved, autoObservedCombat, spectatorMode, spectatorSpeed, combatIntroActive]);
+  }, [currentCombatId, currentCombatPhase, currentCombatHasShot, currentCombatScene?.resolved, currentCombatDriverId, autoObservedCombat, spectatorMode, spectatorSpeed, combatIntroActive]);
   const validTargets = useMemo(() => {
     if (game.pendingWait) {
       const agent = getAgent(game, game.pendingWait);
@@ -9708,12 +9719,13 @@ export default function Home() {
     return new Set<number>();
   }, [game, selectedAgent, selectedCard, activeTeam.agents]);
 
-  const mutate = (recipe: (draft: GameState) => void) => {
+  const mutate = (recipe: (draft: GameState) => void | false) => {
     setGame((current) => {
       if (isOnlineOpponentAction) return current;
       const draft = structuredClone(current) as GameState;
       ensureAiTacticalState(draft);
-      recipe(draft);
+      const changed = recipe(draft);
+      if (changed === false) return current;
       if (onlineSession) onlineWritePendingRef.current = true;
       return draft;
     });
@@ -11322,6 +11334,7 @@ export default function Home() {
   const combatAttack = (requested: Pick<CombatChoice, "useHeadhunter" | "rendezvousAfterAttack"> = {}) => mutate((draft) => {
     const scene = draft.combatQueue[0];
     if (!scene || scene.phase !== "choice") return;
+    if (onlineSession && onlineControlSide(draft) !== onlineSession.side) return false;
     if (scene.kind === "decoy") {
       const attacker = getAgent(draft, scene.actorId);
       const fakeout = draft.deployables.find((item) => item.id === scene.deviceId && item.kind === "fakeout");
@@ -11359,6 +11372,7 @@ export default function Home() {
       return;
     }
     if (scene.kind !== "agent") return;
+    scene.actorId = combatChoiceActorId(scene);
     const actor = getAgent(draft, scene.actorId);
     const targetId = scene.actorId === scene.mover.id ? scene.holder.id : scene.mover.id;
     const target = getAgent(draft, targetId);
@@ -11411,6 +11425,8 @@ export default function Home() {
     mutate((draft) => {
       const scene = draft.combatQueue[0];
       if (!scene || scene.kind !== "agent" || scene.phase !== "choice") return;
+      if (onlineSession && onlineControlSide(draft) !== onlineSession.side) return false;
+      scene.actorId = combatChoiceActorId(scene);
       const actor = getAgent(draft, scene.actorId);
       if (!actor?.alive || !combatRetreatRegions(draft, scene, actor).includes(region)) return;
       if (scene.simultaneous) {
@@ -11434,7 +11450,10 @@ export default function Home() {
 
   const combatAdvance = () => mutate((draft) => {
     const scene = draft.combatQueue[0];
-    if (!scene || scene.kind !== "agent" || scene.phase !== "choice" || scene.actorId !== scene.mover.id) return;
+    if (!scene || scene.kind !== "agent" || scene.phase !== "choice") return;
+    if (onlineSession && onlineControlSide(draft) !== onlineSession.side) return false;
+    scene.actorId = combatChoiceActorId(scene);
+    if (scene.actorId !== scene.mover.id) return;
     const movement = draft.pendingMovement;
     const mover = getAgent(draft, scene.mover.id);
     const holder = getAgent(draft, scene.holder.id);
@@ -11460,6 +11479,7 @@ export default function Home() {
 
   const tailwindMove = (region: number) => mutate((draft) => {
     const scene = draft.combatQueue[0];
+    if (onlineSession && onlineControlSide(draft) !== onlineSession.side) return false;
     const agent = getAgent(draft, scene?.tailwindActorId);
     if (!scene || scene.phase !== "tailwind" || !agent?.alive || !(GRAPH.get(agent.region) ?? []).includes(region) || !canAgentTraverseEdge(draft, agent, agent.region, region)) return;
     const avoidedShot = !!scene.pendingShotActorId;
@@ -11493,6 +11513,7 @@ export default function Home() {
   const advanceCombat = () => mutate((draft) => {
     const scene = draft.combatQueue[0];
     if (!scene) return;
+    if (onlineSession && onlineControlSide(draft) !== onlineSession.side) return false;
     if (scene.phase === "encounter") {
       if (scene.kind === "turret") {
         performTurretShot(draft, scene);
@@ -12012,7 +12033,7 @@ export default function Home() {
   const canFinal = selectedAgent?.team === "defense" && game.spike.status === "half" && game.spike.region === selectedAgent.region && game.spike.halfCycle !== game.cycle;
   const combatIntermission = (game.postCombatMovementFxQueue?.length ?? 0) > 0;
   const combatScene = combatIntermission ? null : game.combatQueue[0] ?? null;
-  const combatActor = combatScene ? getAgent(game, combatScene.actorId) : null;
+  const combatActor = combatScene ? getAgent(game, combatChoiceActorId(combatScene)) : null;
   const combatActorIsMover = !!(combatScene && combatActor?.id === combatScene.mover.id);
   const combatOpponent = combatScene && combatActor
     ? getAgent(game, combatActorIsMover ? combatScene.holder.id : combatScene.mover.id)
@@ -12096,7 +12117,7 @@ export default function Home() {
   const knownDirectionalDevices = game.deployables.filter((item) => ["trip", "turret"].includes(item.kind)
     && item.to !== undefined
     && !isDeployableDisabled(game, item)
-    && (item.owner === viewerSide || observed.has(item.region)));
+    && (spectatorMode || item.owner === viewerSide));
   return (
     <main className={`game-shell side-${game.turnSide} ${spectatorMode ? "spectator-shell" : ""} ${onlineMode ? "online-shell" : ""} ${isOnlineOpponentAction ? "online-observing" : ""}`}>
       <AiController game={game} sides={controlledAiSides} paused={spectatorMode && spectatorPaused} speed={spectatorMode ? spectatorSpeed : 1} stepSignal={spectatorStep} presentationLocked={combatApproachActive || combatIntroActive || currentCombatPhase === "outro"} onStep={runAiStep} onEndTurn={endTurn} onCombatAttack={combatAttack} onCombatRetreat={combatRetreat} onCombatAdvance={combatAdvance} onCombatContinue={advanceCombat} onTailwind={tailwindMove} />
@@ -12224,7 +12245,7 @@ export default function Home() {
                 return <span key={`skill-target-point-${selectedRegion}`} className="skill-target-point" style={{ left: `${point.x}%`, top: `${point.y}%` }}><b>{index + 1}</b><small>{regionName(selectedRegion)}</small></span>;
               })}
             </div>}
-            {game.lastSkillFx && (game.lastSkillFx.owner === viewerSide || observed.has(game.lastSkillFx.targetRegion)) && (() => {
+            {game.lastSkillFx && skillFxVisibleToViewer(game.lastSkillFx, viewerSide, observed, spectatorMode) && (() => {
               const fx = game.lastSkillFx;
               const target = REGIONS.find((region) => region.id === fx.targetRegion)!;
               const affectedRegions = fx.affectedRegions ?? [fx.targetRegion];
